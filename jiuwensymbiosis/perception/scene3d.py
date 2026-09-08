@@ -544,6 +544,9 @@ def locate_for_place(api: Any, object_name: str = "table", reference: str | None
     phrase reads the same way round as everywhere else — the table that *has* a cup on
     it is the table ``relation="under"`` the cup (see ``_sense_surface_related``).
     """
+    # Same invariant as ``locate_for_grasp``: a failed sense must not leave a surface the
+    # next place would land on. Only a fresh success re-fills it.
+    api.last_surface = None
     bad = _unknown_relation(relation, object_name)
     if bad is not None:
         return bad
