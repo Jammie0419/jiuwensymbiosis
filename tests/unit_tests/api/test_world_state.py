@@ -16,7 +16,7 @@ from typing import Any
 
 from jiuwensymbiosis.api.actions import ActionSpec, implements
 from jiuwensymbiosis.api.base import BaseRobotApi
-from jiuwensymbiosis.api.world_state import WorldState
+from jiuwensymbiosis.api.world_state import WorldState, current_tokens
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 from jiuwensymbiosis.tools.builder import build_robot_tools
 from jiuwensymbiosis.tools.robot_control_tool import RobotControlTool
@@ -67,6 +67,14 @@ class _Api(BaseRobotApi):
         capability="grasp.parallel", tags=("grasp",),
     ))
     def grip(self) -> dict:
+        return {"ok": True}
+
+    @implements(ActionSpec(
+        name="stow", description="raise the held payload to travel height",
+        requires=("payload.held",), provides=("payload.stowed",),
+        capability="motion.base", tags=("motion",),
+    ))
+    def stow(self) -> dict:
         return {"ok": True}
 
     @implements(ActionSpec(name="release", description="release", provides=("payload.clear",),
@@ -137,6 +145,27 @@ def test_the_env_overrides_a_contradicting_belief():
     s.env.holding_payload = False  # the hardware says otherwise
     tokens = WorldState.snapshot(s).tokens
     assert "payload.clear" in tokens and "payload.held" not in tokens
+
+
+def test_observation_keeps_the_belief_it_cannot_speak_to():
+    # ``holding_payload`` is a bool: it can rule out "empty", never "not yet stowed".
+    # Dropping every payload.* belief whenever it answers loses the one token the
+    # belief layer exists for, and the planner then re-stows a payload already stowed.
+    s = _fresh()
+    s.api.memory.observe(_Api.grip.__tool_meta__, {}, s.api.grip())
+    s.api.memory.observe(_Api.stow.__tool_meta__, {}, s.api.stow())
+    s.env.holding_payload = True
+    tokens = current_tokens(s)
+    assert "payload.stowed" in tokens and "payload.held" in tokens
+
+
+def test_observation_still_drops_the_belief_it_does_contradict():
+    s = _fresh()
+    s.api.memory.observe(_Api.grip.__tool_meta__, {}, s.api.grip())
+    s.api.memory.observe(_Api.stow.__tool_meta__, {}, s.api.stow())
+    s.env.holding_payload = False  # an empty end effector cannot be carrying a stowed payload
+    tokens = current_tokens(s)
+    assert tokens == frozenset({"payload.clear"})
 
 
 def test_snapshot_carries_proprioception():

@@ -28,6 +28,19 @@ def test_locate_for_grasp_clears_stale_detection_on_failure(monkeypatch):
     assert api._last_detection is None
 
 
+def test_locate_for_place_clears_stale_surface_on_failure(monkeypatch):
+    # The place-side twin of the check above. approach_target_for_place skips its search
+    # on a cached ok=True surface and dual_arm_place lands on it, so a surface left behind
+    # by a FAILED sense is how "put it on the white table" ends up on the previous one.
+    api = CruzrApi(_NoCamEnv())
+    monkeypatch.setattr(api, "_ensure_detector", lambda: None)
+    api._last_surface = {"ok": True, "object": "purple table", "surface_z_mm": 700.0}  # stale
+    out = api.locate_for_place("white table")
+    assert out["ok"] is False
+    assert out["reason"] == "no_camera"
+    assert api._last_surface is None
+
+
 class _UrdfEnv:
     low_level = None
 

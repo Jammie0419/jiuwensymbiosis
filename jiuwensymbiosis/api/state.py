@@ -145,6 +145,16 @@ def missing_requirements(state: Iterable[str], requires: Iterable[str]) -> tuple
     return tuple(sorted(t for t in requires if t not in held))
 
 
+def ruled_out_by(state: Iterable[str]) -> frozenset[str]:
+    """Tokens ``state`` carries positive evidence against, per :data:`EXCLUDES`.
+
+    The one place "what does this token rule out" is answered, so a caller never has to
+    approximate it (matching on a ``payload.`` prefix drops siblings the evidence never
+    touched — ``payload.stowed`` survives an observation that only says "still holding").
+    """
+    return frozenset(t for token in set(state) for t in EXCLUDES.get(token, frozenset()))
+
+
 def contradicted_requirements(state: Iterable[str], requires: Iterable[str]) -> tuple[str, ...]:
     """Required tokens the state carries positive evidence *against*.
 
@@ -156,5 +166,4 @@ def contradicted_requirements(state: Iterable[str], requires: Iterable[str]) -> 
     forever. So only a token ruled out by something the state actually holds
     counts as a deviation.
     """
-    ruled_out = {t for token in set(state) for t in EXCLUDES.get(token, frozenset())}
-    return tuple(sorted(set(requires) & ruled_out))
+    return tuple(sorted(set(requires) & ruled_out_by(state)))

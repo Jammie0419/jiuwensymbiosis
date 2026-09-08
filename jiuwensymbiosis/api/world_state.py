@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwensymbiosis.api.memory import ExecutionMemory
+from jiuwensymbiosis.api.state import ruled_out_by
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +56,10 @@ def current_tokens(session: Any) -> frozenset[str]:
     memory = getattr(api, "memory", None)
     believed = memory.self_state if isinstance(memory, ExecutionMemory) else frozenset()
     observed = _observed_payload(getattr(session, "env", None))
-    # Observation wins: drop believed payload tokens the env contradicts.
-    if observed:
-        believed = frozenset(t for t in believed if not t.startswith("payload."))
-    return frozenset(believed | observed)
+    # Observation wins, but only over what it actually contradicts: ``holding_payload`` is a
+    # bool, so it can rule out "empty" or "holding" and says nothing about ``payload.stowed``.
+    ruled_out = ruled_out_by(observed)
+    return frozenset({t for t in believed if t not in ruled_out} | observed)
 
 
 def _with_reachability(locations: list[dict[str, Any]], api: Any) -> list[dict[str, Any]]:
