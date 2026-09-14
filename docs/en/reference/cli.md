@@ -36,10 +36,11 @@ Back-compat alias pointing at the same generic `run_task.py` (`jiuwensymbiosis-r
 ## jiuwensymbiosis-replay
 
 ```bash
-jiuwensymbiosis-replay TRACE_JSON [--text]
+jiuwensymbiosis-replay TRACE_JSON [--open] [--text]
 ```
 
-Renders a self-contained HTML replay by default and prints its path; `--text` outputs a terminal timeline.
+Renders a self-contained HTML replay by default and prints its path; `--open` additionally launches the HTML in the
+default browser; `--text` outputs a terminal timeline.
 
 ## jiuwensymbiosis-gui
 

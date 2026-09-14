@@ -140,6 +140,7 @@ Default behavior: write a **self-contained HTML** (`{run_token}.html`) in the **
 each step's JPEG frame embedded as base64 and fused into one card together with that step's parameters / error / rail
 events / logs, then print the file path. The HTML depends on no external image file, so it can be moved or shared; when
 the directory is not writable it falls back to the system temp directory.
+Add `--open` to launch the generated HTML in your default browser automatically.
 
 `--text` falls back to the original plain-text timeline, printing frames as paths only.
 
