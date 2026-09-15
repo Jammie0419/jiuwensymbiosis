@@ -253,6 +253,11 @@ class _StubDriver:
     def grab_frames(*args: Any, **kwargs: Any) -> None:
         return None
 
+    # -- TerrainDriver (sensing.terrain): empty = no piles reported, never invented
+    @staticmethod
+    def read_terrain() -> list[dict]:
+        return []
+
     # -- SuctionDriver / GripperDriver
     @property
     def suction_state(self) -> bool:
@@ -372,9 +377,7 @@ def smoke_test_api(api: Any, *, env: Any = None) -> list[dict[str, Any]]:
         try:
             ret = func(**kwargs)
         except Exception as exc:
-            results.append(
-                {"name": name, "status": "fail", "error": f"{type(exc).__name__}: {exc}"}
-            )
+            results.append({"name": name, "status": "fail", "error": f"{type(exc).__name__}: {exc}"})
             continue
         entry: dict[str, Any] = {"name": name, "status": "pass"}
         if ret is None:
@@ -500,11 +503,12 @@ def main() -> int:
         epilog=__doc__,
     )
     parser.add_argument("--module", "-m", type=str, default=None, help="适配器模块路径")
+    parser.add_argument("--path", "-p", type=str, default=None, help="适配器目录路径 (自动推导模块)")
     parser.add_argument(
-        "--path", "-p", type=str, default=None, help="适配器目录路径 (自动推导模块)"
-    )
-    parser.add_argument(
-        "--config", "-c", type=str, default=None,
+        "--config",
+        "-c",
+        type=str,
+        default=None,
         help="配置 YAML；缺省先试空配置，再回退到 configs/<name>/<name>.yaml",
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON 而非格式化报告")

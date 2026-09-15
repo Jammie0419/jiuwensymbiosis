@@ -1,0 +1,78 @@
+# AGX 挖掘机配置（仿真适配器）—— 与具体任务无关。
+#
+# 只描述"这台仿真机器"：后端接什么、有哪些关节、能走多快、挖掘包络多大。
+# 任务由运行时 --query 给出（如"把左边土堆挖两斗倒到右边"）。
+#
+# backend 三选一：
+#   mock      —— 内存模拟，零依赖，离线开发/测试（默认）
+#   inprocess —— 本进程 import agx 直接驱动场景（需 AGX Python 环境；阶段B）
+#   remote    —— TCP 桥接 scripts/agx_bridge_server.py（跑在 AGX 自带 Python 里）
+#
+# joint_limits / 关键帧 / 可达包络均为占位默认值，接入真实 AGX 模型后按实测修改。
+
+adapter: agx_excavator
+
+env:
+  cfg:
+    low_level:
+      backend: "mock"
+      # scene_path: "scene/excavator.agx"     # [仅 inprocess] 场景文件
+      # host: "127.0.0.1"                     # [仅 remote] 桥接服务地址
+      # port: 9700                            # [仅 remote] 桥接服务端口
+      startup_timeout_s: 60.0
+      move_timeout_s: 30.0
+
+      # --- 工作关节（deg；顺序 = q 索引顺序）
+      joint_names: ["swing", "boom", "arm", "bucket"]
+      joint_units: "deg"
+      joint_limits:                # 接入 AGX 模型后按实测改
+        swing: [-180.0, 180.0]
+        boom: [-45.0, 60.0]
+        arm: [-135.0, 45.0]
+        bucket: [-160.0, 40.0]
+      home_joints:                 # 安全收拢姿态（走行/转场）
+        swing: 0.0
+        boom: -20.0
+        arm: 25.0
+        bucket: 10.0
+
+      # --- 履带底盘（motion.base：navigate_relative / rotate_base / drive_arc）
+      has_base: true
+      base_step_limits: [1.0, 0.7]   # 每命令 ≤1 m / ≤0.7 rad（SafetyRail 读取）
+
+      # --- 地形真值（get_terrain）
+      terrain_enabled: true
+      # [仅 mock] 料堆真值；AGX 后端读仿真，忽略此项
+      terrain_piles:
+        - name: "soil_pile"
+          x_m: -2.0
+          y_m: 1.0
+          volume_m3: 2.0
+
+      # --- 挖掘工作参数
+      reach_min_m: 1.0              # 铲齿可达半径包络（基座系，米）
+      reach_max_m: 6.0
+      # 关键帧微调（deg），键集见 work.DEFAULT_DIG_TUNING；只写要改的键
+      # dig_cycle_tuning:
+      #   dig_boom_deg: -40.0
+      #   bucket_volume_m3: 0.8
+
+      # --- 相机（阶段B：接 AGX 渲染帧 + 检测服务时打开）
+      camera_enabled: false
+      camera_resolution: [640, 480]
+
+# 无 prompt/任务字段：任务不进 config，一律由 --query 或 --voice 在运行时给出。
+
+model:
+  provider: OpenAI
+  api_base: "your own api"      # ← 填实验室 vLLM 端点或云 API 地址
+  api_key: ""                   # 用 --api-key 覆盖
+  model_name: "deepseek-ai/DeepSeek-V3.2"
+  temperature: 0.3
+  max_tokens: 2048
+
+agent:
+  log_level: INFO
+  log_dir: ./logs
+  exec_mode: fastagent           # 默认快路径；单步调试 --stepagent
+  enable_skill: true

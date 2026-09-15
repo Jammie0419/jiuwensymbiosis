@@ -41,6 +41,11 @@ class TestKnownCapabilities:
             # The body can aim a camera by turning something (head / waist / base), so it
             # can look around for a target instead of only seeing what is in front of it.
             "vision.search",
+            # Machine-family work cycles + simulator terrain truth (2026-09-13, AGX sim
+            # adapters): one motion.* per machine family gating its compound work action,
+            # and the shared sim seam earthmoving bodies read piles through.
+            "motion.excavator",
+            "sensing.terrain",
         }
         assert KNOWN_CAPABILITIES == expected
 

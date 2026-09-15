@@ -39,18 +39,34 @@ CAPABILITY_ACTIONS: dict[str, list[str]] = {
     "motion.goal": ["approach_for_grasp", "approach_for_place"],
     "vision.search": ["search_target"],
     "motion.dual_arm": ["dual_arm_grasp", "dual_arm_place"],
+    "motion.excavator": ["dig"],
+    "sensing.terrain": ["get_terrain"],
 }
 
 # Actions ``api/defaults.py`` implements generically — an adapter gets these by
 # forwarding one line. Everything else under a declared capability is real work the
 # adapter must write (vendor calibration, IK, end-effector geometry, force confirmation),
 # which is what makes forgetting one worth a warning.
-ACTIONS_WITH_GENERIC_DEFAULT: frozenset[str] = frozenset({
-    "home", "get_pose", "get_home_pose", "goto_xyzr", "move_direction", "move_joint",
-    "activate_suction", "deactivate_suction", "open_gripper", "close_gripper",
-    "get_image", "navigate_relative", "rotate_base", "drive_arc", "set_lift_pose",
-    "turn_waist",
-})
+ACTIONS_WITH_GENERIC_DEFAULT: frozenset[str] = frozenset(
+    {
+        "home",
+        "get_pose",
+        "get_home_pose",
+        "goto_xyzr",
+        "move_direction",
+        "move_joint",
+        "activate_suction",
+        "deactivate_suction",
+        "open_gripper",
+        "close_gripper",
+        "get_image",
+        "navigate_relative",
+        "rotate_base",
+        "drive_arc",
+        "set_lift_pose",
+        "turn_waist",
+    }
+)
 
 # Capability → low-level driver members the Env/Api delegate to (structural
 # driver contract, mirrors env/protocol.py). Used by validate [D-14].
@@ -80,6 +96,7 @@ CAPABILITY_DRIVER_MEMBERS: dict[str, list[str | tuple[str, ...]]] = {
     "motion.waist": ["turn_waist"],
     "motion.goal": ["navigate_relative"],
     "motion.dual_arm": ["home"],
+    "sensing.terrain": ["read_terrain"],
 }
 
 # Capability → JointTransport members a joint-level (motion_backend=joint_ik)

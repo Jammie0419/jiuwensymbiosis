@@ -67,6 +67,14 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # (dual_arm_grasp / dual_arm_place). What the arms hold is the separate grasp.* axis.
         "motion.dual_arm",
         "planning.reachability",  # URDF-based reachability / workspace prior for planning
+        # Machine-family work cycles beyond arm grasping: one capability per machine family,
+        # gating that family's compound work actions (excavator → dig). Same growth pattern
+        # as motion.lift / motion.dual_arm: the action speaks the WORK, not the joints.
+        "motion.excavator",  # excavator dig-and-dump work cycle
+        # The body's environment reports terrain truth (material piles with ground
+        # coordinates + volume) — the simulator seam for earthmoving bodies. A marker
+        # capability: no driver members, gated actions read it off the env/backend.
+        "sensing.terrain",
     }
 )
 
@@ -487,7 +495,9 @@ class BaseRobotEnv(ABC):
         if len(values) != len(names):
             logger.warning(
                 "%s: get_angles() returned %d values for %d joint names; holding at 0.0",
-                self.name, len(values), len(names),
+                self.name,
+                len(values),
+                len(names),
             )
             return [0.0] * len(names)
         return [float(v) for v in values]
