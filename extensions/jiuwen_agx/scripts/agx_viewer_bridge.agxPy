@@ -32,7 +32,6 @@
 
 import os
 import sys
-import threading
 
 _SCRIPTS_DIR = os.environ.get("JIUWEN_SCRIPTS_DIR", os.path.dirname(os.path.abspath(__file__)))
 if _SCRIPTS_DIR not in sys.path:

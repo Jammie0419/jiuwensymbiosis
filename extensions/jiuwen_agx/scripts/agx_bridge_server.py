@@ -122,8 +122,12 @@ class AgxSceneAdapter:
         return self._sim
 
     def _load_scene_file(self, path: str) -> None:
-        """加载 .agx 场景文件并自动发现铰链/棱柱约束。"""
-        import agx
+        """加载 .agx 场景文件并自动发现铰链/棱柱约束。
+
+        viewer 模式下场景由 agxViewer 命令行加载（本适配器只做约束发现）；
+        headless 模式用 ``agxIO.readFile``（2.42 的场景加载 API）。
+        """
+        import agxIO
         import agxSDK
 
         if self.mode == "viewer":
@@ -132,12 +136,9 @@ class AgxSceneAdapter:
             self._sim = simulation()  # viewer 拥有仿真；agxViewer 已加载场景
         else:
             self._sim = agxSDK.Simulation()
-            if hasattr(agx, "loadScene"):
-                agx.loadScene(path, self._sim)
-            else:  # pragma: no cover - 版本差异兜底
-                raise RuntimeError(
-                    "agx.loadScene 不可用：请改用 --excavator 模式或 agxViewer 插件"
-                )
+            if not agxIO.readFile(path, self._sim):
+                raise RuntimeError(f"加载场景失败: {path}")
+        self._reset_scene_truth()
         self._auto_discover()
 
     def _load_excavator_scene(self) -> None:
@@ -216,6 +217,10 @@ class AgxSceneAdapter:
 
         self._auto_discover()
 
+    def _reset_scene_truth(self) -> None:
+        """场景文件不自带地形真值声明——不得把 DEMO_PILES 泄漏给任意场景。"""
+        self._piles = []
+
     def _auto_discover(self) -> None:
         """把词表关节名映射到 AGX 约束组：--joint-map 优先，否则用挖掘机模型属性。
 
@@ -225,7 +230,16 @@ class AgxSceneAdapter:
         exc = self._excavator
         for name in self.joint_names:
             if name in self.joint_map:
-                constraint = self._find_constraint_by_name(self.joint_map[name])
+                constraint = self._as_actuator(
+                    self._find_constraint_by_name(self.joint_map[name])
+                )
+                if constraint is None:
+                    print(
+                        f"[agx_bridge] WARNING: --joint-map 的 {self.joint_map[name]!r} "
+                        "不是 Hinge/Prismatic（Lock 等不可驱动），跳过",
+                        flush=True,
+                    )
+                    continue
                 group = [constraint]
                 unit = "rad" if type(constraint).__name__ == "Hinge" else "m"
             elif exc is not None and name in self.EXCAVATOR_JOINT_MAP:
@@ -250,6 +264,20 @@ class AgxSceneAdapter:
                 f"[agx_bridge] joint {name!r} -> {unit} group={names} range={self._ranges[name]}",
                 flush=True,
             )
+
+    @staticmethod
+    def _as_actuator(constraint: Any):
+        """SWIG 下转型：.agx 文件里的约束以基类 Constraint 包装加载，按
+        asHinge/asPrismatic 还原成可驱动类型；Lock 等不可驱动约束返回 None。"""
+        if type(constraint).__name__ in ("Hinge", "Prismatic"):
+            return constraint
+        hinge = getattr(constraint, "asHinge", lambda: None)()
+        if hinge is not None:
+            return hinge
+        prismatic = getattr(constraint, "asPrismatic", lambda: None)()
+        if prismatic is not None:
+            return prismatic
+        return None
 
     def _find_constraint_by_name(self, constraint_name: str):
         sim = self._require_sim()
@@ -429,22 +457,40 @@ class AgxSceneAdapter:
         return None
 
     # -- 场景清单（探针/验收用；协议 v1 追加命令，向后兼容）
+    @staticmethod
+    def _safe(call, default=None):
+        """任意场景/任意约束的单字段读取都不允许炸掉整个 inventory。"""
+        try:
+            return call()
+        except Exception:  # noqa: BLE001 - 防御式清单
+            return default
+
     def inventory(self) -> dict[str, Any]:
         self._require_sim()  # 未加载即问清单 → 明确报错
         joints = []
         for name, group in self._constraints.items():
-            force = group[0].getMotor1D().getForceRange()
+            head = group[0]
+            motor = self._safe(head.getMotor1D)
+            force_range = None
+            if motor is not None:
+                fr = self._safe(motor.getForceRange)
+                if fr is not None:
+                    force_range = [float(fr.lower()), float(fr.upper())]
             joints.append(
                 {
                     "name": name,
-                    "constraint": [c.getName() for c in group],
-                    "type": type(group[0]).__name__,
-                    "angle": float(group[0].getAngle()),
+                    "constraint": self._safe(
+                        lambda: [c.getName() for c in group], default=[name]
+                    ),
+                    "type": type(head).__name__,
+                    "angle": self._safe(head.getAngle),
                     "range": list(self._ranges.get(name, (0.0, 0.0))),
                     "unit": self._units.get(name, "rad"),
-                    "has_motor": group[0].getMotor1D() is not None,
-                    "force_range": [float(force.lower()), float(force.upper())],
-                    "lock_enabled": bool(group[0].getLock1D().getEnable()),
+                    "has_motor": motor is not None,
+                    "force_range": force_range,
+                    "lock_enabled": self._safe(
+                        lambda: bool(head.getLock1D().getEnable()), default=False
+                    ),
                 }
             )
         terrain = []
@@ -636,7 +682,15 @@ class BridgeSession:
                 "ok": False,
                 "error": f"unknown command {cmd!r}",
             }
-        return {"v": PROTOCOL_VERSION, "ok": True, **handler(request)}
+        try:
+            return {"v": PROTOCOL_VERSION, "ok": True, **handler(request)}
+        except Exception as exc:  # noqa: BLE001 - 场景层异常必须变成协议错误响应，
+            # 否则会杀掉 pump 回调/viewer 脚本循环（任意模型+任意命令都不能崩桥）
+            return {
+                "v": PROTOCOL_VERSION,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     def _num(self, request: dict[str, Any], key: str, default: float) -> float:
         return float(request.get(key, default))
