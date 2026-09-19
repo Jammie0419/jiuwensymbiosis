@@ -20,7 +20,7 @@
         {"v": 1, "ok": false, "error": ""} 失败
   命令： ping | joints | move_joints{targets,timeout_s}
         navigate_relative{dx_m,dyaw_rad,timeout_s} | navigate_arc{radius_m,dyaw_rad,timeout_s}
-        terrain | scoop | mark_scoop{loaded} | frame | bye
+        terrain | scoop | mark_scoop{loaded} | frame | inventory | bye
 
 所有角度/坐标的单位由使用方约定（jiuwensymbiosis 侧 config 的 joint_units 与
 基座系米，REP-103）；桥接层只透传，不做单位换算。
@@ -102,6 +102,20 @@ class AgxSceneAdapter:
         # TODO(AGX): AGX 渲染一帧 → base64(rgb_jpeg) + base64(depth_f32) + shape
         return None
 
+    # -- 场景清单（探针/验收用；协议 v1 追加命令，向后兼容）
+    def inventory(self) -> dict[str, Any]:
+        """Enumerate every controllable machine in the scene.
+
+        TODO(AGX): 遍历场景约束树 —— 对每个 Machine/Root 装配体收集：
+          name          装配体/根刚体名（建议同时给出场景对象路径）
+          joints[]      铰链/棱柱约束：name、constraint(AGX 对象名)、type(hinge/prismatic)、
+                        angle(当前值)、range([min,max] 实际行程)、unit("rad"——AGX 内部 SI)、
+                        has_motor(是否已挂 Motor/Controller)
+          terrain[]     AGX Terrain 对象：name、质心、包围盒（探针估算料堆用）
+        可先用 scripts/agx_scene_probe.py --direct 的输出对照本方法实现。
+        """
+        raise NotImplementedError("AgxSceneAdapter.inventory：待 AGX 场景接口确认后实现（TODO(AGX) 块）")
+
 
 class DemoSceneAdapter(AgxSceneAdapter):
     """内存演示机器：即时到位，行为与 MockSimBackend 一致（无需 AGX）。"""
@@ -111,6 +125,29 @@ class DemoSceneAdapter(AgxSceneAdapter):
 
     def load(self) -> None:
         pass  # 内存机器，无事可做
+
+    def inventory(self) -> dict[str, Any]:
+        limits = {"swing": (-180.0, 180.0), "boom": (-45.0, 60.0), "arm": (-135.0, 60.0), "bucket": (-160.0, 40.0)}
+        return {
+            "machines": [
+                {
+                    "name": "demo_excavator",
+                    "joints": [
+                        {
+                            "name": name,
+                            "constraint": name,
+                            "type": "hinge",
+                            "angle": self._joints.get(name, 0.0),
+                            "range": list(limits.get(name, (-180.0, 180.0))),
+                            "unit": "deg",
+                            "has_motor": True,
+                        }
+                        for name in self.joint_names
+                    ],
+                    "terrain": [dict(p) for p in self._piles],
+                }
+            ]
+        }
 
 
 class BridgeSession:
@@ -178,6 +215,9 @@ class BridgeSession:
         if "depth_bytes" in encoded:
             encoded["depth_base64"] = base64.b64encode(encoded.pop("depth_bytes")).decode("ascii")
         return encoded
+
+    def _cmd_inventory(self, _request: dict[str, Any]) -> dict[str, Any]:
+        return self._scene.inventory()
 
 
 def serve(scene: AgxSceneAdapter, host: str, port: int) -> None:

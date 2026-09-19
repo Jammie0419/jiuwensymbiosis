@@ -76,7 +76,7 @@ class TestCruzrApi:
         assert "move_named_joint" in names
 
     def test_raising_an_arm_is_move_named_joint_not_a_cruzr_only_tool(self):
-        """"抬左臂"就是把一个具名关节开到某个角度——共享词表已经能说这件事，
+        """ "抬左臂"就是把一个具名关节开到某个角度——共享词表已经能说这件事，
         本体专有工具说的是同一件事，却只在这台机器人上成立。"""
         names = {m["name"] for m in list_tool_meta(CruzrApi(_connected_env()))}
         assert not {"raise_left_arm", "raise_right_arm", "lower_left_arm", "lower_right_arm", "raise_arm"} & names

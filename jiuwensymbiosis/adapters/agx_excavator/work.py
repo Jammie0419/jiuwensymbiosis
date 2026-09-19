@@ -29,6 +29,9 @@ REQUIRED_JOINTS: tuple[str, ...] = ("swing", "boom", "arm", "bucket")
 # placeholders — tune against the real model via YAML dig_cycle_tuning, which
 # overlays (not replaces) these defaults.
 DEFAULT_DIG_TUNING: dict[str, float] = {
+    # 回转零位校准：真实模型 swing=0 的朝向不一定是基座 +X；探针实测后填。
+    # 摆转目标 = atan2(ground point) + swing_offset_deg，归一化到 [-180, 180)。
+    "swing_offset_deg": 0.0,
     # 举臂就位（行走/转场姿态上方）
     "ready_boom_deg": 10.0,
     "ready_arm_deg": -25.0,
@@ -48,6 +51,12 @@ DEFAULT_DIG_TUNING: dict[str, float] = {
     # 名义斗容：mock/无测量后端报告的方量；AGX 后端以仿真实测为准
     "bucket_volume_m3": 0.6,
 }
+
+
+def _normalise_swing(angle_deg: float) -> float:
+    """Wrap a swing target into [-180, 180) — 190° is the same physical
+    position as -170°, and joint limits are stated in this range."""
+    return (angle_deg + 180.0) % 360.0 - 180.0
 
 
 def execute_dig_cycle(
@@ -88,8 +97,8 @@ def execute_dig_cycle(
         raise ValueError("bucket is still loaded — dump it (or home) before digging again")
 
     t = {**DEFAULT_DIG_TUNING, **(tuning or {})}
-    swing_dig = math.degrees(math.atan2(dig_y_m, dig_x_m))
-    swing_dump = math.degrees(math.atan2(dump_y_m, dump_x_m))
+    swing_dig = _normalise_swing(math.degrees(math.atan2(dig_y_m, dig_x_m)) + t["swing_offset_deg"])
+    swing_dump = _normalise_swing(math.degrees(math.atan2(dump_y_m, dump_x_m)) + t["swing_offset_deg"])
 
     started = time.perf_counter()
     # 对准 → 就位 → 下铲 → 收斗(装满) → 摆转 → 卸料

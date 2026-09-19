@@ -28,7 +28,7 @@ env:
       joint_limits:                # 接入 AGX 模型后按实测改
         swing: [-180.0, 180.0]
         boom: [-45.0, 60.0]
-        arm: [-135.0, 45.0]
+        arm: [-135.0, 60.0]
         bucket: [-160.0, 40.0]
       home_joints:                 # 安全收拢姿态（走行/转场）
         swing: 0.0

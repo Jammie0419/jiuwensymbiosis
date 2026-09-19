@@ -15,8 +15,8 @@ def _driver(monkeypatch):
 def test_move_joints_blocking_ramps_then_publishes_targets(monkeypatch):
     ll = _driver(monkeypatch)
     ramped = {}
-    ll.get_joint_positions = lambda: {}          # open-loop (no live state)
-    ll._targets_reached = lambda t: True          # break the hold loop immediately
+    ll.get_joint_positions = lambda: {}  # open-loop (no live state)
+    ll._targets_reached = lambda t: True  # break the hold loop immediately
     ll._ramp_to_targets_native = lambda t, **kw: (ramped.update(t), True)[1]
     ll.publish_joint_positions = lambda t: None
 
@@ -33,11 +33,9 @@ def test_set_lifter_uses_move_joints_robotcommand_path():
     seen = []
     ll.move_joints_blocking = lambda targets, **kw: (seen.append(dict(targets)), {"ok": True})[1]
 
-    out = ll.set_lifter({"lifter_pitch_1_joint": -0.3, "lifter_pitch_2_joint": -0.3,
-                         "lifter_pitch_3_joint": 0.6})
+    out = ll.set_lifter({"lifter_pitch_1_joint": -0.3, "lifter_pitch_2_joint": -0.3, "lifter_pitch_3_joint": 0.6})
     assert out["ok"]
-    assert seen[0] == {"lifter_pitch_1_joint": -0.3, "lifter_pitch_2_joint": -0.3,
-                       "lifter_pitch_3_joint": 0.6}
+    assert seen[0] == {"lifter_pitch_1_joint": -0.3, "lifter_pitch_2_joint": -0.3, "lifter_pitch_3_joint": 0.6}
 
 
 def test_set_lifter_defaults_to_lifter_ramp_duration(monkeypatch):

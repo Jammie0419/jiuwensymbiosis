@@ -27,12 +27,13 @@ class AgxExcavatorConfig(SimMachineConfig):
     joint_names: tuple[str, ...] = ("swing", "boom", "arm", "bucket")
     has_base: bool = True
     base_step_limits: tuple[float, float] | None = (1.0, 0.7)  # 每命令 ≤1 m / ≤0.7 rad
-    # 占位限位（deg）：接入 AGX 模型后按实测改；swing 视回转支承行程。
+    # 占位限位（deg）：接入 AGX 模型后按探针实测改；须覆盖 dig_cycle_tuning
+    # 的全部关键帧（driver 会在执行前校验）。swing 视回转支承行程。
     joint_limits: dict[str, tuple[float, float]] | None = field(
         default_factory=lambda: {
             "swing": (-180.0, 180.0),
             "boom": (-45.0, 60.0),
-            "arm": (-135.0, 45.0),
+            "arm": (-135.0, 60.0),
             "bucket": (-160.0, 40.0),
         }
     )

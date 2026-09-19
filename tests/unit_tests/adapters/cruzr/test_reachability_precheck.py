@@ -13,8 +13,12 @@ from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.env import CruzrEnv
 
-_JOINTS = {"lifter_pitch_1_joint": 0.0, "lifter_pitch_2_joint": 0.0,
-           "lifter_pitch_3_joint": 0.0, "waist_yaw_joint": 0.0}
+_JOINTS = {
+    "lifter_pitch_1_joint": 0.0,
+    "lifter_pitch_2_joint": 0.0,
+    "lifter_pitch_3_joint": 0.0,
+    "waist_yaw_joint": 0.0,
+}
 _OBJ = {"center_mm": [500.0, 0.0, 600.0], "width_mm": 200.0, "height_mm": 150.0, "forward_mm": 500.0}
 
 

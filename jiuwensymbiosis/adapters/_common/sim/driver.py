@@ -97,6 +97,14 @@ class SimMachineDriver:
             position = float(value)
             if not math.isfinite(position):
                 raise ValueError(f"{self._cfg.name}: non-finite target for joint {joint!r}: {value!r}")
+            limits = self._cfg.joint_limits
+            if limits is not None and joint in limits:
+                low, high = limits[joint]
+                if not (low <= position <= high):
+                    raise ValueError(
+                        f"{self._cfg.name}: joint {joint!r} target {position} outside configured "
+                        f"limits [{low}, {high}] — fix the config/limits or the keyframe tuning"
+                    )
             clean[joint] = position
         if not clean:
             raise ValueError(f"{self._cfg.name}: empty joint command")

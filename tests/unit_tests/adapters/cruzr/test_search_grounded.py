@@ -19,8 +19,8 @@ import numpy as np
 from jiuwensymbiosis.adapters.cruzr.api import CruzrApi
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 
-TABLE_BOX = [4, 20, 35, 38]   # reference (table) bbox: x 4..35, y 20..38
-BOX_X = (14, 26)              # target bbox x-span, centred in the 40-wide frame → bearing ≈ 0
+TABLE_BOX = [4, 20, 35, 38]  # reference (table) bbox: x 4..35, y 20..38
+BOX_X = (14, 26)  # target bbox x-span, centred in the 40-wide frame → bearing ≈ 0
 
 
 class _LL:
@@ -62,9 +62,9 @@ def _seg_factory(kind):
     → the reference returns a zero-area bbox (unusable footprint → degrade)."""
     tbox = _target_bbox(kind)
     box_mask = np.zeros((40, 40), dtype=bool)
-    box_mask[int(tbox[1]):int(tbox[3]), int(tbox[0]):int(tbox[2])] = True   # non-empty → not skipped
+    box_mask[int(tbox[1]) : int(tbox[3]), int(tbox[0]) : int(tbox[2])] = True  # non-empty → not skipped
     table_mask = np.zeros((40, 40), dtype=bool)
-    table_mask[TABLE_BOX[1]:TABLE_BOX[3], TABLE_BOX[0]:TABLE_BOX[2]] = True
+    table_mask[TABLE_BOX[1] : TABLE_BOX[3], TABLE_BOX[0] : TABLE_BOX[2]] = True
 
     def _seg(img, text_prompt="box"):
         if "table" in text_prompt:
@@ -80,8 +80,8 @@ def _seg_factory(kind):
 def _api(kind, **cfg_over):
     rgb = np.zeros((40, 40, 3), dtype=np.uint8)
     api = CruzrApi(_Env(rgb, **cfg_over))
-    api._ensure_detector = lambda: None                 # type: ignore[method-assign]
-    api._seg_fn = _seg_factory(kind)                    # type: ignore[method-assign]
+    api._ensure_detector = lambda: None  # type: ignore[method-assign]
+    api._seg_fn = _seg_factory(kind)  # type: ignore[method-assign]
     return api
 
 
@@ -93,8 +93,8 @@ def test_search_target_grounded_on_surface_pass():
     assert out["verified"] is True
     assert out["reference"] == "table"
     assert out["overlap"] >= 0.99
-    assert abs(out["bearing_rad"]) < 1e-6       # box bbox centred → zero bearing
-    assert "note" not in out                     # a real 2-D evaluation, not a degrade
+    assert abs(out["bearing_rad"]) < 1e-6  # box bbox centred → zero bearing
+    assert "note" not in out  # a real 2-D evaluation, not a degrade
 
 
 def test_search_target_grounded_partial_overlap_passes_threshold():
@@ -130,7 +130,7 @@ def test_search_target_grounded_degrades_when_reference_undetected():
     out = api.search_target("box", reference="table")
     assert out["ok"] and out["found"] is True
     assert out.get("note") == "head_reference_undetected_degraded"
-    assert "verified" not in out                 # bearing-only path never claims verification
+    assert "verified" not in out  # bearing-only path never claims verification
 
 
 def test_search_target_grounded_degrades_when_reference_bbox_degenerate():
@@ -157,7 +157,7 @@ def test_search_target_strict_still_passes_when_verified_on_surface():
     api = _api("on", head_grounded_strict=True)
     out = api.search_target("box", reference="table")
     assert out["ok"] and out["found"] is True and out["verified"] is True
-    assert "note" not in out                     # a real evaluation, not a strict degrade
+    assert "note" not in out  # a real evaluation, not a strict degrade
 
 
 def test_search_target_strict_genuine_off_surface_reject_unchanged():
@@ -175,9 +175,9 @@ def test_head_ground_verify_false_forces_bearing():
     api = _api("on", head_ground_verify=False)
     out = api.search_target("box", reference="table")
     assert out["ok"] and out["found"] is True
-    assert "verified" not in out                 # plain bearing, no 2-D grounding
+    assert "verified" not in out  # plain bearing, no 2-D grounding
     assert "reference" not in out
-    assert "note" not in out                      # not grounded → not a degrade either
+    assert "note" not in out  # not grounded → not a degrade either
 
 
 def test_search_target_no_on_is_plain_bearing():
@@ -193,16 +193,24 @@ def test_camera_worker_parses_pointcloud_args():
     # The worker's arg surface still accepts the (legacy) head point-cloud flags (no rclpy import).
     from jiuwensymbiosis.adapters.cruzr.ros2.camera_worker import _build_parser
 
-    args = _build_parser().parse_args([
-        "--color-topic", "/head/color",
-        "--output-dir", "/tmp/x",
-        "--pointcloud-topic", "/sensor/camera/stereo/pointcloud/jazzy",
-        "--pointcloud-msg-type", "sensor_msgs/msg/PointCloud2",
-        "--camera-optical-frame", "stereo_left_rgb_optical_link",
-        "--rectify-cruzr-stereo-left",
-        "--sync-tolerance-s", "0.08",
-        "--ensure-rgb",
-    ])
+    args = _build_parser().parse_args(
+        [
+            "--color-topic",
+            "/head/color",
+            "--output-dir",
+            "/tmp/x",
+            "--pointcloud-topic",
+            "/sensor/camera/stereo/pointcloud/jazzy",
+            "--pointcloud-msg-type",
+            "sensor_msgs/msg/PointCloud2",
+            "--camera-optical-frame",
+            "stereo_left_rgb_optical_link",
+            "--rectify-cruzr-stereo-left",
+            "--sync-tolerance-s",
+            "0.08",
+            "--ensure-rgb",
+        ]
+    )
     assert args.pointcloud_topic == "/sensor/camera/stereo/pointcloud/jazzy"
     assert args.pointcloud_msg_type == "sensor_msgs/msg/PointCloud2"
     assert args.camera_optical_frame == "stereo_left_rgb_optical_link"

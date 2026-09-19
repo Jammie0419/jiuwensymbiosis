@@ -88,9 +88,9 @@ def test_yuv422_uyvy_color_direction():
     msg = _msg(h, w, "yuv422", w * 2, bytes([90, 200, 240, 200]))
     out = decode_image_msg(msg)
     r, g, b = (int(c) for c in out[0, 0])
-    assert r == 255           # 200 + 1.402*112 = 357 -> clipped to 255
-    assert 128 <= g <= 138    # ~133
-    assert 128 <= b <= 138    # ~133
+    assert r == 255  # 200 + 1.402*112 = 357 -> clipped to 255
+    assert 128 <= g <= 138  # ~133
+    assert 128 <= b <= 138  # ~133
 
 
 def test_yuv422_odd_width_raises():

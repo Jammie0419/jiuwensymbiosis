@@ -20,8 +20,7 @@ from jiuwensymbiosis.kinematics.fk import fk_chain
 from jiuwensymbiosis.kinematics.urdf_chain import parse_chain
 from tests.unit_tests.adapters.cruzr import description
 
-_FIXED = {"lifter_pitch_1_joint": 0.0, "lifter_pitch_2_joint": 0.0,
-          "lifter_pitch_3_joint": 0.0, "waist_yaw_joint": 0.0}
+_FIXED = {"lifter_pitch_1_joint": 0.0, "lifter_pitch_2_joint": 0.0, "lifter_pitch_3_joint": 0.0, "waist_yaw_joint": 0.0}
 
 
 def _cfg_or_skip():
@@ -38,7 +37,8 @@ def test_recovers_reachable_poses_via_restarts():
     chain = parse_chain(cfg.urdf_path, "base_link", cfg.left_arm_leaf)
     limits = chain.limits()
     arm = ARM_JOINTS["left"]
-    lo = np.array([limits[j][0] for j in arm]); hi = np.array([limits[j][1] for j in arm])
+    lo = np.array([limits[j][0] for j in arm])
+    hi = np.array([limits[j][1] for j in arm])
     rng = np.random.default_rng(7)
     solved = 0
     for t in range(6):
@@ -51,23 +51,41 @@ def test_recovers_reachable_poses_via_restarts():
         approach = rot @ np.asarray(TOOL_APPROACH_LOCAL, dtype=float)
         paddle = rot @ np.asarray(TOOL_PADDLE_LOCAL, dtype=float)
         res = pik.solve_pose_ik_pin(
-            cfg.urdf_path, arm, cfg.left_arm_leaf, limits,
-            tcp, approach_target=approach, paddle_target=paddle,
-            tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
-            tcp_offset_local=(0.0, 0.0, 0.0), q_fixed=_FIXED, q_init=None, seed=t,
+            cfg.urdf_path,
+            arm,
+            cfg.left_arm_leaf,
+            limits,
+            tcp,
+            approach_target=approach,
+            paddle_target=paddle,
+            tool_approach_local=TOOL_APPROACH_LOCAL,
+            tool_paddle_local=TOOL_PADDLE_LOCAL,
+            tcp_offset_local=(0.0, 0.0, 0.0),
+            q_fixed=_FIXED,
+            q_init=None,
+            seed=t,
         )
         solved += res.converged
-    assert solved >= 5   # random restarts recover the vast majority of reachable poses
+    assert solved >= 5  # random restarts recover the vast majority of reachable poses
 
 
 def test_returns_ikresult_contract():
     cfg = _cfg_or_skip()
     chain = parse_chain(cfg.urdf_path, "base_link", cfg.left_arm_leaf)
     res = pik.solve_pose_ik_pin(
-        cfg.urdf_path, ARM_JOINTS["left"], cfg.left_arm_leaf, chain.limits(),
-        (0.40, 0.20, 0.65), approach_target=APPROACH_FORWARD, paddle_target=PADDLE_INWARD,
-        tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
-        tcp_offset_local=(-0.09, 0.0, 0.0), q_fixed=_FIXED, q_init=None, seed=0,
+        cfg.urdf_path,
+        ARM_JOINTS["left"],
+        cfg.left_arm_leaf,
+        chain.limits(),
+        (0.40, 0.20, 0.65),
+        approach_target=APPROACH_FORWARD,
+        paddle_target=PADDLE_INWARD,
+        tool_approach_local=TOOL_APPROACH_LOCAL,
+        tool_paddle_local=TOOL_PADDLE_LOCAL,
+        tcp_offset_local=(-0.09, 0.0, 0.0),
+        q_fixed=_FIXED,
+        q_init=None,
+        seed=0,
     )
     assert set(res.q) == set(ARM_JOINTS["left"])
     assert isinstance(res.converged, bool)
@@ -86,26 +104,46 @@ def test_prefers_solution_closest_to_warm_start():
     approach = tf[:3, :3] @ np.asarray(TOOL_APPROACH_LOCAL, float)
     paddle = tf[:3, :3] @ np.asarray(TOOL_PADDLE_LOCAL, float)
     res = pik.solve_pose_ik_pin(
-        cfg.urdf_path, arm, cfg.left_arm_leaf, limits, tf[:3, 3],
-        approach_target=approach, paddle_target=paddle,
-        tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
-        tcp_offset_local=(0.0, 0.0, 0.0), q_fixed=_FIXED,
-        q_init={j: 0.2 for j in arm}, seed=0)
+        cfg.urdf_path,
+        arm,
+        cfg.left_arm_leaf,
+        limits,
+        tf[:3, 3],
+        approach_target=approach,
+        paddle_target=paddle,
+        tool_approach_local=TOOL_APPROACH_LOCAL,
+        tool_paddle_local=TOOL_PADDLE_LOCAL,
+        tcp_offset_local=(0.0, 0.0, 0.0),
+        q_fixed=_FIXED,
+        q_init={j: 0.2 for j in arm},
+        seed=0,
+    )
     assert res.converged
-    assert max(abs(res.q[j] - 0.2) for j in arm) < 0.2   # stayed near the warm start, not a far config
+    assert max(abs(res.q[j] - 0.2) for j in arm) < 0.2  # stayed near the warm start, not a far config
 
 
 def test_check_collision_rejects_self_colliding(monkeypatch):
     """With check_collision, converged-but-self-colliding solutions are not returned."""
     from jiuwensymbiosis.kinematics import self_collision as sc
+
     cfg = _cfg_or_skip()
     chain = parse_chain(cfg.urdf_path, "base_link", cfg.left_arm_leaf)
     monkeypatch.setattr(sc, "available", lambda *a, **k: True)
-    monkeypatch.setattr(sc, "in_self_collision", lambda *a, **k: True)   # everything "collides"
+    monkeypatch.setattr(sc, "in_self_collision", lambda *a, **k: True)  # everything "collides"
     res = pik.solve_pose_ik_pin(
-        cfg.urdf_path, ARM_JOINTS["left"], cfg.left_arm_leaf, chain.limits(),
-        (0.40, 0.20, 0.65), approach_target=APPROACH_FORWARD, paddle_target=PADDLE_INWARD,
-        tool_approach_local=TOOL_APPROACH_LOCAL, tool_paddle_local=TOOL_PADDLE_LOCAL,
-        tcp_offset_local=(-0.09, 0.0, 0.0), q_fixed=_FIXED, q_init=None,
-        check_collision=True, seed=0)
-    assert res.converged is False   # no collision-free solution -> report unreachable/unsafe
+        cfg.urdf_path,
+        ARM_JOINTS["left"],
+        cfg.left_arm_leaf,
+        chain.limits(),
+        (0.40, 0.20, 0.65),
+        approach_target=APPROACH_FORWARD,
+        paddle_target=PADDLE_INWARD,
+        tool_approach_local=TOOL_APPROACH_LOCAL,
+        tool_paddle_local=TOOL_PADDLE_LOCAL,
+        tcp_offset_local=(-0.09, 0.0, 0.0),
+        q_fixed=_FIXED,
+        q_init=None,
+        check_collision=True,
+        seed=0,
+    )
+    assert res.converged is False  # no collision-free solution -> report unreachable/unsafe

@@ -3,8 +3,7 @@
 
 """P1: Cruzr declares the 5 new mobility capabilities (env + api)."""
 
-_NEW = ("motion.base", "motion.lift", "motion.waist", "motion.goal", "motion.dual_arm",
-        "grasp.paddle")
+_NEW = ("motion.base", "motion.lift", "motion.waist", "motion.goal", "motion.dual_arm", "grasp.paddle")
 
 
 def test_env_declares_mobility_capabilities():

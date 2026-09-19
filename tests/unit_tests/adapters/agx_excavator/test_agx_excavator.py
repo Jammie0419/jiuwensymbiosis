@@ -74,6 +74,19 @@ class TestDigCycle:
         assert driver.moves[0] == {"swing": pytest.approx(expected)}
         assert {"swing": pytest.approx(math.degrees(math.atan2(0.0, 3.0)))} == driver.moves[4]
 
+    def test_swing_offset_is_applied_and_normalised(self):
+        driver = _SpyDriver()
+        # offset rotates the whole dig plane; atan2(-2,0)=-90 + (-45) = -135
+        execute_dig_cycle(
+            driver, dig_x_m=0.0, dig_y_m=-2.0, dump_x_m=0.0, dump_y_m=2.0, tuning={"swing_offset_deg": -45.0}
+        )
+        assert driver.moves[0] == {"swing": pytest.approx(-135.0)}
+        # wrap-around: atan2(2,0)=90 + 135 = 225 -> normalised to -135
+        execute_dig_cycle(
+            driver, dig_x_m=0.0, dig_y_m=2.0, dump_x_m=0.0, dump_y_m=2.0, tuning={"swing_offset_deg": 135.0}
+        )
+        assert driver.moves[0] == {"swing": pytest.approx(-135.0)}
+
     def test_cycle_shape_and_scoop_truth(self):
         driver = _SpyDriver()
         result = execute_dig_cycle(driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5)

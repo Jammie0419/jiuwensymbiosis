@@ -15,11 +15,17 @@ def test_left_arm_chain_movable_joints():
     movable = chain.movable_names()
     # lifter(3) + waist_yaw(1) + arm(7) = 11 revolute joints
     assert movable == [
-        "lifter_pitch_1_joint", "lifter_pitch_2_joint", "lifter_pitch_3_joint",
+        "lifter_pitch_1_joint",
+        "lifter_pitch_2_joint",
+        "lifter_pitch_3_joint",
         "waist_yaw_joint",
-        "L_shoulder_pitch_joint", "L_shoulder_roll_joint", "L_shoulder_yaw_joint",
-        "L_elbow_roll_joint", "L_elbow_yaw_joint",
-        "L_wrist_pitch_joint", "L_wrist_roll_joint",
+        "L_shoulder_pitch_joint",
+        "L_shoulder_roll_joint",
+        "L_shoulder_yaw_joint",
+        "L_elbow_roll_joint",
+        "L_elbow_yaw_joint",
+        "L_wrist_pitch_joint",
+        "L_wrist_roll_joint",
     ]
 
 

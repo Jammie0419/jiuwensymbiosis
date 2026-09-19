@@ -23,8 +23,8 @@ def test_planar_patch_gives_zero_depth_extent_and_correct_width():
     assert out.ok
     # base==cam (identity): z_mm = 500; front_x_mm is min X (cam x = (u-cx)*z/fx)
     assert abs(out.center_mm[2] - 500.0) < 1.0
-    assert out.width_mm > 0.0          # base-Y extent from the patch's row span
-    assert out.height_mm < 1.0         # base-Z (depth) extent ~0 for a fronto-parallel patch
+    assert out.width_mm > 0.0  # base-Y extent from the patch's row span
+    assert out.height_mm < 1.0  # base-Z (depth) extent ~0 for a fronto-parallel patch
     assert out.n_points > 1000
 
 

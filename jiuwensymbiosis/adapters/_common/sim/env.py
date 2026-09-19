@@ -92,7 +92,11 @@ class SimMachineEnv(BaseRobotEnv):
     # ------------------------------------------------------------------ lifecycle
     def connect(self) -> None:
         if self._driver is not None:
-            return  # already bound (low_level setter) or connected
+            # Pre-bound via the low_level setter (smoke test / harness seam):
+            # still open the simulator connection — connect() is idempotent, so
+            # an already-connected driver just returns.
+            self._driver.connect()
+            return
         driver = SimMachineDriver(self.cfg)
         try:
             driver.connect()

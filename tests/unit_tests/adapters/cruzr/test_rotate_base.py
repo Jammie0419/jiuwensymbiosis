@@ -15,7 +15,7 @@ class _LL:
         self.nav_calls.append((dx, dy, dyaw))
         return {"ok": True, "yaw_reached": dyaw}
 
-    def move_joints_blocking(self, targets, **kw):   # must NOT be called by rotate_base
+    def move_joints_blocking(self, targets, **kw):  # must NOT be called by rotate_base
         self.moves.append(dict(targets))
         return {"ok": True}
 
@@ -30,6 +30,6 @@ def test_rotate_base_spins_in_place_without_touching_arms():
     env = _Env()
     api = CruzrApi(env)
     out = api.rotate_base(1.57)
-    assert env.low_level.nav_calls == [(0.0, 0.0, 1.57)]   # dx=dy=0, dyaw passed through
-    assert env.low_level.moves == []                        # arms never commanded
+    assert env.low_level.nav_calls == [(0.0, 0.0, 1.57)]  # dx=dy=0, dyaw passed through
+    assert env.low_level.moves == []  # arms never commanded
     assert out["ok"] is True

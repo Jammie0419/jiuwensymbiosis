@@ -18,11 +18,25 @@ from tests.unit_tests.adapters.cruzr import description
 _ARMS = [j for a in ("left", "right") for j in ARM_JOINTS[a]]
 # Grasp-time geometry (what place would WRONGLY use if it read stale geometry):
 # center x=350, y=0; box depth = back-front = 120 mm, half-width = 135 mm.
-_DET = {"center_mm": [350.0, 0.0, 700.0], "width_mm": 270.0, "height_mm": 200.0,
-        "front_x_mm": 290.0, "back_x_mm": 410.0, "top_z_mm": 800.0, "n_points": 5000}
+_DET = {
+    "center_mm": [350.0, 0.0, 700.0],
+    "width_mm": 270.0,
+    "height_mm": 200.0,
+    "front_x_mm": 290.0,
+    "back_x_mm": 410.0,
+    "top_z_mm": 800.0,
+    "n_points": 5000,
+}
 # A sensed table footprint: x in [800,1200] (depth 400), side centre y=30, width 600, top z 500.
-_SURFACE = {"ok": True, "surface_z_mm": 500.0, "center_mm": [1000.0, 30.0, 500.0],
-            "front_x_mm": 800.0, "back_x_mm": 1200.0, "width_mm": 600.0, "n_points": 8000}
+_SURFACE = {
+    "ok": True,
+    "surface_z_mm": 500.0,
+    "center_mm": [1000.0, 30.0, 500.0],
+    "front_x_mm": 800.0,
+    "back_x_mm": 1200.0,
+    "width_mm": 600.0,
+    "n_points": 8000,
+}
 
 
 class _FakeChain:
@@ -34,7 +48,7 @@ class _LL:
     def __init__(self):
         self.moves = []
         self.streams = []
-        self._lifter = dict.fromkeys(LIFTER_JOINTS, 0.0)   # tracks the lean so FK reflects it post-move
+        self._lifter = dict.fromkeys(LIFTER_JOINTS, 0.0)  # tracks the lean so FK reflects it post-move
 
     def get_joint_positions(self):
         q = dict.fromkeys(_ARMS, 0.0)
@@ -44,7 +58,7 @@ class _LL:
 
     def move_joints_blocking(self, targets, **kw):
         self.moves.append(dict(targets))
-        for j in LIFTER_JOINTS:                           # a lifter lean updates the tracked pose
+        for j in LIFTER_JOINTS:  # a lifter lean updates the tracked pose
             if j in targets:
                 self._lifter[j] = float(targets[j])
         return {"ok": True}
@@ -60,8 +74,7 @@ class _LL:
 class _Env:
     # What the shared two-arm sequence reads off the Env (see test_grasp_box_api._Env).
     capabilities = frozenset({"motion.dual_arm", "grasp.paddle", "motion.lift", "motion.waist"})
-    arm_chains = {"left": ("base_link", "L_sixforce_link"),
-                  "right": ("base_link", "R_sixforce_link")}
+    arm_chains = {"left": ("base_link", "L_sixforce_link"), "right": ("base_link", "R_sixforce_link")}
     waist_joint = "waist_yaw_joint"
 
     @property
@@ -86,13 +99,17 @@ class _Env:
     def move_named_joints(self, targets, **kwargs):
         """Mirror BaseRobotEnv: the Api reaches named joints through the Env seam."""
         return self.low_level.move_joints_blocking(targets, **kwargs)
+
     def __init__(self):
         self.low_level = _LL()
         self.cfg = SimpleNamespace(
-            urdf_path="/nonexistent.urdf", left_arm_leaf="L_sixforce_link",
-            right_arm_leaf="R_sixforce_link", place_edge_margin_mm=20.0,
+            urdf_path="/nonexistent.urdf",
+            left_arm_leaf="L_sixforce_link",
+            right_arm_leaf="R_sixforce_link",
+            place_edge_margin_mm=20.0,
             place_max_lift_lean_rad=0.35,
-            urdf_package_dir=description.PACKAGE_DIR)
+            urdf_package_dir=description.PACKAGE_DIR,
+        )
 
 
 def _api(monkeypatch, *, improves=False, q_lifter=None):
@@ -103,6 +120,7 @@ def _api(monkeypatch, *, improves=False, q_lifter=None):
 
     def _fake_fk(chain, q):
         import numpy as np
+
         # Box carried at a "stood-up" location: left flange (0.30, 0.15, 0.90),
         # right (0.30, -0.05, 0.90). With tcp_offset (∓0.09, 0, 0) and identity R:
         # tcp_L=(0.21,0.15,0.90), tcp_R=(0.39,-0.05,0.90) -> centre x=0.30, y=0.05.
@@ -119,16 +137,19 @@ def _api(monkeypatch, *, improves=False, q_lifter=None):
         # Patched over BOTH solve_arm_ik seams: cruzr's wrapper takes the arm name, the shared
         # one takes that arm's joint names (which is the point — the generic solver cannot
         # read them off the chain).
-        joints = (ARM_JOINTS[arm_or_joints] if isinstance(arm_or_joints, str) else arm_or_joints)
-        arm = arm_or_joints if isinstance(arm_or_joints, str) else (
-            "left" if any(str(j).startswith("L_") for j in joints) else "right")
+        joints = ARM_JOINTS[arm_or_joints] if isinstance(arm_or_joints, str) else arm_or_joints
+        arm = (
+            arm_or_joints
+            if isinstance(arm_or_joints, str)
+            else ("left" if any(str(j).startswith("L_") for j in joints) else "right")
+        )
         captured.append((arm, tgt))
-        return IKResult(q=dict.fromkeys(joints, 0.1), converged=True,
-                        pos_err_m=0.001, normal_err=0.001, iters=3)
+        return IKResult(q=dict.fromkeys(joints, 0.1), converged=True, pos_err_m=0.001, normal_err=0.001, iters=3)
 
     def _fake_search(clamp, lc, rc, current_lifter, waist_yaw, **k):
-        return LifterPlan(found=True, q_lifter=(q_lifter or dict(current_lifter)),
-                          score=-0.01, improves=improves, reason="")
+        return LifterPlan(
+            found=True, q_lifter=(q_lifter or dict(current_lifter)), score=-0.01, improves=improves, reason=""
+        )
 
     # dual_arm_place imports parse_chain LOCALLY from urdf_chain, so patch the source module.
     monkeypatch.setattr("jiuwensymbiosis.kinematics.urdf_chain.parse_chain", _fake_parse)
@@ -146,7 +167,7 @@ def _api(monkeypatch, *, improves=False, q_lifter=None):
 
 def test_place_legacy_uses_live_fk_carried_xy_when_no_surface(monkeypatch):
     api, env, captured = _api(monkeypatch)
-    out = api.dual_arm_place()                                   # surface=None -> legacy z-only
+    out = api.dual_arm_place()  # surface=None -> legacy z-only
     assert out["ok"] is True
     # legacy path: landing == carried, taken from FK (300, 50 mm), NOT grasp geometry (350, 0).
     assert out["carried_mm"] == pytest.approx([300.0, 50.0])
@@ -157,7 +178,7 @@ def test_place_legacy_uses_live_fk_carried_xy_when_no_surface(monkeypatch):
     # Two-hand spacing PRESERVED from the live FK grip (tcp_L y=0.15, tcp_R y=-0.05 → gap 0.20 m), NOT
     # re-derived from box.width-2·inset. The box CENTRE lands at the carried xy (0.30, 0.05 m); no
     # surface given -> grasp centre height 0.70 m.
-    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20)         # gap unchanged
+    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20)  # gap unchanged
     assert 0.5 * (clamp_left.pos_m[0] + clamp_right.pos_m[0]) == pytest.approx(0.30)
     assert 0.5 * (clamp_left.pos_m[1] + clamp_right.pos_m[1]) == pytest.approx(0.05)
     assert clamp_left.pos_m[2] == pytest.approx(0.70) and clamp_right.pos_m[2] == pytest.approx(0.70)
@@ -173,9 +194,9 @@ def test_place_squeeze_tightens_gap_symmetrically(monkeypatch):
     assert out["ok"] is True
     (arm0, clamp_left), (arm1, clamp_right) = captured[0], captured[1]
     assert (arm0, arm1) == ("left", "right")
-    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20 - 0.020)   # gap tightened 20 mm
-    assert 0.5 * (clamp_left.pos_m[1] + clamp_right.pos_m[1]) == pytest.approx(0.05)    # centre preserved
-    assert 0.5 * (clamp_left.pos_m[0] + clamp_right.pos_m[0]) == pytest.approx(0.30)    # x preserved
+    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20 - 0.020)  # gap tightened 20 mm
+    assert 0.5 * (clamp_left.pos_m[1] + clamp_right.pos_m[1]) == pytest.approx(0.05)  # centre preserved
+    assert 0.5 * (clamp_left.pos_m[0] + clamp_right.pos_m[0]) == pytest.approx(0.30)  # x preserved
 
 
 def test_place_no_squeeze_when_zero_preserves_gap(monkeypatch):
@@ -185,7 +206,7 @@ def test_place_no_squeeze_when_zero_preserves_gap(monkeypatch):
     out = api.dual_arm_place()
     assert out["ok"] is True
     (_, clamp_left), (_, clamp_right) = captured[0], captured[1]
-    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20)            # gap unchanged
+    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20)  # gap unchanged
 
 
 def test_place_lands_box_on_table_centre_near_edge(monkeypatch):
@@ -201,26 +222,26 @@ def test_place_lands_box_on_table_centre_near_edge(monkeypatch):
     # PRESERVED (0.20 m from the live FK grip), NOT box-derived; z lowered so the box bottom sits on 500.
     assert 0.5 * (clamp_left.pos_m[0] + clamp_right.pos_m[0]) == pytest.approx(0.880)
     assert 0.5 * (clamp_left.pos_m[1] + clamp_right.pos_m[1]) == pytest.approx(0.030)
-    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20)         # gap unchanged
-    assert clamp_left.pos_m[2] == pytest.approx(0.60)           # box bottom on surface 500
+    assert clamp_left.pos_m[1] - clamp_right.pos_m[1] == pytest.approx(0.20)  # gap unchanged
+    assert clamp_left.pos_m[2] == pytest.approx(0.60)  # box bottom on surface 500
 
 
 def test_dual_arm_place_uses_cached_surface_when_no_arg(monkeypatch):
     # locate_for_place() caches _last_surface; dual_arm_place() with no surface reuses it,
     # so an LLM calls locate_for_place() then dual_arm_place() without echoing the dict back.
     api, env, captured = _api(monkeypatch)
-    api._last_surface = dict(_SURFACE)                          # as if locate_for_place() ran
-    out = api.dual_arm_place()                                        # no surface arg
+    api._last_surface = dict(_SURFACE)  # as if locate_for_place() ran
+    out = api.dual_arm_place()  # no surface arg
     assert out["ok"] is True
-    assert out["landing_mm"] == pytest.approx([880.0, 30.0])    # landed ON the sensed table
+    assert out["landing_mm"] == pytest.approx([880.0, 30.0])  # landed ON the sensed table
 
 
 def test_dual_arm_place_wider_than_table_bails(monkeypatch):
     api, env, captured = _api(monkeypatch)
-    narrow = dict(_SURFACE, width_mm=200.0)                     # half=100 < box_half(135)+margin(20)
+    narrow = dict(_SURFACE, width_mm=200.0)  # half=100 < box_half(135)+margin(20)
     out = api.dual_arm_place(surface=narrow)
     assert out == {"ok": False, "reason": "box_wider_than_table"}
-    assert env.low_level.moves == [] and captured == []        # no motion
+    assert env.low_level.moves == [] and captured == []  # no motion
 
 
 def test_dual_arm_place_deeper_than_table_bails(monkeypatch):
@@ -249,7 +270,7 @@ def test_place_lower_streams_gap_locked_cartesian_waypoints(monkeypatch):
     api, env, captured = _api(monkeypatch)
     env.cfg.place_squeeze_mm = 20.0
     env.cfg.place_lower_waypoints = 4
-    out = api.dual_arm_place(surface_z_mm=500.0)                     # deterministic landing z
+    out = api.dual_arm_place(surface_z_mm=500.0)  # deterministic landing z
     assert out["ok"] is True
     assert env.low_level.streams, "lower should be streamed, not a single move"
 
@@ -257,16 +278,16 @@ def test_place_lower_streams_gap_locked_cartesian_waypoints(monkeypatch):
     # interior knots (f = 1/4, 2/4, 3/4), each left then right.
     (_, final_l), (_, final_r) = captured[0], captured[1]
     fl, fr = final_l.pos_m, final_r.pos_m
-    held_l, held_r = (0.21, 0.15, 0.90), (0.39, -0.05, 0.90)          # live FK TCPs (see _fake_fk)
-    held_gap = held_l[1] - held_r[1]                                  # 0.20 m
+    held_l, held_r = (0.21, 0.15, 0.90), (0.39, -0.05, 0.90)  # live FK TCPs (see _fake_fk)
+    held_gap = held_l[1] - held_r[1]  # 0.20 m
     for k, f in ((1, 0.25), (2, 0.50), (3, 0.75)):
         (_, knot_l), (_, knot_r) = captured[2 * k], captured[2 * k + 1]
-        for j in range(3):                                            # Cartesian-linear per axis
+        for j in range(3):  # Cartesian-linear per axis
             assert knot_l.pos_m[j] == pytest.approx(held_l[j] + f * (fl[j] - held_l[j]))
             assert knot_r.pos_m[j] == pytest.approx(held_r[j] + f * (fr[j] - held_r[j]))
         gap = knot_l.pos_m[1] - knot_r.pos_m[1]
-        assert gap == pytest.approx(held_gap - f * 0.020)            # tightens by the squeeze
-        assert gap <= held_gap + 1e-9                                # NEVER widens mid-descent
+        assert gap == pytest.approx(held_gap - f * 0.020)  # tightens by the squeeze
+        assert gap <= held_gap + 1e-9  # NEVER widens mid-descent
 
 
 def test_place_lower_streams_from_post_lean_tcp_not_carried(monkeypatch):
@@ -280,15 +301,15 @@ def test_place_lower_streams_from_post_lean_tcp_not_carried(monkeypatch):
     api._last_grasped_box = dict(_DET)
     env.cfg.place_squeeze_mm = 0.0
     env.cfg.place_lower_waypoints = 4
-    out = api.dual_arm_place(surface_z_mm=500.0)              # clamp z = (700 mid) shifted to 0.60
+    out = api.dual_arm_place(surface_z_mm=500.0)  # clamp z = (700 mid) shifted to 0.60
     assert out["ok"] is True and env.low_level.streams
-    (_, final_l) = captured[0]                               # first IK call = final clamp target (left)
+    (_, final_l) = captured[0]  # first IK call = final clamp target (left)
     clamp_z = final_l.pos_m[2]
     assert clamp_z == pytest.approx(0.60)
-    (_, knot_l) = captured[2]                                # first interior knot (f = 1/4), left
+    (_, knot_l) = captured[2]  # first interior knot (f = 1/4), left
     # interp start is the POST-lean 0.80, not the carried 0.90 → z = 0.80 + 0.25·(0.60 - 0.80) = 0.75
     assert knot_l.pos_m[2] == pytest.approx(0.80 + 0.25 * (clamp_z - 0.80))
-    assert knot_l.pos_m[2] != pytest.approx(0.90 + 0.25 * (clamp_z - 0.90))   # NOT the pre-lean start
+    assert knot_l.pos_m[2] != pytest.approx(0.90 + 0.25 * (clamp_z - 0.90))  # NOT the pre-lean start
 
 
 def test_place_single_waypoint_falls_back_to_one_move(monkeypatch):
@@ -297,7 +318,7 @@ def test_place_single_waypoint_falls_back_to_one_move(monkeypatch):
     env.cfg.place_lower_waypoints = 1
     out = api.dual_arm_place(surface_z_mm=500.0)
     assert out["ok"] is True
-    assert env.low_level.streams == []                               # no stream, single move used
+    assert env.low_level.streams == []  # no stream, single move used
 
 
 def test_place_leans_lifter_before_lowering(monkeypatch):
@@ -311,7 +332,7 @@ def test_place_leans_lifter_before_lowering(monkeypatch):
     for j in LIFTER_JOINTS:
         assert j in first
     assert first["lifter_pitch_1_joint"] == pytest.approx(0.5)
-    assert len(env.low_level.moves) >= 2                    # lean + at least one arm move
+    assert len(env.low_level.moves) >= 2  # lean + at least one arm move
 
 
 def test_place_leans_first_then_places_no_lean_when_reachable(monkeypatch):
@@ -320,4 +341,4 @@ def test_place_leans_first_then_places_no_lean_when_reachable(monkeypatch):
     out = api.dual_arm_place()
     assert out["ok"] is True and out["leaned"] is False
     first = env.low_level.moves[0]
-    assert not any(j in first for j in LIFTER_JOINTS)       # arm-only move
+    assert not any(j in first for j in LIFTER_JOINTS)  # arm-only move

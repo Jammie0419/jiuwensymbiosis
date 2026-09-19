@@ -141,6 +141,13 @@ class TestDriver:
         with pytest.raises(ValueError, match="non-finite"):
             driver.move_joints_blocking({"swing": math.nan})
 
+    def test_joint_target_outside_configured_limits_refused(self):
+        driver = _driver()
+        with pytest.raises(ValueError, match="outside configured"):
+            driver.move_joints_blocking({"swing": 500.0})
+        # boundary values are inclusive
+        driver.move_joints_blocking({"swing": 100.0, "boom": -100.0})
+
     def test_empty_command_refused(self):
         driver = _driver()
         with pytest.raises(ValueError, match="empty"):
@@ -195,6 +202,17 @@ class TestEnv:
         env.disconnect()
         assert env.low_level is None
         env.disconnect()  # idempotent
+
+    def test_connect_opens_a_prebound_driver(self):
+        """Regression: a driver bound via the low_level setter must still get
+        connect() called — the simulator connection was silently skipped."""
+        env = SimMachineEnv(_cfg())
+        driver = SimMachineDriver(_cfg(), backend=MockSimBackend(_cfg()))
+        env.low_level = driver
+        env.connect()
+        assert driver._connected is True  # backend opened through the driver
+        env.disconnect()
+        assert driver._connected is False
 
     def test_observation_best_effort_when_backend_breaks(self):
         env = SimMachineEnv(_cfg())

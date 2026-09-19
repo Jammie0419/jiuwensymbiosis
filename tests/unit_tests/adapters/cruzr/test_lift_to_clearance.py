@@ -19,8 +19,15 @@ from jiuwensymbiosis.motion import dual_arm as _da_mod
 from tests.unit_tests.adapters.cruzr import description
 
 _ARMS = [j for a in ("left", "right") for j in ARM_JOINTS[a]]
-_DET = {"center_mm": [350.0, 0.0, 700.0], "width_mm": 270.0, "height_mm": 200.0,
-        "front_x_mm": 290.0, "back_x_mm": 410.0, "top_z_mm": 800.0, "n_points": 5000}
+_DET = {
+    "center_mm": [350.0, 0.0, 700.0],
+    "width_mm": 270.0,
+    "height_mm": 200.0,
+    "front_x_mm": 290.0,
+    "back_x_mm": 410.0,
+    "top_z_mm": 800.0,
+    "n_points": 5000,
+}
 
 
 class _FakeChain:
@@ -47,8 +54,7 @@ class _LL:
 class _Env:
     # What the shared sequence reads off the Env (see test_grasp_box_api._Env).
     capabilities = frozenset({"motion.dual_arm", "grasp.paddle", "motion.lift", "motion.waist"})
-    arm_chains = {"left": ("base_link", "L_sixforce_link"),
-                  "right": ("base_link", "R_sixforce_link")}
+    arm_chains = {"left": ("base_link", "L_sixforce_link"), "right": ("base_link", "R_sixforce_link")}
     waist_joint = "waist_yaw_joint"
 
     @property
@@ -76,12 +82,16 @@ class _Env:
     def move_named_joints(self, targets, **kwargs):
         """Mirror BaseRobotEnv: the Api reaches named joints through the Env seam."""
         return self.low_level.move_joints_blocking(targets, **kwargs)
+
     def __init__(self, lifter=None):
         self.low_level = _LL(lifter)
         self.cfg = SimpleNamespace(
-            transit_lift_z_m=0.95, urdf_path="/nonexistent.urdf",
-            left_arm_leaf="L_sixforce_link", right_arm_leaf="R_sixforce_link",
-            urdf_package_dir=description.PACKAGE_DIR)
+            transit_lift_z_m=0.95,
+            urdf_path="/nonexistent.urdf",
+            left_arm_leaf="L_sixforce_link",
+            right_arm_leaf="R_sixforce_link",
+            urdf_package_dir=description.PACKAGE_DIR,
+        )
 
 
 def _api(monkeypatch, *, converged=True, lifter=None):
@@ -92,6 +102,7 @@ def _api(monkeypatch, *, converged=True, lifter=None):
 
     def _fake_fk(chain, q):
         import numpy as np
+
         # measured paddle-flange base pose per arm (identity rotation for a simple check)
         tf = np.eye(4)
         tf[:3, 3] = (0.30, 0.13, 0.70) if "L_" in chain.leaf else (0.30, -0.13, 0.70)
@@ -105,11 +116,19 @@ def _api(monkeypatch, *, converged=True, lifter=None):
         # Patched over BOTH solve_arm_ik seams: cruzr's wrapper takes the arm name, the
         # shared one takes that arm's joint names.
         joints = ARM_JOINTS[arm_or_joints] if isinstance(arm_or_joints, str) else arm_or_joints
-        arm = arm_or_joints if isinstance(arm_or_joints, str) else (
-            "left" if any(str(j).startswith("L_") for j in joints) else "right")
+        arm = (
+            arm_or_joints
+            if isinstance(arm_or_joints, str)
+            else ("left" if any(str(j).startswith("L_") for j in joints) else "right")
+        )
         captured.append((arm, tgt))
-        return IKResult(q=dict.fromkeys(joints, 0.1), converged=converged,
-                        pos_err_m=0.001 if converged else 0.5, normal_err=0.001, iters=3)
+        return IKResult(
+            q=dict.fromkeys(joints, 0.1),
+            converged=converged,
+            pos_err_m=0.001 if converged else 0.5,
+            normal_err=0.001,
+            iters=3,
+        )
 
     monkeypatch.setattr(gp, "solve_arm_ik", _fake_ik)
     # The shared sequence resolves it in its OWN module — patch there too.
@@ -152,11 +171,11 @@ def test_lift_merges_standup_and_raise_when_leaned(monkeypatch):
     out = api.lift_to_clearance()
     assert out["ok"] is True and out["stood_up"] is True
     assert out["lifter_from"]["lifter_pitch_1_joint"] == pytest.approx(0.5)
-    assert len(env.low_level.moves) == 1          # single coordinated motion
+    assert len(env.low_level.moves) == 1  # single coordinated motion
     cmd = env.low_level.moves[0]
-    for j in LIFTER_JOINTS:                        # lifter driven to 0 in the SAME move
+    for j in LIFTER_JOINTS:  # lifter driven to 0 in the SAME move
         assert cmd[j] == pytest.approx(0.0)
-    for a in ("left", "right"):                    # arms to the raised IK pose (0.1) together
+    for a in ("left", "right"):  # arms to the raised IK pose (0.1) together
         for j in ARM_JOINTS[a]:
             assert cmd[j] == pytest.approx(0.1)
 
@@ -165,7 +184,7 @@ def test_lift_skips_standup_within_tol(monkeypatch):
     # Lifter within upright_tol_rad of 0 -> treated as upright, no stand-up move (raise only).
     near0 = dict.fromkeys(LIFTER_JOINTS, 0.03)
     api, env, _ = _api(monkeypatch, converged=True, lifter=near0)
-    out = api.lift_to_clearance()               # default upright_tol_rad=0.05
+    out = api.lift_to_clearance()  # default upright_tol_rad=0.05
     assert out["ok"] is True and out["stood_up"] is False
     assert len(env.low_level.moves) == 1
 
