@@ -46,12 +46,19 @@ class AgxExcavatorConfig(SimMachineConfig):
     # 铲齿可达半径包络（基座系，米）：dig 前置校验，超出即拒绝并提示先走底盘。
     reach_min_m: float = 1.0
     reach_max_m: float = 6.0
-    # 关键帧微调（deg / m³），键集见 work.DEFAULT_DIG_TUNING；YAML 里只写要改的键。
+    # swing 关节的角度单位（"deg" 或 "rad"）。AGX 模型的回转是弧度、液压缸是
+    # 米（混合单位，joint_units 留空），此时 swing_unit 必须填 "rad"。
+    swing_unit: str = "deg"
+    # 关键帧微调，键集见 work.DEFAULT_DIG_TUNING；YAML 里只写要改的键。
+    # 注意：boom/arm/bucket 关键帧的值 = 该关节的原生单位（deg 机体是角度，
+    # AGX 液压缸机体是米——local.yaml 里按探针实测填米值）。
     dig_cycle_tuning: dict[str, float] | None = None
 
     @classmethod
     def from_dict(cls, data):  # type: ignore[override]
         cfg = super().from_dict(data)
+        if cfg.swing_unit not in ("deg", "rad"):
+            raise ValueError(f"{cls.__name__}: swing_unit must be 'deg' or 'rad', got {cfg.swing_unit!r}")
         if cfg.dig_cycle_tuning:
             cfg.dig_cycle_tuning = {str(k): float(v) for k, v in cfg.dig_cycle_tuning.items()}
         return cfg

@@ -1,0 +1,92 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""agxViewer 桥接插件 —— 在 viewer 进程内起 jiuwensymbiosis 桥接服务。
+
+用法（viewer 拥有仿真循环与实时渲染；配置全部走环境变量，避免与 agxViewer
+自己的命令行解析冲突）：
+
+    # 程序化搭建自带 365 挖掘机 + 沙地（无场景文件）：
+    JIUWEN_BRIDGE_PORT=9700 agxViewer agx_viewer_bridge.agxPy
+
+    # 加载 .agx 场景文件（viewer 先加载，脚本后自动发现约束）：
+    JIUWEN_BRIDGE_PORT=9700 agxViewer 场景.agx --attachScript agx_viewer_bridge.agxPy
+
+    # 无头自动化（xvfb 虚拟显示，协议全通、画面不可见）：
+    JIUWEN_BRIDGE_PORT=9700 xvfb-run -a agxViewer agx_viewer_bridge.agxPy
+
+环境变量：
+    JIUWEN_SCRIPTS_DIR        仓库 scripts 目录（定位 agx_bridge_server.py；默认按本文件位置推导）
+    JIUWEN_BRIDGE_HOST        监听地址（默认 0.0.0.0）
+    JIUWEN_BRIDGE_PORT        监听端口（默认 9700）
+    JIUWEN_BRIDGE_JOINTS      关节名逗号分隔（默认 swing,boom,arm,bucket）
+    JIUWEN_BRIDGE_JOINT_MAP   关节→约束名映射（如 swing=CabHinge,boom=BoomCyl）
+    JIUWEN_BRIDGE_EXCAVATOR   "1"=程序化搭建挖掘机；"0"=对 viewer 已加载场景做约束发现（默认：场景为空则搭建）
+
+之后从控制端验证/驱动：
+    python scripts/agx_scene_probe.py --bridge --port 9700
+    python examples/run_task.py --config configs/agx_excavator/agx_excavator.local.yaml ...
+
+本脚本由 agxViewer 的内嵌 Python (3.10) 执行。
+"""
+
+import os
+import sys
+import threading
+
+_SCRIPTS_DIR = os.environ.get("JIUWEN_SCRIPTS_DIR", os.path.dirname(os.path.abspath(__file__)))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from agxPythonModules.utils.environment import init_app, simulation  # noqa: E402
+
+
+def _resolve_scene_source() -> tuple[bool, dict[str, str]]:
+    """决定场景来源：程序化搭建挖掘机，或对已加载场景做约束发现。"""
+    joint_map = dict(
+        part.split("=", 1)
+        for part in os.environ.get("JIUWEN_BRIDGE_JOINT_MAP", "").split(",")
+        if "=" in part
+    )
+    build = os.environ.get("JIUWEN_BRIDGE_EXCAVATOR")
+    if build is not None:
+        return (build == "1"), joint_map
+    # 默认：viewer 里已加载了约束（.agx 场景）→ 发现模式；空场景 → 搭建挖掘机
+    try:
+        has_constraints = simulation().getConstraints().size() > 0
+    except Exception:
+        has_constraints = False
+    return (not has_constraints), joint_map
+
+
+def buildScene():
+    """viewer 场景构建入口：确认场景 → 起非阻塞泵（每步回调收发网络）。"""
+    from agx_bridge_server import AgxSceneAdapter
+    from agxPythonModules.utils.callbacks import StepEventCallback
+
+    build_excavator, joint_map = _resolve_scene_source()
+    joint_names = [j.strip() for j in os.environ.get("JIUWEN_BRIDGE_JOINTS", "swing,boom,arm,bucket").split(",") if j.strip()]
+    host = os.environ.get("JIUWEN_BRIDGE_HOST", "0.0.0.0")
+    port = int(os.environ.get("JIUWEN_BRIDGE_PORT", "9700"))
+
+    adapter = AgxSceneAdapter(
+        joint_names,
+        joint_map,
+        None,  # viewer 模式下场景已由 agxViewer 加载或由下面 Excavator365 模型装配
+        mode="viewer",
+        build_excavator=build_excavator,
+    )
+    adapter.load()
+    adapter.start_pump(host, port)
+
+    # agxViewer 冻结后台线程 → 网络泵挂到每步回调（viewer 主线程，60Hz）
+    StepEventCallback.preCallback(lambda t: adapter.pump())
+    print(f"[agx_viewer_bridge] pump registered on {host}:{port} "
+          f"(build_excavator={build_excavator}, joints={joint_names})", flush=True)
+
+
+init = init_app(
+    name=__name__,
+    scenes=[(buildScene, "1")],
+    autoStepping=True,
+)

@@ -362,7 +362,19 @@ class RemoteSimBackend:
             },
             read_timeout_s=float(timeout_s) + 5.0,
         )
-        return {str(k): float(v) for k, v in resp["joints"].items()}
+        joints = {str(k): float(v) for k, v in resp["joints"].items()}
+        if resp.get("async"):
+            # viewer 泵模式：桥接立即返回（不能阻塞主线程），客户端轮询到位
+            import time as _time
+
+            wanted = {str(k): float(v) for k, v in resp.get("targets", {}).items()}
+            deadline = _time.monotonic() + float(timeout_s) + 5.0
+            while _time.monotonic() < deadline:
+                if all(abs(joints.get(name, 1e9) - value) < 0.01 for name, value in wanted.items()):
+                    break
+                _time.sleep(0.05)
+                joints = self.read_joints()
+        return joints
 
     # -- undercarriage
     def navigate_relative(self, dx_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:

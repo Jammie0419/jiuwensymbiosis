@@ -4,6 +4,45 @@
 > jiuwensymbiosis。共享仿真底座已就位（`adapters/_common/sim/`），**新机器是
 > 一个薄包，不是从零开始的适配器**。
 
+## 本地联调已就绪（AGX Linux 版，服务器上）
+
+服务器已装 AGX 2.42.2.1（`/opt/Algoryx/AGX-2.42.2.1`）。链路架构：
+
+```
+RDP 会话里的 agxViewer（实时画面，viewer 拥有仿真循环）
+    └─ agx_viewer_bridge.agxPy 插件：非阻塞泵，每仿真步收发网络
+控制端（本仓库）: RemoteSimBackend → 127.0.0.1:9700 → move_joint/dig/get_terrain
+```
+
+注意：AGX 的 Python 绑定只有 3.10，jiuwensymbiosis 要求 3.12，所以即使在本机
+也走桥接协议（进程内 import agx 不可行）。agxViewer 会冻结后台线程，因此桥接
+不做线程服务，而是挂每步回调（`StepEventCallback.pre`）非阻塞泵。
+
+### 启动与验收（三步）
+
+1. **RDP 到服务器**（`mstsc` → 服务器 IP，账号 lzm），图形会话里运行：
+   ```bash
+   bash scripts/agx_viewer_live.sh
+   ```
+   弹出挖掘机 + 沙地画面，桥接监听 :9700。无画面需求时可用 xvfb 无头跑。
+2. **控制端验证**：`python scripts/agx_scene_probe.py --bridge` → 应看到
+   excavator365 的 4 关节（swing=CabinHinge rad、boom=双缸 m、arm/bucket=m）。
+3. **发任务**：`python examples/run_task.py --config configs/agx_excavator/agx_excavator.local.yaml --query "..."`。
+
+### license 门控（重要）
+
+**无 license 时：场景构建、约束发现、桥接链路、探针全部可用；但所有执行器
+（Lock1D/Motor1D）被 AGX 全局禁用——关节不会动。** license 文件放到
+`~/.config/agx/` 后重启 viewer 即解锁。这是"命令通但不动"的唯一原因。
+
+### 混合单位（AGX 挖掘机特有）
+
+swing（CabinHinge）是**弧度**，boom/arm/bucket（液压缸 Prismatic）是**米**。
+配置里 `joint_units: null` + `swing_unit: "rad"`；`move_joint` 的 targets 按
+各关节原生单位给值（探针清单会标注）。365 的 boom 是双缸
+（ArmPrismatic1/2），桥接整组同步驱动（与官方键盘控制一致）。
+
+
 ## 前置：底座已经替你做了什么
 
 | 层 | 位置 | 状态 |

@@ -43,6 +43,7 @@ class AgxExcavatorApi(SimMachineApi):
                 tuning=cfg.dig_cycle_tuning,
                 reach_min_m=cfg.reach_min_m,
                 reach_max_m=cfg.reach_max_m,
+                swing_unit=cfg.swing_unit,
             )
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}

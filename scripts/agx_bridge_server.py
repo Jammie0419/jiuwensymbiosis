@@ -45,56 +45,348 @@ DEMO_PILES: list[dict[str, Any]] = [
 class AgxSceneAdapter:
     """AGX 场景接入点 —— 把仿真器包成 8 个方法，与 SimBackend 语义一致。
 
-    TODO(AGX)：按组内场景结构实现下列方法。约束名映射通过 --joint-map
-    传入（swing=HingeName,...），行走差速由两条履带约束的速度差实现。
+    两种运行模式：
+      headless —— 独立进程：适配器自己拥有仿真循环（send 后 stepTo 到位）。
+      viewer   —— agxViewer 的 .agxPy 插件：viewer 拥有步进（实时渲染，
+                  用户 RDP 看到的就是被控制的仿真），适配器只设伺服目标并轮询。
+
+    场景两种来源：
+      scene_path 加载 .agx 文件（约束按 --joint-map / 自动发现映射）
+      excavator=True 程序化搭建 AGX 自带的 365 挖掘机 + 沙地地形
+                     （镜像 data/python/agxTerrain/excavator_365_terrain.agxPy）
+
+    关节映射（AGX 自带挖掘机模型，单位混合——hinge 是弧度、液压缸是米）：
+      swing  -> cabin_hinge            (Hinge,     rad)
+      boom   -> arm_prismatics[0]      (Prismatic, m)
+      arm    -> stick_prismatic        (Prismatic, m)
+      bucket -> bucket_prismatic       (Prismatic, m)
+    joint_map 参数可覆盖任意映射（"swing=CabHinge" 形式）。
     """
 
-    def __init__(self, joint_names: list[str], joint_map: dict[str, str], scene_path: str | None) -> None:
+    # 挖掘机默认关节映射：名字 -> (模型属性, 索引, 单位)
+    EXCAVATOR_JOINT_MAP: dict[str, tuple[str, int, str]] = {
+        "swing": ("cabin_hinge", 0, "rad"),
+        "boom": ("arm_prismatics", 0, "m"),
+        "arm": ("stick_prismatic", 0, "m"),
+        "bucket": ("bucket_prismatic", 0, "m"),
+    }
+
+    def __init__(
+        self,
+        joint_names: list[str],
+        joint_map: dict[str, str],
+        scene_path: str | None,
+        *,
+        mode: str = "headless",
+        build_excavator: bool = False,
+    ) -> None:
         self.joint_names = joint_names
         self.joint_map = joint_map
         self.scene_path = scene_path
+        self.mode = mode
+        self.build_excavator = build_excavator
+        # viewer 模式走"每步回调泵"（agxViewer 会冻结后台线程，不能用线程服务）
+        self.pump_mode = mode == "viewer"
         self._joints: dict[str, float] = dict.fromkeys(joint_names, 0.0)
         self._scoop = False
         self._piles = [dict(p) for p in DEMO_PILES]
+        # AGX 状态（load() 后可用）
+        self._sim = None
+        self._terrain = None
+        self._shovel = None
+        self._excavator = None
+        self._constraints: dict[str, Any] = {}  # 名字 -> agx 约束对象
+        self._units: dict[str, str] = {}  # 名字 -> "rad" | "m"
+        self._ranges: dict[str, tuple[float, float]] = {}
+        # pump 状态（viewer 模式）
+        self._listener = None
+        self._conn = None
+        self._read_buffer = b""
+        self._bridge_session: BridgeSession | None = None
+        self._drive_plan: tuple[list, float] | None = None  # (hinges, 停车仿真时刻)
 
     # -- 场景
     def load(self) -> None:
+        if self.build_excavator:
+            self._load_excavator_scene()
+            return
         if self.scene_path:
-            # TODO(AGX): import agx; self._scene = agx.loadScene(self.scene_path)
-            raise NotImplementedError("AgxSceneAdapter.load：待 AGX 场景接口确认后实现（TODO(AGX) 块）")
-        raise ValueError("--demo 或 --scene 必须二选一")
+            self._load_scene_file(self.scene_path)
+            return
+        raise ValueError("--demo / --scene / --excavator 必须三选一")
+
+    def _require_sim(self):
+        if self._sim is None:
+            raise RuntimeError("AgxSceneAdapter: load() first")
+        return self._sim
+
+    def _load_scene_file(self, path: str) -> None:
+        """加载 .agx 场景文件并自动发现铰链/棱柱约束。"""
+        import agx
+        import agxSDK
+
+        if self.mode == "viewer":
+            from agxPythonModules.utils.environment import simulation
+
+            self._sim = simulation()  # viewer 拥有仿真；agxViewer 已加载场景
+        else:
+            self._sim = agxSDK.Simulation()
+            if hasattr(agx, "loadScene"):
+                agx.loadScene(path, self._sim)
+            else:  # pragma: no cover - 版本差异兜底
+                raise RuntimeError("agx.loadScene 不可用：请改用 --excavator 模式或 agxViewer 插件")
+        self._auto_discover()
+
+    def _load_excavator_scene(self) -> None:
+        """程序化搭建 AGX 自带挖掘机 + 沙地（镜像官方 excavator_365_terrain.agxPy）。"""
+        import agx
+        import agxCollide
+        import agxSDK
+        import agxTerrain
+
+        if self.mode == "viewer":
+            from agxPythonModules.utils.environment import simulation
+
+            self._sim = simulation()
+        else:
+            self._sim = agxSDK.Simulation()
+        sim = self._sim
+
+        # ---- 地形（平整沙地，50x50 m，最大挖掘深度 5 m）
+        resolution, size = (200, 200), (50.0, 50.0)
+        hf = agxCollide.HeightField(resolution[0], resolution[1], size[0], size[1])
+        terrain = agxTerrain.Terrain.createFromHeightField(hf, 5.0)
+        terrain.loadLibraryMaterial("SAND_1")
+        sim.add(terrain)
+        self._terrain = terrain
+
+        # ---- 渲染（仅 viewer 模式有 root()）
+        if self.mode == "viewer":
+            import agxOSG
+            from agxPythonModules.utils.environment import root
+
+            renderer = agxOSG.TerrainVoxelRenderer(terrain, root())
+            renderer.setRenderHeights(True, agx.RangeReal(-1.25, 1.25))
+            renderer.setRenderSoilParticlesMesh(True)
+            sim.add(renderer)
+
+        # ---- 挖掘机模型（AGX 自带 365；内部加载自身 .agx 并装配履带/液压缸）
+        from agxPythonModules.models.excavators.excavator365 import Excavator365
+
+        excavator = Excavator365(
+            gamepad_controls=None,
+            keyboard_controls=None,
+            use_low_degree_tracks_model=True,
+        )
+        excavator.setRotation(terrain.getRotation())
+        excavator.setPosition(0.0, 10.0, 0.0)
+        sim.add(excavator)
+        self._excavator = excavator
+
+        # ---- 铲斗 shovel（切割边 + 挖掘设置，与官方脚本一致）
+        terrain_shovel = agxTerrain.Shovel(
+            excavator.bucket_body,
+            excavator.top_edge,
+            excavator.cutting_edge,
+            excavator.forward_cutting_vector,
+        )
+        terrain_shovel.getSettings().setVerticalBladeSoilMergeDistance(0.0)
+        terrain_shovel.getAdvancedSettings().setNoMergeExtensionDistance(0.1)
+        terrain_shovel.getAdvancedSettings().setContactRegionVerticalLimit(0.2)
+        terrain_shovel.getAdvancedSettings().setContactRegionThreshold(0.1)
+        terrain.getTerrainMaterial().getExcavationContactProperties().setAggregateStiffnessMultiplier(5e-4)
+        terrain.getProperties().setMaximumParticleActivationVolume(2)
+        sim.add(terrain_shovel)
+        self._shovel = terrain_shovel
+
+        self._auto_discover()
+
+    def _auto_discover(self) -> None:
+        """把词表关节名映射到 AGX 约束组：--joint-map 优先，否则用挖掘机模型属性。
+
+        一个词表关节可能对应一组约束（365 的 boom = 双液压缸 ArmPrismatic1/2，
+        官方键盘控制整组同步驱动）——存为列表，伺服时整组设同一目标。
+        """
+        exc = self._excavator
+        for name in self.joint_names:
+            if name in self.joint_map:
+                constraint = self._find_constraint_by_name(self.joint_map[name])
+                group = [constraint]
+                unit = "rad" if type(constraint).__name__ == "Hinge" else "m"
+            elif exc is not None and name in self.EXCAVATOR_JOINT_MAP:
+                attr, _index, unit = self.EXCAVATOR_JOINT_MAP[name]
+                value = getattr(exc, attr)
+                group = list(value) if isinstance(value, list) else [value]
+            else:
+                print(f"[agx_bridge] WARNING: joint {name!r} 无映射（--joint-map 可指定）", flush=True)
+                continue
+            self._constraints[name] = group
+            self._units[name] = unit
+            range_real = group[0].getRange1D().getRange()
+            lo, hi = float(range_real.lower()), float(range_real.upper())
+            if lo == float("-inf"):
+                lo, hi = -180.0, 180.0  # 全行程回转：限位按 ±180 报告
+            self._ranges[name] = (lo, hi)
+            names = [c.getName() for c in group]
+            print(f"[agx_bridge] joint {name!r} -> {unit} group={names} range={self._ranges[name]}", flush=True)
+
+    def _find_constraint_by_name(self, constraint_name: str):
+        sim = self._require_sim()
+        for c in sim.getConstraints():
+            if c.getName() == constraint_name:
+                return c
+        raise ValueError(f"约束 {constraint_name!r} 不在场景中（可用名见 inventory）")
+
+    def _step(self, duration_s: float) -> None:
+        """headless 模式推进一步；viewer 模式由 agxViewer 步进，这里只等待。"""
+        if self.mode == "headless":
+            sim = self._require_sim()
+            target = sim.getTimeStamp() + duration_s
+            while sim.getTimeStamp() < target:
+                sim.stepTo(target)
+        else:
+            import time
+
+            time.sleep(duration_s)
 
     def step_until_settled(self, timeout_s: float) -> None:
-        """步进仿真直到运动到位或超时。TODO(AGX)。demo 实现为即时到位。"""
+        """独立推进仿真（headless 模式的等待实现）。"""
+        self._step(min(timeout_s, 1 / 60))
 
     # -- 关节
     def read_joints(self) -> dict[str, float]:
-        return dict(self._joints)
+        return {name: float(group[0].getAngle()) for name, group in self._constraints.items()}
+
+    def set_joint_targets(self, targets: dict[str, float]) -> None:
+        """立即应用位置伺服目标（Lock1D + 距离自适应阻尼，官方 JointController
+        模式）。不等待到达——viewer 模式由仿真每步收敛，headless 由
+        send_joint_targets 阻塞轮询。一个词表关节的整组约束设同一目标。"""
+        import agx
+
+        for name, target in targets.items():
+            group = self._constraints[name]
+            for c in group:
+                c.getMotor1D().setEnable(False)
+                lock = c.getLock1D()
+                lock.setEnable(True)
+                distance = abs(float(target) - c.getAngle())
+                damping = agx.logInterpolate(2 / 100, 1.5, 1 - min(distance * 0.1, 1.0))
+                lock.setDamping(max(damping, 2 / 60))
+                lock.setForceRange(c.getMotor1D().getForceRange())
+                lock.setPosition(float(target))
+        self._joints.update({str(k): float(v) for k, v in targets.items()})
 
     def send_joint_targets(self, targets: dict[str, float], timeout_s: float) -> dict[str, float]:
-        # TODO(AGX): 对 joint_map 命中的约束写电机目标，然后 step_until_settled(timeout_s)
-        self._joints.update(targets)
-        return dict(self._joints)
+        """headless 模式：应用伺服目标并阻塞到到位/超时。
+
+        viewer 模式不走这里（agxViewer 拥有步进，且线程会被冻结）——
+        BridgeSession 对 pump_mode 场景走异步流，客户端轮询到位。
+        """
+        import time as _time
+
+        self._require_sim()
+        self.set_joint_targets(targets)
+        dt = 1 / 60
+        deadline = _time.monotonic() + float(timeout_s)
+        while _time.monotonic() < deadline:
+            if all(
+                abs(float(targets[name]) - group[0].getAngle())
+                < max(1e-3, 0.01 * (self._ranges[name][1] - self._ranges[name][0]))
+                for name, group in self._constraints.items()
+                if name in targets
+            ):
+                break
+            self._step(dt)
+        return self.read_joints()
 
     # -- 履带底盘
     def navigate_relative(self, dx_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
-        # TODO(AGX): 差速 = 左右履带速度差；step_until_settled
-        return {"dx_m": dx_m, "dyaw_rad": dyaw_rad}
+        """履带差速开环控制：Motor1D.setSpeed 驱动驱动轮（官方 set_speed 模式）。
+
+        headless：阻塞走完两段（先转后走）。viewer（pump）：设速度后由 pump()
+        按仿真时间自动停车（不能阻塞渲染主线程）。
+        """
+        exc = self._excavator
+        if exc is None:
+            raise RuntimeError("navigate_relative 需要 --excavator 场景（履带驱动轮）")
+        speed = 1.0  # rad/s（驱动轮角速度）
+        hinges = list(exc.sprocket_hinges)
+
+        def _apply(left: float, right: float) -> None:
+            for h, s in zip(hinges, (left, right), strict=False):
+                h.getLock1D().setEnable(False)
+                h.getMotor1D().setEnable(True)
+                h.getMotor1D().setSpeed(s)
+
+        def _duration(left: float, right: float, seconds: float) -> None:
+            if self.pump_mode:
+                # 记录停车计划，pump() 里按仿真时间执行
+                self._drive_plan = (list(hinges), self._sim.getTimeStamp() + seconds)
+            else:
+                _apply(left, right)
+                self._step(seconds)
+                for h in hinges:
+                    h.getMotor1D().setSpeed(0.0)
+
+        turn_rate = 0.5  # rad/s 近似原地转速
+        if abs(dyaw_rad) > 1e-4:
+            sign = 1.0 if dyaw_rad > 0 else -1.0
+            _apply(sign * speed, -sign * speed)
+            _duration(sign * speed, -sign * speed, abs(dyaw_rad) / turn_rate)
+        wheel_radius = 0.3  # 驱动轮半径近似（米）
+        if abs(dx_m) > 1e-4:
+            direction = 1.0 if dx_m > 0 else -1.0
+            _apply(direction * speed, direction * speed)
+            _duration(direction * speed, direction * speed, abs(dx_m) / (speed * wheel_radius))
+        if self.pump_mode and abs(dx_m) <= 1e-4 and abs(dyaw_rad) <= 1e-4:
+            _apply(0.0, 0.0)
+        return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
 
     def navigate_arc(self, radius_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
-        # TODO(AGX): 常曲率弧线 = 两侧履带不同速度
-        return {"radius_m": radius_m, "dyaw_rad": dyaw_rad}
+        """常曲率弧线：内外履带速度差（v1 简化为差速时间近似）。"""
+        exc = self._excavator
+        if exc is None:
+            raise RuntimeError("navigate_arc 需要 --excavator 场景")
+        speed = 1.0
+        wheel_radius = 0.3
+        track_width = 2.0  # 两履带间距近似（米）
+        arc_len = abs(radius_m * dyaw_rad)
+        duration = arc_len / max(speed * wheel_radius, 1e-6)
+        v_out = speed if radius_m >= 0 else -speed
+        v_in = v_out * (abs(radius_m) - track_width / 2) / max(abs(radius_m) + track_width / 2, 1e-6)
+        hinges = list(exc.sprocket_hinges)
+        for h, s in zip(hinges, (v_out, v_in), strict=False):
+            h.getLock1D().setEnable(False)
+            h.getMotor1D().setEnable(True)
+            h.getMotor1D().setSpeed(s)
+        if self.pump_mode:
+            self._drive_plan = (hinges, self._sim.getTimeStamp() + duration)
+        else:
+            self._step(duration)
+            for h in hinges:
+                h.getMotor1D().setSpeed(0.0)
+        return {"radius_m": float(radius_m), "dyaw_rad": float(dyaw_rad)}
 
     # -- 地形 / 铲斗
     def read_terrain(self) -> list[dict[str, Any]]:
-        # TODO(AGX): 从 AGX Terrain/场景对象读料堆质心与体积
+        if self._terrain is not None:
+            # 平整沙地场景：报告一个覆盖全场的"土堆"条目；挖点即地面坐标
+            volume = (
+                float(self._terrain.getProperties().getMaxParticleActivationVolume())
+                if hasattr(self._terrain.getProperties(), "getMaxParticleActivationVolume")
+                else 1.0
+            )
+            return [{"name": "soil_field", "x_m": 0.0, "y_m": 0.0, "volume_m3": volume}]
         return [dict(p) for p in self._piles]
 
     def scoop_state(self) -> bool:
-        # TODO(AGX): 由铲斗内物料体积推导
+        if self._shovel is not None:
+            mass = float(self._shovel.getSoilParticleAggregate().getTotalAggregateMass())
+            return mass > 1.0  # kg 阈值
         return self._scoop
 
     def mark_scoop(self, loaded: bool) -> None:
+        # AGX 真值是测出来的（铲斗内颗粒质量），此写接口仅为协议兼容
         self._scoop = bool(loaded)
 
     # -- 相机（阶段B）
@@ -104,27 +396,145 @@ class AgxSceneAdapter:
 
     # -- 场景清单（探针/验收用；协议 v1 追加命令，向后兼容）
     def inventory(self) -> dict[str, Any]:
-        """Enumerate every controllable machine in the scene.
+        self._require_sim()  # 未加载即问清单 → 明确报错
+        joints = []
+        for name, group in self._constraints.items():
+            force = group[0].getMotor1D().getForceRange()
+            joints.append(
+                {
+                    "name": name,
+                    "constraint": [c.getName() for c in group],
+                    "type": type(group[0]).__name__,
+                    "angle": float(group[0].getAngle()),
+                    "range": list(self._ranges.get(name, (0.0, 0.0))),
+                    "unit": self._units.get(name, "rad"),
+                    "has_motor": group[0].getMotor1D() is not None,
+                    "force_range": [float(force.lower()), float(force.upper())],
+                    "lock_enabled": bool(group[0].getLock1D().getEnable()),
+                }
+            )
+        terrain = []
+        if self._terrain is not None:
+            terrain = [{"name": "soil_field", "x_m": 0.0, "y_m": 0.0, "volume_m3": 1.0}]
+        machine_name = "excavator365" if self._excavator is not None else "scene"
+        return {"machines": [{"name": machine_name, "joints": joints, "terrain": terrain}]}
 
-        TODO(AGX): 遍历场景约束树 —— 对每个 Machine/Root 装配体收集：
-          name          装配体/根刚体名（建议同时给出场景对象路径）
-          joints[]      铰链/棱柱约束：name、constraint(AGX 对象名)、type(hinge/prismatic)、
-                        angle(当前值)、range([min,max] 实际行程)、unit("rad"——AGX 内部 SI)、
-                        has_motor(是否已挂 Motor/Controller)
-          terrain[]     AGX Terrain 对象：name、质心、包围盒（探针估算料堆用）
-        可先用 scripts/agx_scene_probe.py --direct 的输出对照本方法实现。
-        """
-        raise NotImplementedError("AgxSceneAdapter.inventory：待 AGX 场景接口确认后实现（TODO(AGX) 块）")
+    # ------------------------------------------------------------------
+    # pump 网络（viewer 模式专用）—— agxViewer 会冻结后台线程，所以网络
+    # 收发全部放在 StepEventCallback.pre 的每步回调里非阻塞完成。
+    # ------------------------------------------------------------------
+    def start_pump(self, host: str, port: int) -> None:
+        """绑定非阻塞监听；之后每个仿真步调一次 :meth:`pump`。"""
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((host, port))
+        server.listen(1)
+        server.setblocking(False)
+        self._listener = server
+        self._bridge_session = BridgeSession(self)
+        print(f"[agx_bridge] pump listening on {host}:{port} (protocol v{PROTOCOL_VERSION})", flush=True)
+
+    def pump(self) -> None:
+        """viewer 每个仿真步调用一次（主线程）：接受连接、读请求、回响应、执行停车计划。"""
+        if self._listener is None:
+            return
+        if self._drive_plan is not None:
+            hinges, stop_at = self._drive_plan
+            if self._sim.getTimeStamp() >= stop_at:
+                for h in hinges:
+                    h.getMotor1D().setSpeed(0.0)
+                self._drive_plan = None
+                print("[agx_bridge] drive plan finished (speeds zeroed)", flush=True)
+        if self._conn is None:
+            try:
+                conn, addr = self._listener.accept()
+                conn.setblocking(False)
+                self._conn = conn
+                print(f"[agx_bridge] client {addr} connected (pump)", flush=True)
+            except BlockingIOError:
+                return
+            except OSError:
+                return
+        try:
+            data = self._conn.recv(65536)
+            if not data:
+                raise ConnectionError("client closed")
+            self._read_buffer += data
+        except BlockingIOError:
+            pass
+        except (ConnectionError, OSError):
+            self._close_conn()
+            return
+        while b"\n" in self._read_buffer and self._conn is not None:
+            line, self._read_buffer = self._read_buffer.split(b"\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError as exc:
+                response = {"v": PROTOCOL_VERSION, "ok": False, "error": f"bad json: {exc}"}
+            else:
+                if request.get("cmd") == "bye":
+                    self._close_conn()
+                    return
+                response = self._bridge_session.handle(request)
+            self._send_response(response)
+
+    def _send_response(self, response: dict[str, Any]) -> None:
+        try:
+            self._conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+        except (ConnectionError, OSError):
+            self._close_conn()
+
+    def _close_conn(self) -> None:
+        try:
+            if self._conn is not None:
+                self._conn.close()
+                print("[agx_bridge] client disconnected (pump)", flush=True)
+        finally:
+            self._conn = None
+            self._read_buffer = b""
 
 
 class DemoSceneAdapter(AgxSceneAdapter):
-    """内存演示机器：即时到位，行为与 MockSimBackend 一致（无需 AGX）。"""
+    """内存演示机器：即时到位，行为与 MockSimBackend 一致（无需 AGX）。
+
+    覆写全部状态方法为内存字典实现（基类方法面向真实 AGX，会要求先 load）。
+    """
 
     def __init__(self, joint_names: list[str]) -> None:
         super().__init__(joint_names, joint_map={}, scene_path=None)
+        self.move_log: list[dict[str, Any]] = []  # 调试/测试断言用
 
     def load(self) -> None:
         pass  # 内存机器，无事可做
+
+    def read_joints(self) -> dict[str, float]:
+        return dict(self._joints)
+
+    def send_joint_targets(self, targets: dict[str, float], timeout_s: float) -> dict[str, float]:
+        self._joints.update({str(k): float(v) for k, v in targets.items()})
+        return dict(self._joints)
+
+    def navigate_relative(self, dx_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
+        entry = {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
+        self.move_log.append({"cmd": "navigate_relative", **entry})
+        return entry
+
+    def navigate_arc(self, radius_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
+        entry = {"radius_m": float(radius_m), "dyaw_rad": float(dyaw_rad)}
+        self.move_log.append({"cmd": "navigate_arc", **entry})
+        return entry
+
+    def read_terrain(self) -> list[dict[str, Any]]:
+        return [dict(p) for p in self._piles]
+
+    def scoop_state(self) -> bool:
+        return self._scoop
+
+    def mark_scoop(self, loaded: bool) -> None:
+        self._scoop = bool(loaded)
 
     def inventory(self) -> dict[str, Any]:
         limits = {"swing": (-180.0, 180.0), "boom": (-45.0, 60.0), "arm": (-135.0, 60.0), "bucket": (-160.0, 40.0)}
@@ -178,6 +588,10 @@ class BridgeSession:
 
     def _cmd_move_joints(self, request: dict[str, Any]) -> dict[str, Any]:
         targets = {str(k): float(v) for k, v in dict(request.get("targets") or {}).items()}
+        if getattr(self._scene, "pump_mode", False):
+            # viewer 泵模式：立即返回，客户端轮询到位（不能阻塞主线程）
+            self._scene.set_joint_targets(targets)
+            return {"joints": self._scene.read_joints(), "targets": targets, "async": True}
         joints = self._scene.send_joint_targets(targets, self._num(request, "timeout_s", 30.0))
         return {"joints": joints}
 
@@ -220,8 +634,10 @@ class BridgeSession:
         return self._scene.inventory()
 
 
-def serve(scene: AgxSceneAdapter, host: str, port: int) -> None:
-    scene.load()
+def serve(scene: AgxSceneAdapter, host: str, port: int, *, load: bool = True) -> None:
+    """Blocking serve loop: load the scene, then accept clients one at a time."""
+    if load:
+        scene.load()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((host, port))
@@ -258,22 +674,44 @@ def serve(scene: AgxSceneAdapter, host: str, port: int) -> None:
             print(f"[agx_bridge] client {addr} disconnected", flush=True)
 
 
+def build_scene_adapter(args: argparse.Namespace) -> AgxSceneAdapter | DemoSceneAdapter:
+    """Construct the right scene adapter from CLI arguments (shared with the
+    agxViewer plugin launcher)."""
+    joint_names = [j.strip() for j in args.joints.split(",") if j.strip()]
+    joint_map = dict(part.split("=", 1) for part in args.joint_map.split(",") if "=" in part)
+    if args.demo:
+        return DemoSceneAdapter(joint_names)
+    return AgxSceneAdapter(
+        joint_names,
+        joint_map,
+        args.scene,
+        mode=getattr(args, "mode", "headless"),
+        build_excavator=bool(getattr(args, "excavator", False)),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="AGX ↔ jiuwensymbiosis 仿真桥接服务")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9700)
     parser.add_argument("--demo", action="store_true", help="内置内存演示机器（无需 AGX，联调用）")
-    parser.add_argument("--scene", default=None, help="AGX 场景文件（TODO(AGX) 接入后生效）")
+    parser.add_argument("--scene", default=None, help="AGX 场景文件（.agx；自动发现约束）")
+    parser.add_argument(
+        "--excavator",
+        action="store_true",
+        help="程序化搭建 AGX 自带挖掘机+沙地场景（镜像官方 excavator_365_terrain 脚本）",
+    )
+    parser.add_argument(
+        "--mode",
+        default="headless",
+        choices=["headless", "viewer"],
+        help="headless: 自持仿真循环；viewer: agxViewer 插件（viewer 步进+渲染）",
+    )
     parser.add_argument("--joints", default="swing,boom,arm,bucket", help="关节名（逗号分隔）")
     parser.add_argument("--joint-map", default="", help="关节→AGX约束名映射，如 swing=YawHinge,boom=BoomHinge")
     args = parser.parse_args()
 
-    joint_names = [j.strip() for j in args.joints.split(",") if j.strip()]
-    joint_map = dict(part.split("=", 1) for part in args.joint_map.split(",") if "=" in part)
-    if args.demo:
-        scene = DemoSceneAdapter(joint_names)
-    else:
-        scene = AgxSceneAdapter(joint_names, joint_map, args.scene)
+    scene = build_scene_adapter(args)
     serve(scene, args.host, args.port)
 
 

@@ -236,18 +236,25 @@ def _render_suggested_config(report: dict[str, Any]) -> None:
         if not joints:
             continue
         names = [j.get("name") for j in joints]
-        unit = joints[0].get("unit", "rad")
+        units = {j.get("unit") for j in joints}
         _out("# 关节名（探针实测）")
         _out(f"joint_names: {names}")
-        _out(f'joint_units: "{unit}"   # AGX 内部是弧度；如用 deg 需在后端做转换')
-        _out("# 限位（探针实测行程；deg 配置需从弧度换算）")
+        if len(units) == 1:
+            unit = next(iter(units))
+            _out(f'joint_units: "{unit}"')
+        else:
+            # 混合单位（挖掘机：回转=rad、液压缸=m）——joint_units 留空表示未声明，
+            # 每个关节的原生单位见注释；move_joint 参数按各关节原生单位给值。
+            _out("joint_units: null   # 混合单位：见下注释")
+        _out("# 限位（探针实测行程，原生单位）")
         _out("joint_limits:")
         for j in joints:
             rng = j.get("range", [0.0, 0.0])
-            if unit == "rad":
-                rng = [round(v * RAD_TO_DEG, 1) for v in rng]
-            _out(f"  {j.get('name')}: [{rng[0]}, {rng[1]}]")
-        _out("# 约束名映射（backend: inprocess 的 joint_constraint_map / 桥接 --joint-map 用）")
+            lo, hi = float(rng[0]), float(rng[1])
+            if lo == float("-inf") or hi == float("inf"):
+                lo, hi = -180.0, 180.0  # 全行程回转
+            _out(f"  {j.get('name')}: [{lo}, {hi}]   # {j.get('unit')}")
+        _out("# 约束名映射（桥接 --joint-map / 诊断用）")
         for j in joints:
             _out(f"#   {j.get('name')}: {j.get('constraint')}")
         _out("# 回转零位校准：让模型摆向基座 +X 方向，读 swing 当前角，填其负值")

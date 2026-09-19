@@ -59,6 +59,11 @@ def _normalise_swing(angle_deg: float) -> float:
     return (angle_deg + 180.0) % 360.0 - 180.0
 
 
+def _normalise_swing_rad(angle_rad: float) -> float:
+    """Wrap a swing target into [-pi, pi) — the radian counterpart."""
+    return (angle_rad + math.pi) % (2.0 * math.pi) - math.pi
+
+
 def execute_dig_cycle(
     driver: Any,
     *,
@@ -69,8 +74,14 @@ def execute_dig_cycle(
     tuning: dict[str, float] | None = None,
     reach_min_m: float = 1.0,
     reach_max_m: float = 6.0,
+    swing_unit: str = "deg",
 ) -> dict[str, float]:
     """Run one dig-and-dump cycle on ``driver``; return {volume_m3, cycle_s}.
+
+    ``swing_unit`` — the swing joint's angle unit ("deg" or "rad"); keyframes
+    for boom/arm/bucket are always in that joint's NATIVE unit (a hydraulic
+    cylinder body speaks metres, not degrees — the tuning keys keep their
+    historical *_deg names but carry native values via config).
 
     Raises ValueError (surfaced by the api as a DigFailure dict) when a ground
     point lies outside the reachable annulus, a required joint is missing, or
@@ -97,8 +108,19 @@ def execute_dig_cycle(
         raise ValueError("bucket is still loaded — dump it (or home) before digging again")
 
     t = {**DEFAULT_DIG_TUNING, **(tuning or {})}
-    swing_dig = _normalise_swing(math.degrees(math.atan2(dig_y_m, dig_x_m)) + t["swing_offset_deg"])
-    swing_dump = _normalise_swing(math.degrees(math.atan2(dump_y_m, dump_x_m)) + t["swing_offset_deg"])
+    # swing 目标单位跟随 swing_unit；偏移键兼容旧名 swing_offset_deg（deg）
+    if "swing_offset" in t:
+        offset = t["swing_offset"]
+    else:
+        offset = t["swing_offset_deg"] if swing_unit == "deg" else math.radians(t["swing_offset_deg"])
+    bearing_dig = math.atan2(dig_y_m, dig_x_m)
+    bearing_dump = math.atan2(dump_y_m, dump_x_m)
+    if swing_unit == "deg":
+        swing_dig = _normalise_swing(math.degrees(bearing_dig) + offset)
+        swing_dump = _normalise_swing(math.degrees(bearing_dump) + offset)
+    else:
+        swing_dig = _normalise_swing_rad(bearing_dig + offset)
+        swing_dump = _normalise_swing_rad(bearing_dump + offset)
 
     started = time.perf_counter()
     # 对准 → 就位 → 下铲 → 收斗(装满) → 摆转 → 卸料
