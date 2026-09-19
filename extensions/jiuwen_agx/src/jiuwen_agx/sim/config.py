@@ -92,17 +92,26 @@ class SimMachineConfig:
             kw = dict(data)
 
         if str(kw.get("backend", "mock")) not in KNOWN_BACKENDS:
-            raise ValueError(f"{cls.__name__}: backend must be one of {KNOWN_BACKENDS}, got {kw.get('backend')!r}")
+            raise ValueError(
+                f"{cls.__name__}: backend must be one of {KNOWN_BACKENDS}, got {kw.get('backend')!r}"
+            )
         if kw.get("joint_units") not in (None, "deg", "rad"):
-            raise ValueError(f"{cls.__name__}: joint_units must be 'deg' or 'rad', got {kw['joint_units']!r}")
+            raise ValueError(
+                f"{cls.__name__}: joint_units must be 'deg' or 'rad', got {kw['joint_units']!r}"
+            )
 
         if "joint_names" in kw and isinstance(kw["joint_names"], list):
             kw["joint_names"] = tuple(str(n) for n in kw["joint_names"])
         if "extra_capabilities" in kw and isinstance(kw["extra_capabilities"], list):
             kw["extra_capabilities"] = tuple(str(c) for c in kw["extra_capabilities"])
-        if "base_step_limits" in kw and isinstance(kw["base_step_limits"], (list, tuple)):
+        if "base_step_limits" in kw and isinstance(
+            kw["base_step_limits"], (list, tuple)
+        ):
             if len(kw["base_step_limits"]) == 2:
-                kw["base_step_limits"] = (float(kw["base_step_limits"][0]), float(kw["base_step_limits"][1]))
+                kw["base_step_limits"] = (
+                    float(kw["base_step_limits"][0]),
+                    float(kw["base_step_limits"][1]),
+                )
             else:
                 kw["base_step_limits"] = None
         if "camera_resolution" in kw and isinstance(kw["camera_resolution"], list):

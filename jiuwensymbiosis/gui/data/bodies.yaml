@@ -15,7 +15,3 @@ bodies:
     display_name: "Cruzr 双臂移动机器人"
     adapter: cruzr
     default_config_relpath: "cruzr/cruzr.yaml"
-  - key: agx_excavator
-    display_name: "AGX 挖掘机（仿真）"
-    adapter: agx_excavator
-    default_config_relpath: "agx_excavator/agx_excavator.yaml"

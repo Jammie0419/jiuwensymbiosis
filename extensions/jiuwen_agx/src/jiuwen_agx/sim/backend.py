@@ -74,15 +74,21 @@ class SimBackend(Protocol):
     def read_joints(self) -> dict[str, float]:
         """Current joint angles keyed by joint name (the body's joint_units)."""
 
-    def send_joint_targets(self, targets: dict[str, float], *, timeout_s: float) -> dict[str, float]:
+    def send_joint_targets(
+        self, targets: dict[str, float], *, timeout_s: float
+    ) -> dict[str, float]:
         """Command absolute joint targets (unmentioned joints hold), block until
         reached or timeout, return the full joint state after the motion."""
 
-    def navigate_relative(self, dx_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_relative(
+        self, dx_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         """Drive the undercarriage: turn ``dyaw_rad`` then advance ``dx_m`` metres.
         Differential — there is no strafe. Returns what was commanded."""
 
-    def navigate_arc(self, radius_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_arc(
+        self, radius_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         """Drive ONE constant-curvature arc (signed radius, + = left). Returns
         what was commanded."""
 
@@ -127,7 +133,9 @@ def create_backend(cfg: Any) -> SimBackend:
     name = str(getattr(cfg, "backend", "mock"))
     cls = BACKENDS.get(name)
     if cls is None:
-        raise ValueError(f"unknown sim backend {name!r}; registered: {sorted(BACKENDS)}")
+        raise ValueError(
+            f"unknown sim backend {name!r}; registered: {sorted(BACKENDS)}"
+        )
     return cls(cfg)  # type: ignore[no-any-return]
 
 
@@ -150,10 +158,15 @@ class MockSimBackend:
         joint_names: tuple[str, ...] | None = None,
         piles: list[dict[str, Any]] | None = None,
     ) -> None:
-        self._joint_names = tuple(joint_names) if joint_names is not None else tuple(getattr(cfg, "joint_names", ()))
+        self._joint_names = (
+            tuple(joint_names)
+            if joint_names is not None
+            else tuple(getattr(cfg, "joint_names", ()))
+        )
         self._joints: dict[str, float] = dict.fromkeys(self._joint_names, 0.0)
         self._piles: list[dict[str, Any]] = [
-            dict(p) for p in (piles or getattr(cfg, "terrain_piles", None) or DEFAULT_PILES)
+            dict(p)
+            for p in (piles or getattr(cfg, "terrain_piles", None) or DEFAULT_PILES)
         ]
         self._scoop = False
         self._open = False
@@ -179,7 +192,9 @@ class MockSimBackend:
         self._require_open()
         return dict(self._joints)
 
-    def send_joint_targets(self, targets: dict[str, float], *, timeout_s: float) -> dict[str, float]:
+    def send_joint_targets(
+        self, targets: dict[str, float], *, timeout_s: float
+    ) -> dict[str, float]:
         self._require_open()
         clean = {str(k): float(v) for k, v in targets.items()}
         self._joints.update(clean)
@@ -187,15 +202,27 @@ class MockSimBackend:
         return dict(self._joints)
 
     # -- undercarriage
-    def navigate_relative(self, dx_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_relative(
+        self, dx_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         self._require_open()
-        entry = {"cmd": "navigate_relative", "dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
+        entry = {
+            "cmd": "navigate_relative",
+            "dx_m": float(dx_m),
+            "dyaw_rad": float(dyaw_rad),
+        }
         self.move_log.append(entry)
         return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
 
-    def navigate_arc(self, radius_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_arc(
+        self, radius_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         self._require_open()
-        entry = {"cmd": "navigate_arc", "radius_m": float(radius_m), "dyaw_rad": float(dyaw_rad)}
+        entry = {
+            "cmd": "navigate_arc",
+            "radius_m": float(radius_m),
+            "dyaw_rad": float(dyaw_rad),
+        }
         self.move_log.append(entry)
         return {"radius_m": float(radius_m), "dyaw_rad": float(dyaw_rad)}
 
@@ -245,7 +272,9 @@ class InProcessAgxBackend:
             ) from exc
         # TODO(AGX): 加载 cfg.scene_path 场景；按 cfg.joint_names 找到对应铰链/液压约束
         # （约束名映射放 config.joint_constraint_map）；初始化履带驱动约束。
-        raise NotImplementedError("InProcessAgxBackend: 待 AGX 场景接口确认后实现（TODO(AGX) 块）")
+        raise NotImplementedError(
+            "InProcessAgxBackend: 待 AGX 场景接口确认后实现（TODO(AGX) 块）"
+        )
 
     def close(self) -> None:
         self._scene = None
@@ -253,13 +282,19 @@ class InProcessAgxBackend:
     def read_joints(self) -> dict[str, float]:
         raise RuntimeError("InProcessAgxBackend: not open")
 
-    def send_joint_targets(self, targets: dict[str, float], *, timeout_s: float) -> dict[str, float]:
+    def send_joint_targets(
+        self, targets: dict[str, float], *, timeout_s: float
+    ) -> dict[str, float]:
         raise RuntimeError("InProcessAgxBackend: not open")
 
-    def navigate_relative(self, dx_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_relative(
+        self, dx_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         raise RuntimeError("InProcessAgxBackend: not open")
 
-    def navigate_arc(self, radius_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_arc(
+        self, radius_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         raise RuntimeError("InProcessAgxBackend: not open")
 
     def read_terrain(self) -> list[dict[str, Any]]:
@@ -300,7 +335,9 @@ class RemoteSimBackend:
     def open(self) -> None:
         if self._sock is not None:
             return
-        sock = socket.create_connection((self._host, self._port), timeout=self._startup_timeout_s)
+        sock = socket.create_connection(
+            (self._host, self._port), timeout=self._startup_timeout_s
+        )
         self._sock = sock
         self._file = sock.makefile("rw", encoding="utf-8", newline="\n")
         try:
@@ -311,7 +348,9 @@ class RemoteSimBackend:
         peer_version = int(resp.get("v", 0))
         if peer_version != PROTOCOL_VERSION:
             self.close()
-            raise RuntimeError(f"bridge protocol version mismatch: peer v{peer_version}, client v{PROTOCOL_VERSION}")
+            raise RuntimeError(
+                f"bridge protocol version mismatch: peer v{peer_version}, client v{PROTOCOL_VERSION}"
+            )
 
     def close(self) -> None:
         file, sock = self._file, self._sock
@@ -328,7 +367,9 @@ class RemoteSimBackend:
         if self._sock is None or self._file is None:
             raise RuntimeError("RemoteSimBackend: open() first")
 
-    def _call(self, cmd: dict[str, Any], *, read_timeout_s: float | None = None) -> dict[str, Any]:
+    def _call(
+        self, cmd: dict[str, Any], *, read_timeout_s: float | None = None
+    ) -> dict[str, Any]:
         self._require_open()
         assert self._sock is not None and self._file is not None
         payload = {"v": PROTOCOL_VERSION, **cmd}
@@ -346,14 +387,20 @@ class RemoteSimBackend:
             raise ConnectionError("bridge closed the connection")
         resp = json.loads(line)
         if not resp.get("ok", False):
-            raise RuntimeError(f"bridge error on {cmd.get('cmd')!r}: {resp.get('error')!r}")
+            raise RuntimeError(
+                f"bridge error on {cmd.get('cmd')!r}: {resp.get('error')!r}"
+            )
         return resp
 
     # -- joints
     def read_joints(self) -> dict[str, float]:
-        return {str(k): float(v) for k, v in self._call({"cmd": "joints"})["joints"].items()}
+        return {
+            str(k): float(v) for k, v in self._call({"cmd": "joints"})["joints"].items()
+        }
 
-    def send_joint_targets(self, targets: dict[str, float], *, timeout_s: float) -> dict[str, float]:
+    def send_joint_targets(
+        self, targets: dict[str, float], *, timeout_s: float
+    ) -> dict[str, float]:
         resp = self._call(
             {
                 "cmd": "move_joints",
@@ -370,14 +417,19 @@ class RemoteSimBackend:
             wanted = {str(k): float(v) for k, v in resp.get("targets", {}).items()}
             deadline = _time.monotonic() + float(timeout_s) + 5.0
             while _time.monotonic() < deadline:
-                if all(abs(joints.get(name, 1e9) - value) < 0.01 for name, value in wanted.items()):
+                if all(
+                    abs(joints.get(name, 1e9) - value) < 0.01
+                    for name, value in wanted.items()
+                ):
                     break
                 _time.sleep(0.05)
                 joints = self.read_joints()
         return joints
 
     # -- undercarriage
-    def navigate_relative(self, dx_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_relative(
+        self, dx_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         resp = self._call(
             {
                 "cmd": "navigate_relative",
@@ -389,7 +441,9 @@ class RemoteSimBackend:
         )
         return dict(resp["result"])
 
-    def navigate_arc(self, radius_m: float, dyaw_rad: float, *, timeout_s: float) -> dict:
+    def navigate_arc(
+        self, radius_m: float, dyaw_rad: float, *, timeout_s: float
+    ) -> dict:
         resp = self._call(
             {
                 "cmd": "navigate_arc",
@@ -417,6 +471,10 @@ class RemoteSimBackend:
         if not resp.get("rgb_base64"):
             return None
         shape = tuple(int(v) for v in resp["shape"])
-        rgb = np.frombuffer(base64.b64decode(resp["rgb_base64"]), dtype=np.uint8).reshape(shape)
-        depth = np.frombuffer(base64.b64decode(resp["depth_base64"]), dtype=np.float32).reshape(shape[:2])
+        rgb = np.frombuffer(
+            base64.b64decode(resp["rgb_base64"]), dtype=np.uint8
+        ).reshape(shape)
+        depth = np.frombuffer(
+            base64.b64decode(resp["depth_base64"]), dtype=np.float32
+        ).reshape(shape[:2])
         return rgb, depth

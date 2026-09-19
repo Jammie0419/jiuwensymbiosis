@@ -73,19 +73,13 @@ def test_camera_defaults():
 def test_detector_parsed_from_api_servers():
     from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 
-    cfg = CruzrConfig.from_dict(
-        {
-            "name": "cruzr_vis",
-            "api_servers": [
-                {
-                    "_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server",
-                    "host": "10.0.0.5",
-                    "port": 9000,
-                    "use_sam2": False,
-                },
-            ],
-        }
-    )
+    cfg = CruzrConfig.from_dict({
+        "name": "cruzr_vis",
+        "api_servers": [
+            {"_target_": "jiuwensymbiosis.serving.grounding_dino_sam2_server",
+             "host": "10.0.0.5", "port": 9000, "use_sam2": False},
+        ],
+    })
     assert cfg.detector.host == "10.0.0.5"
     assert cfg.detector.port == 9000
     assert cfg.detector.url == "http://10.0.0.5:9000"

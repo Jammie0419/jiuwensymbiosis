@@ -25,7 +25,6 @@ def test_lower_torso_lifter_descends_vertically():
     """lower_torso_lifter returns a level config that drops the shoulder ~dz in z
     with ~unchanged x (vertical descent), staying on the level manifold."""
     from pathlib import Path
-
     if not Path(_URDF).exists():
         pytest.skip("urdf not present")
     from jiuwensymbiosis.adapters.cruzr.geometry import _shoulder_pos, lower_torso_lifter
@@ -40,8 +39,8 @@ def test_lower_torso_lifter_descends_vertically():
     assert new is not None
     s0 = _shoulder_pos(L, "left", now, 0.0)
     s1 = _shoulder_pos(L, "left", new, 0.0)
-    assert s1[2] == pytest.approx(s0[2] - 0.02, abs=2e-3)  # dropped ~2cm in z
-    assert s1[0] == pytest.approx(s0[0], abs=2e-3)  # ~vertical (x held)
+    assert s1[2] == pytest.approx(s0[2] - 0.02, abs=2e-3)        # dropped ~2cm in z
+    assert s1[0] == pytest.approx(s0[0], abs=2e-3)               # ~vertical (x held)
     assert new[P1] + new[P2] + new[P3] == pytest.approx(0.0, abs=1e-6)  # level manifold
 
 
@@ -54,8 +53,8 @@ def test_level_config_enforces_level_torso():
 
 
 def test_level_config_rejects_out_of_limits():
-    assert level_config(1.5, 1.5) is None  # p2 = -3.0 exceeds +-2.618
-    assert level_config(2.0, 0.0) is None  # p1 beyond its own limit
+    assert level_config(1.5, 1.5) is None   # p2 = -3.0 exceeds +-2.618
+    assert level_config(2.0, 0.0) is None   # p1 beyond its own limit
 
 
 # ---- search logic ----------------------------------------------------------
@@ -67,23 +66,15 @@ def test_level_config_rejects_out_of_limits():
 # need only the box, not the chains). Geometry is used ONLY to prune — the
 # winner is chosen by the IK reach margin (perr).
 
-
 def _box():
-    return ObjectGeometry3D(
-        ok=True,
-        reason="",
-        center_mm=(350.0, 0.0, 700.0),
-        width_mm=270.0,
-        height_mm=200.0,
-        front_x_mm=290.0,
-        top_z_mm=800.0,
-        n_points=5000,
-        back_x_mm=410.0,
-    )
+    return ObjectGeometry3D(ok=True, reason="", center_mm=(350.0, 0.0, 700.0),
+                          width_mm=270.0, height_mm=200.0, front_x_mm=290.0,
+                          top_z_mm=800.0, n_points=5000, back_x_mm=410.0)
 
 
 def _plan(ok, perr=0.01):
-    ik = {a: IKResult(q={}, converged=ok, pos_err_m=perr, normal_err=0.0, iters=1) for a in ("left", "right")}
+    ik = {a: IKResult(q={}, converged=ok, pos_err_m=perr, normal_err=0.0, iters=1)
+          for a in ("left", "right")}
     return GraspPlan(ok, "" if ok else "ik_no_converge", 0.0, {}, {}, {}, ik)
 
 
@@ -118,7 +109,7 @@ def test_search_ranks_by_ik_margin_not_geometry(monkeypatch):
     # winner is the one with the best (smallest) IK position error.
     target_p1, target_p3 = 0.6, 0.0
     monkeypatch.setattr(lifter_mod, "_geo_reach_score", lambda *a, **k: 0.0)  # none pruned
-    monkeypatch.setattr(lifter_mod, "_arm_base_z", lambda *a, **k: 0.9)  # all safe
+    monkeypatch.setattr(lifter_mod, "_arm_base_z", lambda *a, **k: 0.9)       # all safe
 
     def fake_solve(box, lc, rc, q_fixed, **k):
         if _is_current(q_fixed):
@@ -138,7 +129,8 @@ def test_search_ranks_by_ik_margin_not_geometry(monkeypatch):
 def test_search_geometric_prune_skips_out_of_reach_cells(monkeypatch):
     # Geometry prunes cells with p1 < 0 (out of reach); the only IK-reachable
     # cell sits among the survivors and is selected.
-    monkeypatch.setattr(lifter_mod, "_geo_reach_score", lambda chains, clamp, lc, w: None if lc[P1] < -1e-9 else 0.0)
+    monkeypatch.setattr(lifter_mod, "_geo_reach_score",
+                        lambda chains, clamp, lc, w: None if lc[P1] < -1e-9 else 0.0)
     monkeypatch.setattr(lifter_mod, "_arm_base_z", lambda *a, **k: 0.9)
 
     def fake_solve(box, lc, rc, q_fixed, **k):
@@ -158,16 +150,14 @@ def test_search_geometric_prune_skips_out_of_reach_cells(monkeypatch):
 
 # ---- table-floor guard: reject configs that drag held-ready arms below table --
 
-
 def test_search_rejects_low_config_that_would_hit_table(monkeypatch):
     """A low/leaned config with the BEST IK reach must be rejected when it would
     drag the held ready arms below the table; the search picks a safe one."""
     # box: top_z 800, height 200 -> table_z 0.60, floor 0.65 (clearance 0.05); ready_z 0.80.
     # _arm_base_z = 1.0 - 0.5*p1  =>  held_z = 0.80 - 0.5*p1  => safe iff p1 <= 0.30.
     monkeypatch.setattr(lifter_mod, "_geo_reach_score", lambda *a, **k: 0.0)  # none pruned
-    monkeypatch.setattr(
-        lifter_mod, "_arm_base_z", lambda chain, lc, w: 1.0 - 0.5 * lc[P1]
-    )  # held below floor for p1>0.3
+    monkeypatch.setattr(lifter_mod, "_arm_base_z",
+                        lambda chain, lc, w: 1.0 - 0.5 * lc[P1])  # held below floor for p1>0.3
 
     def fake_solve(box, lc, rc, q_fixed, **k):
         if _is_current(q_fixed):
@@ -185,10 +175,10 @@ def test_search_rejects_low_config_that_would_hit_table(monkeypatch):
 def test_search_no_safe_lifter_when_only_reachable_config_is_too_low(monkeypatch):
     """If every geometrically reachable config is rejected by the table-floor
     guard, the search reports no_safe_lifter (distinct from unreachable)."""
-    monkeypatch.setattr(
-        lifter_mod, "_geo_reach_score", lambda chains, clamp, lc, w: 0.0 if lc[P1] > 0.3 + 1e-9 else None
-    )
-    monkeypatch.setattr(lifter_mod, "_arm_base_z", lambda chain, lc, w: 1.0 - 0.5 * lc[P1])  # p1>0.3 -> below floor
+    monkeypatch.setattr(lifter_mod, "_geo_reach_score",
+                        lambda chains, clamp, lc, w: 0.0 if lc[P1] > 0.3 + 1e-9 else None)
+    monkeypatch.setattr(lifter_mod, "_arm_base_z",
+                        lambda chain, lc, w: 1.0 - 0.5 * lc[P1])  # p1>0.3 -> below floor
     monkeypatch.setattr(lifter_mod, "solve_grasp", lambda *a, **k: _plan(False))
     current = {P1: 0.0, P2: 0.0, P3: 0.0}
     plan = search_lifter_for_box(_box(), object(), object(), current, step=0.3)
@@ -233,9 +223,9 @@ def test_place_search_picks_minimal_lean(monkeypatch):
     current = {P1: 0.0, P2: 0.0, P3: 0.0}
     plan = search_lifter_for_place(_CLAMP, object(), object(), current)  # default cap 0.8, step 0.15
     assert plan.found and plan.improves
-    assert plan.q_lifter[P1] == pytest.approx(0.15)  # smallest reaching lean
+    assert plan.q_lifter[P1] == pytest.approx(0.15)               # smallest reaching lean
     assert plan.q_lifter[P3] == pytest.approx(0.0)
-    assert plan.q_lifter[P2] == pytest.approx(-0.15)  # level manifold
+    assert plan.q_lifter[P2] == pytest.approx(-0.15)             # level manifold
 
 
 def test_place_search_respects_max_lean_cap(monkeypatch):
@@ -243,7 +233,7 @@ def test_place_search_respects_max_lean_cap(monkeypatch):
     monkeypatch.setattr(lifter_mod, "_geo_reach_score", lambda *a, **k: 0.0)
 
     def fake_ik(chain, q_fixed, arm, tgt, **k):
-        reach = q_fixed[P1] >= 0.6 - 1e-9  # beyond the 0.35 cap
+        reach = q_fixed[P1] >= 0.6 - 1e-9                         # beyond the 0.35 cap
         return _ik(reach, 0.01 if reach else 0.5)
 
     monkeypatch.setattr(lifter_mod, "solve_arm_ik", fake_ik)
@@ -270,12 +260,12 @@ def test_place_search_no_floor_guard_accepts_forward_lean(monkeypatch):
     monkeypatch.setattr(lifter_mod, "_geo_reach_score", lambda *a, **k: 0.0)  # none pruned
 
     def fake_ik(chain, q_fixed, arm, tgt, **k):
-        reach = q_fixed[P1] >= 0.30 - 1e-9  # only the deepest in-cap lean reaches
+        reach = q_fixed[P1] >= 0.30 - 1e-9                        # only the deepest in-cap lean reaches
         return _ik(reach, 0.01 if reach else 0.5)
 
     monkeypatch.setattr(lifter_mod, "solve_arm_ik", fake_ik)
     current = {P1: 0.0, P2: 0.0, P3: 0.0}
     plan = search_lifter_for_place(_CLAMP, object(), object(), current)  # default cap 0.8, step 0.15
     assert plan.found and plan.improves
-    assert plan.q_lifter[P1] == pytest.approx(0.30)  # forward lean accepted (no floor guard)
-    assert plan.q_lifter[P3] == pytest.approx(0.0)  # minimal p3
+    assert plan.q_lifter[P1] == pytest.approx(0.30)               # forward lean accepted (no floor guard)
+    assert plan.q_lifter[P3] == pytest.approx(0.0)                # minimal p3

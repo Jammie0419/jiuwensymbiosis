@@ -26,10 +26,10 @@ def test_turn_waist_blocking_is_a_single_move_holding_arms():
     hold = {"L_shoulder_pitch_joint": 0.3, "R_shoulder_pitch_joint": -0.2}
     out = ll.turn_waist_blocking(0.5, hold=hold, waist_joint="waist_yaw_joint")
 
-    assert len(calls) == 1  # ONE command, not per-degree chunks
+    assert len(calls) == 1                              # ONE command, not per-degree chunks
     cmd = calls[0]
-    assert cmd["waist_yaw_joint"] == 0.5  # waist commanded to the absolute target
-    assert cmd["L_shoulder_pitch_joint"] == 0.3  # arms held (sent in the same command)
+    assert cmd["waist_yaw_joint"] == 0.5               # waist commanded to the absolute target
+    assert cmd["L_shoulder_pitch_joint"] == 0.3        # arms held (sent in the same command)
     assert cmd["R_shoulder_pitch_joint"] == -0.2
     assert out["ok"] and out["joint"] == "waist_yaw_joint" and out["target_rad"] == 0.5
 
@@ -38,4 +38,4 @@ def test_turn_waist_blocking_empty_hold():
     ll, calls = _new_ll()
     ll.turn_waist_blocking(-0.3, hold={}, waist_joint="waist_yaw_joint")
     assert len(calls) == 1
-    assert calls[0] == {"waist_yaw_joint": -0.3}  # just the waist target when no arms to hold
+    assert calls[0] == {"waist_yaw_joint": -0.3}       # just the waist target when no arms to hold

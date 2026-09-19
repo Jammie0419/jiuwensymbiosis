@@ -25,14 +25,14 @@ class _LL:
         return {"ok": True, "yaw_reached": dyaw}
 
     def start_base_spin(self, direction=1.0):
-        self.spin_started += 1  # asserted 0: the pan-scan must not spin the base
+        self.spin_started += 1        # asserted 0: the pan-scan must not spin the base
         return object()
 
 
 class _Env:
     def __init__(self):
         self.low_level = _LL()
-        self.cfg = CruzrConfig()  # real defaults: tol=0.10
+        self.cfg = CruzrConfig()   # real defaults: tol=0.10
 
 
 def _api_with_senses(senses):
@@ -43,10 +43,10 @@ def _api_with_senses(senses):
     env = _Env()
     api = CruzrApi(env)
     it = iter(senses)
-    api.locate_for_place = lambda object_name="table": next(it)  # type: ignore[method-assign]
+    api.locate_for_place = lambda object_name="table": next(it)   # type: ignore[method-assign]
     _miss = {"ok": True, "found": False, "reason": "no_detection", "image_h": 100, "image_w": 200}
     api.look_for = lambda object_name="table", on=None, camera=None: _miss  # type: ignore[method-assign]
-    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}  # type: ignore[method-assign]
+    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}       # type: ignore[method-assign]
     return api, env
 
 
@@ -63,8 +63,8 @@ def test_acquire_in_view_does_not_turn():
     out = approach._face_surface(api, "table")
     assert out["ok"] and out["status"] == "acquired"
     assert out["turned_rad"] == 0.0
-    assert env.low_level.nav_calls == []  # never rotated
-    assert env.low_level.spin_started == 0  # in view → never spun
+    assert env.low_level.nav_calls == []          # never rotated
+    assert env.low_level.spin_started == 0         # in view → never spun
 
 
 def test_offcentre_surface_in_view_does_not_align_turn():
@@ -75,7 +75,7 @@ def test_offcentre_surface_in_view_does_not_align_turn():
     assert out["ok"] and out["status"] == "acquired"
     assert math.isclose(out["bearing_rad"], math.atan2(500.0, 1000.0), rel_tol=1e-6)
     assert env.low_level.spin_started == 0
-    assert env.low_level.nav_calls == []  # off-centre, but no centroid-align turn
+    assert env.low_level.nav_calls == []          # off-centre, but no centroid-align turn
 
 
 def test_not_found_after_panscan_and_180_fails_safe():
@@ -87,5 +87,5 @@ def test_not_found_after_panscan_and_180_fails_safe():
     assert out["ok"] is False and out["reason"] == "surface_not_found"
     assert out.get("note") == "panscan_exhausted"
     assert env.low_level.spin_started == 0
-    assert env.low_level.nav_calls == [(0.0, 0.0, math.pi)]  # only the 180° fallback
+    assert env.low_level.nav_calls == [(0.0, 0.0, math.pi)]   # only the 180° fallback
     assert math.isclose(out["turned_rad"], math.pi, rel_tol=1e-6)

@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from jiuwen_agx.actions import GET_TERRAIN
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
     DRIVE_ARC,
     GET_JOINT_POSITIONS,
-    GET_TERRAIN,
     MOVE_JOINT,
     NAVIGATE_RELATIVE,
     ROTATE_BASE,
@@ -43,7 +43,9 @@ class SimMachineApi(BaseRobotApi):
 
     # ============================================================ Undercarriage (motion.base)
     @implements(NAVIGATE_RELATIVE)
-    def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> dict:
+    def navigate_relative(
+        self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0
+    ) -> dict:
         return defaults.navigate_relative(self, dx_m, dy_m, dyaw_rad)
 
     @implements(ROTATE_BASE)

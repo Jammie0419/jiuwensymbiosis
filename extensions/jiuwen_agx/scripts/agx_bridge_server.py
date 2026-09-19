@@ -135,7 +135,9 @@ class AgxSceneAdapter:
             if hasattr(agx, "loadScene"):
                 agx.loadScene(path, self._sim)
             else:  # pragma: no cover - 版本差异兜底
-                raise RuntimeError("agx.loadScene 不可用：请改用 --excavator 模式或 agxViewer 插件")
+                raise RuntimeError(
+                    "agx.loadScene 不可用：请改用 --excavator 模式或 agxViewer 插件"
+                )
         self._auto_discover()
 
     def _load_excavator_scene(self) -> None:
@@ -179,7 +181,10 @@ class AgxSceneAdapter:
         if os.environ.get("JIUWEN_KEYBOARD") == "1":
             keyboard = Excavator365.default_keyboard_settings()
             gamepad = Excavator365.default_gamepad_controls()
-            print("[agx_bridge] keyboard control ENABLED (a/z bucket, s/x stick, arrows arm+cabin, PgUp/PgDn tracks)", flush=True)
+            print(
+                "[agx_bridge] keyboard control ENABLED (a/z bucket, s/x stick, arrows arm+cabin, PgUp/PgDn tracks)",
+                flush=True,
+            )
 
         excavator = Excavator365(
             gamepad_controls=gamepad,
@@ -202,7 +207,9 @@ class AgxSceneAdapter:
         terrain_shovel.getAdvancedSettings().setNoMergeExtensionDistance(0.1)
         terrain_shovel.getAdvancedSettings().setContactRegionVerticalLimit(0.2)
         terrain_shovel.getAdvancedSettings().setContactRegionThreshold(0.1)
-        terrain.getTerrainMaterial().getExcavationContactProperties().setAggregateStiffnessMultiplier(5e-4)
+        terrain.getTerrainMaterial().getExcavationContactProperties().setAggregateStiffnessMultiplier(
+            5e-4
+        )
         terrain.getProperties().setMaximumParticleActivationVolume(2)
         sim.add(terrain_shovel)
         self._shovel = terrain_shovel
@@ -226,7 +233,10 @@ class AgxSceneAdapter:
                 value = getattr(exc, attr)
                 group = list(value) if isinstance(value, list) else [value]
             else:
-                print(f"[agx_bridge] WARNING: joint {name!r} 无映射（--joint-map 可指定）", flush=True)
+                print(
+                    f"[agx_bridge] WARNING: joint {name!r} 无映射（--joint-map 可指定）",
+                    flush=True,
+                )
                 continue
             self._constraints[name] = group
             self._units[name] = unit
@@ -236,7 +246,10 @@ class AgxSceneAdapter:
                 lo, hi = -180.0, 180.0  # 全行程回转：限位按 ±180 报告
             self._ranges[name] = (lo, hi)
             names = [c.getName() for c in group]
-            print(f"[agx_bridge] joint {name!r} -> {unit} group={names} range={self._ranges[name]}", flush=True)
+            print(
+                f"[agx_bridge] joint {name!r} -> {unit} group={names} range={self._ranges[name]}",
+                flush=True,
+            )
 
     def _find_constraint_by_name(self, constraint_name: str):
         sim = self._require_sim()
@@ -263,7 +276,10 @@ class AgxSceneAdapter:
 
     # -- 关节
     def read_joints(self) -> dict[str, float]:
-        return {name: float(group[0].getAngle()) for name, group in self._constraints.items()}
+        return {
+            name: float(group[0].getAngle())
+            for name, group in self._constraints.items()
+        }
 
     def set_joint_targets(self, targets: dict[str, float]) -> None:
         """立即应用位置伺服目标（Lock1D + 距离自适应阻尼，官方 JointController
@@ -284,7 +300,9 @@ class AgxSceneAdapter:
                 lock.setPosition(float(target))
         self._joints.update({str(k): float(v) for k, v in targets.items()})
 
-    def send_joint_targets(self, targets: dict[str, float], timeout_s: float) -> dict[str, float]:
+    def send_joint_targets(
+        self, targets: dict[str, float], timeout_s: float
+    ) -> dict[str, float]:
         """headless 模式：应用伺服目标并阻塞到到位/超时。
 
         viewer 模式不走这里（agxViewer 拥有步进，且线程会被冻结）——
@@ -308,7 +326,9 @@ class AgxSceneAdapter:
         return self.read_joints()
 
     # -- 履带底盘
-    def navigate_relative(self, dx_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
+    def navigate_relative(
+        self, dx_m: float, dyaw_rad: float, timeout_s: float
+    ) -> dict[str, float]:
         """履带差速开环控制：Motor1D.setSpeed 驱动驱动轮（官方 set_speed 模式）。
 
         headless：阻塞走完两段（先转后走）。viewer（pump）：设速度后由 pump()
@@ -345,12 +365,16 @@ class AgxSceneAdapter:
         if abs(dx_m) > 1e-4:
             direction = 1.0 if dx_m > 0 else -1.0
             _apply(direction * speed, direction * speed)
-            _duration(direction * speed, direction * speed, abs(dx_m) / (speed * wheel_radius))
+            _duration(
+                direction * speed, direction * speed, abs(dx_m) / (speed * wheel_radius)
+            )
         if self.pump_mode and abs(dx_m) <= 1e-4 and abs(dyaw_rad) <= 1e-4:
             _apply(0.0, 0.0)
         return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
 
-    def navigate_arc(self, radius_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
+    def navigate_arc(
+        self, radius_m: float, dyaw_rad: float, timeout_s: float
+    ) -> dict[str, float]:
         """常曲率弧线：内外履带速度差（v1 简化为差速时间近似）。"""
         exc = self._excavator
         if exc is None:
@@ -361,7 +385,11 @@ class AgxSceneAdapter:
         arc_len = abs(radius_m * dyaw_rad)
         duration = arc_len / max(speed * wheel_radius, 1e-6)
         v_out = speed if radius_m >= 0 else -speed
-        v_in = v_out * (abs(radius_m) - track_width / 2) / max(abs(radius_m) + track_width / 2, 1e-6)
+        v_in = (
+            v_out
+            * (abs(radius_m) - track_width / 2)
+            / max(abs(radius_m) + track_width / 2, 1e-6)
+        )
         hinges = list(exc.sprocket_hinges)
         for h, s in zip(hinges, (v_out, v_in), strict=False):
             h.getLock1D().setEnable(False)
@@ -379,13 +407,15 @@ class AgxSceneAdapter:
     def read_terrain(self) -> list[dict[str, Any]]:
         if self._terrain is not None:
             # 平整沙地场景：土壤无处不在，报告一个"机身前方 3 m"的代表性可挖点
-            #（基座系；确保落在可达环带内，LLM 引用它即得到合法 dig 目标）
+            # （基座系；确保落在可达环带内，LLM 引用它即得到合法 dig 目标）
             return [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "volume_m3": 1.0}]
         return [dict(p) for p in self._piles]
 
     def scoop_state(self) -> bool:
         if self._shovel is not None:
-            mass = float(self._shovel.getSoilParticleAggregate().getTotalAggregateMass())
+            mass = float(
+                self._shovel.getSoilParticleAggregate().getTotalAggregateMass()
+            )
             return mass > 1.0  # kg 阈值
         return self._scoop
 
@@ -421,7 +451,9 @@ class AgxSceneAdapter:
         if self._terrain is not None:
             terrain = [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "volume_m3": 1.0}]
         machine_name = "excavator365" if self._excavator is not None else "scene"
-        return {"machines": [{"name": machine_name, "joints": joints, "terrain": terrain}]}
+        return {
+            "machines": [{"name": machine_name, "joints": joints, "terrain": terrain}]
+        }
 
     # ------------------------------------------------------------------
     # pump 网络（viewer 模式专用）—— agxViewer 会冻结后台线程，所以网络
@@ -436,7 +468,10 @@ class AgxSceneAdapter:
         server.setblocking(False)
         self._listener = server
         self._bridge_session = BridgeSession(self)
-        print(f"[agx_bridge] pump listening on {host}:{port} (protocol v{PROTOCOL_VERSION})", flush=True)
+        print(
+            f"[agx_bridge] pump listening on {host}:{port} (protocol v{PROTOCOL_VERSION})",
+            flush=True,
+        )
 
     def pump(self) -> None:
         """viewer 每个仿真步调用一次（主线程）：接受连接、读请求、回响应、执行停车计划。"""
@@ -477,7 +512,11 @@ class AgxSceneAdapter:
             try:
                 request = json.loads(line)
             except json.JSONDecodeError as exc:
-                response = {"v": PROTOCOL_VERSION, "ok": False, "error": f"bad json: {exc}"}
+                response = {
+                    "v": PROTOCOL_VERSION,
+                    "ok": False,
+                    "error": f"bad json: {exc}",
+                }
             else:
                 if request.get("cmd") == "bye":
                     self._close_conn()
@@ -517,16 +556,22 @@ class DemoSceneAdapter(AgxSceneAdapter):
     def read_joints(self) -> dict[str, float]:
         return dict(self._joints)
 
-    def send_joint_targets(self, targets: dict[str, float], timeout_s: float) -> dict[str, float]:
+    def send_joint_targets(
+        self, targets: dict[str, float], timeout_s: float
+    ) -> dict[str, float]:
         self._joints.update({str(k): float(v) for k, v in targets.items()})
         return dict(self._joints)
 
-    def navigate_relative(self, dx_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
+    def navigate_relative(
+        self, dx_m: float, dyaw_rad: float, timeout_s: float
+    ) -> dict[str, float]:
         entry = {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
         self.move_log.append({"cmd": "navigate_relative", **entry})
         return entry
 
-    def navigate_arc(self, radius_m: float, dyaw_rad: float, timeout_s: float) -> dict[str, float]:
+    def navigate_arc(
+        self, radius_m: float, dyaw_rad: float, timeout_s: float
+    ) -> dict[str, float]:
         entry = {"radius_m": float(radius_m), "dyaw_rad": float(dyaw_rad)}
         self.move_log.append({"cmd": "navigate_arc", **entry})
         return entry
@@ -541,7 +586,12 @@ class DemoSceneAdapter(AgxSceneAdapter):
         self._scoop = bool(loaded)
 
     def inventory(self) -> dict[str, Any]:
-        limits = {"swing": (-180.0, 180.0), "boom": (-45.0, 60.0), "arm": (-135.0, 60.0), "bucket": (-160.0, 40.0)}
+        limits = {
+            "swing": (-180.0, 180.0),
+            "boom": (-45.0, 60.0),
+            "arm": (-135.0, 60.0),
+            "bucket": (-160.0, 40.0),
+        }
         return {
             "machines": [
                 {
@@ -573,11 +623,19 @@ class BridgeSession:
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         version = int(request.get("v", 0))
         if version != PROTOCOL_VERSION:
-            return {"v": PROTOCOL_VERSION, "ok": False, "error": f"protocol version {version} unsupported"}
+            return {
+                "v": PROTOCOL_VERSION,
+                "ok": False,
+                "error": f"protocol version {version} unsupported",
+            }
         cmd = str(request.get("cmd", ""))
         handler = getattr(self, f"_cmd_{cmd}", None)
         if handler is None:
-            return {"v": PROTOCOL_VERSION, "ok": False, "error": f"unknown command {cmd!r}"}
+            return {
+                "v": PROTOCOL_VERSION,
+                "ok": False,
+                "error": f"unknown command {cmd!r}",
+            }
         return {"v": PROTOCOL_VERSION, "ok": True, **handler(request)}
 
     def _num(self, request: dict[str, Any], key: str, default: float) -> float:
@@ -591,17 +649,27 @@ class BridgeSession:
         return {"joints": self._scene.read_joints()}
 
     def _cmd_move_joints(self, request: dict[str, Any]) -> dict[str, Any]:
-        targets = {str(k): float(v) for k, v in dict(request.get("targets") or {}).items()}
+        targets = {
+            str(k): float(v) for k, v in dict(request.get("targets") or {}).items()
+        }
         if getattr(self._scene, "pump_mode", False):
             # viewer 泵模式：立即返回，客户端轮询到位（不能阻塞主线程）
             self._scene.set_joint_targets(targets)
-            return {"joints": self._scene.read_joints(), "targets": targets, "async": True}
-        joints = self._scene.send_joint_targets(targets, self._num(request, "timeout_s", 30.0))
+            return {
+                "joints": self._scene.read_joints(),
+                "targets": targets,
+                "async": True,
+            }
+        joints = self._scene.send_joint_targets(
+            targets, self._num(request, "timeout_s", 30.0)
+        )
         return {"joints": joints}
 
     def _cmd_navigate_relative(self, request: dict[str, Any]) -> dict[str, Any]:
         result = self._scene.navigate_relative(
-            self._num(request, "dx_m", 0.0), self._num(request, "dyaw_rad", 0.0), self._num(request, "timeout_s", 30.0)
+            self._num(request, "dx_m", 0.0),
+            self._num(request, "dyaw_rad", 0.0),
+            self._num(request, "timeout_s", 30.0),
         )
         return {"result": result}
 
@@ -629,9 +697,13 @@ class BridgeSession:
             return {}
         encoded = dict(frame)
         if "rgb_bytes" in encoded:
-            encoded["rgb_base64"] = base64.b64encode(encoded.pop("rgb_bytes")).decode("ascii")
+            encoded["rgb_base64"] = base64.b64encode(encoded.pop("rgb_bytes")).decode(
+                "ascii"
+            )
         if "depth_bytes" in encoded:
-            encoded["depth_base64"] = base64.b64encode(encoded.pop("depth_bytes")).decode("ascii")
+            encoded["depth_base64"] = base64.b64encode(
+                encoded.pop("depth_bytes")
+            ).decode("ascii")
         return encoded
 
     def _cmd_inventory(self, _request: dict[str, Any]) -> dict[str, Any]:
@@ -665,7 +737,11 @@ def serve(scene: AgxSceneAdapter, host: str, port: int, *, load: bool = True) ->
                     try:
                         request = json.loads(line)
                     except json.JSONDecodeError as exc:
-                        response = {"v": PROTOCOL_VERSION, "ok": False, "error": f"bad json: {exc}"}
+                        response = {
+                            "v": PROTOCOL_VERSION,
+                            "ok": False,
+                            "error": f"bad json: {exc}",
+                        }
                     else:
                         if request.get("cmd") == "bye":
                             break
@@ -682,7 +758,9 @@ def build_scene_adapter(args: argparse.Namespace) -> AgxSceneAdapter | DemoScene
     """Construct the right scene adapter from CLI arguments (shared with the
     agxViewer plugin launcher)."""
     joint_names = [j.strip() for j in args.joints.split(",") if j.strip()]
-    joint_map = dict(part.split("=", 1) for part in args.joint_map.split(",") if "=" in part)
+    joint_map = dict(
+        part.split("=", 1) for part in args.joint_map.split(",") if "=" in part
+    )
     if args.demo:
         return DemoSceneAdapter(joint_names)
     return AgxSceneAdapter(
@@ -698,8 +776,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AGX ↔ jiuwensymbiosis 仿真桥接服务")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9700)
-    parser.add_argument("--demo", action="store_true", help="内置内存演示机器（无需 AGX，联调用）")
-    parser.add_argument("--scene", default=None, help="AGX 场景文件（.agx；自动发现约束）")
+    parser.add_argument(
+        "--demo", action="store_true", help="内置内存演示机器（无需 AGX，联调用）"
+    )
+    parser.add_argument(
+        "--scene", default=None, help="AGX 场景文件（.agx；自动发现约束）"
+    )
     parser.add_argument(
         "--excavator",
         action="store_true",
@@ -711,8 +793,14 @@ def main() -> None:
         choices=["headless", "viewer"],
         help="headless: 自持仿真循环；viewer: agxViewer 插件（viewer 步进+渲染）",
     )
-    parser.add_argument("--joints", default="swing,boom,arm,bucket", help="关节名（逗号分隔）")
-    parser.add_argument("--joint-map", default="", help="关节→AGX约束名映射，如 swing=YawHinge,boom=BoomHinge")
+    parser.add_argument(
+        "--joints", default="swing,boom,arm,bucket", help="关节名（逗号分隔）"
+    )
+    parser.add_argument(
+        "--joint-map",
+        default="",
+        help="关节→AGX约束名映射，如 swing=YawHinge,boom=BoomHinge",
+    )
     args = parser.parse_args()
 
     scene = build_scene_adapter(args)

@@ -1,0 +1,29 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jiuwen_agx"
+version = "0.1.0"
+description = "jiuwensymbiosis 扩展包：AGX 仿真机器（挖掘机 + 仿真底座 + 桥接工具）"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "jiuwensymbiosis",
+]
+
+[project.entry-points."jiuwensymbiosis.adapters"]
+agx_excavator = "jiuwen_agx.agx_excavator:build_agx_excavator_session"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["jiuwen_agx*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# 白盒测试：直接断言驱动/后端内部状态
+"tests/**" = ["SLF001"]

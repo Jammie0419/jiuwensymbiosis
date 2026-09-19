@@ -14,14 +14,10 @@ from jiuwensymbiosis.adapters.cruzr._calibration import load_cruzr_camera_calib
 
 def test_loads_both_fields(tmp_path):
     p = tmp_path / "calib.json"
-    p.write_text(
-        json.dumps(
-            {
-                "intrinsics": [[100, 0, 4], [0, 100, 4], [0, 0, 1]],
-                "tf_base_cam": np.eye(4).tolist(),
-            }
-        )
-    )
+    p.write_text(json.dumps({
+        "intrinsics": [[100, 0, 4], [0, 100, 4], [0, 0, 1]],
+        "tf_base_cam": np.eye(4).tolist(),
+    }))
     out = load_cruzr_camera_calib(p)
     assert out["intrinsics"].shape == (3, 3)
     assert out["tf_base_cam"].shape == (4, 4)

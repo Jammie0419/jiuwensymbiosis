@@ -62,13 +62,13 @@ def test_turn_waist_relative_target_and_holds_arms(monkeypatch):
     assert out["clamped"] is False
     call = env.low_level.turn_calls[-1]
     assert abs(call["target"] - 0.5) < 1e-9
-    assert all(j in call["hold"] for j in _ARMS)  # both arms held
+    assert all(j in call["hold"] for j in _ARMS)     # both arms held
     assert all(v == 0.1 for v in call["hold"].values())
 
 
 def test_turn_waist_clamps_to_limit(monkeypatch):
     api, env = _api(monkeypatch, _q(waist=1.5))
-    out = api.turn_waist(0.3)  # 1.5 + 0.3 = 1.8 > 1.57
+    out = api.turn_waist(0.3)                          # 1.5 + 0.3 = 1.8 > 1.57
     assert out["clamped"] is True
     assert abs(out["to_rad"] - 1.57) < 1e-9
     assert abs(env.low_level.turn_calls[-1]["target"] - 1.57) < 1e-9
@@ -83,10 +83,10 @@ def test_turn_waist_zero_delta_is_noop_target(monkeypatch):
 
 
 def test_turn_waist_no_joint_state(monkeypatch):
-    api, env = _api(monkeypatch, {})  # no waist reading
+    api, env = _api(monkeypatch, {})                  # no waist reading
     out = api.turn_waist(0.3)
     assert out == {"ok": False, "reason": "no_joint_state"}
-    assert env.low_level.turn_calls == []  # never commanded motion
+    assert env.low_level.turn_calls == []             # never commanded motion
 
 
 def test_waist_yaw_on_real_arm_chain():

@@ -23,9 +23,8 @@ class _CartesianApi(BaseRobotApi):
     """The two Cartesian actions the checks below need: one gated, one ungated (`home`)."""
 
     @implements(GOTO_XYZR)
-    def goto_xyzr(
-        self, x: float, y: float, z: float, r: float | None = None, orientation_policy: str = "top_down"
-    ) -> None:
+    def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None,
+                  orientation_policy: str = "top_down") -> None:
         return defaults.goto_xyzr(self, x, y, z, r)
 
     @implements(GET_HOME_POSE)
@@ -34,21 +33,16 @@ class _CartesianApi(BaseRobotApi):
 
 
 class _ApiWithBadCapability(_CartesianApi):
-    @implements(
-        ActionSpec(
-            name="do_special", description="a tool that claims a capability the env lacks", capability="grasp.suction"
-        )
-    )
+
+    @implements(ActionSpec(name="do_special", description="a tool that claims a capability the env lacks",
+                           capability="grasp.suction"))
     def do_special(self) -> None:
         return None
 
 
 class _ApiWithAlignedCapability(_CartesianApi):
-    @implements(
-        ActionSpec(
-            name="do_aligned", description="a tool whose capability matches the env", capability="motion.cartesian"
-        )
-    )
+    @implements(ActionSpec(name="do_aligned", description="a tool whose capability matches the env",
+                           capability="motion.cartesian"))
     def do_aligned(self) -> None:
         return None
 

@@ -9,8 +9,8 @@ Adapters import these submodules directly; importing this package stays
 side-effect free.
 """
 
-from jiuwensymbiosis.adapters._common.sim.api import SimMachineApi
-from jiuwensymbiosis.adapters._common.sim.backend import (
+from jiuwen_agx.sim.api import SimMachineApi
+from jiuwen_agx.sim.backend import (
     BACKENDS,
     InProcessAgxBackend,
     MockSimBackend,
@@ -19,9 +19,9 @@ from jiuwensymbiosis.adapters._common.sim.backend import (
     create_backend,
     register_backend,
 )
-from jiuwensymbiosis.adapters._common.sim.config import SimMachineConfig
-from jiuwensymbiosis.adapters._common.sim.driver import SimMachineDriver
-from jiuwensymbiosis.adapters._common.sim.env import SimMachineEnv
+from jiuwen_agx.sim.config import SimMachineConfig
+from jiuwen_agx.sim.driver import SimMachineDriver
+from jiuwen_agx.sim.env import SimMachineEnv
 
 __all__ = [
     "BACKENDS",

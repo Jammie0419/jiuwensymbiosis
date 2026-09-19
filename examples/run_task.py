@@ -54,20 +54,23 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def _robot_session_builders() -> dict[str, Any]:
     """适配器注册表：机器人名 → 会话构建器（暴露 ``.from_yaml(path)``）。
 
-    支持多机器人的关键：新增一款机器人只需在此注册一条。机器人由 config 的 ``adapter:``
-    字段选中（``--robot`` 覆盖），其余代码无需改动。
+    两个来源：内置适配器（硬编码，新增一款在此注册一条）+ 扩展包
+    （entry-points 组 ``jiuwensymbiosis.adapters``，见 ``jiuwensymbiosis/_extensions.py``；
+    内置同名时内置优先）。机器人由 config 的 ``adapter:`` 字段选中（``--robot`` 覆盖）。
     """
-    from jiuwensymbiosis.adapters.agx_excavator import build_agx_excavator_session
+    from jiuwensymbiosis._extensions import discover_adapter_builders
     from jiuwensymbiosis.adapters.cruzr import build_cruzr_session
     from jiuwensymbiosis.adapters.piper import build_piper_session
     from jiuwensymbiosis.adapters.so101 import build_so101_session
 
-    return {
+    builders: dict[str, Any] = {
         "piper": build_piper_session,
         "cruzr": build_cruzr_session,
         "so101": build_so101_session,
-        "agx_excavator": build_agx_excavator_session,
     }
+    for name, builder in discover_adapter_builders().items():
+        builders.setdefault(name, builder)
+    return builders
 
 
 def _resolve_robot(args: argparse.Namespace, raw: dict[str, Any]) -> str:
@@ -114,9 +117,8 @@ def _build_session(args: argparse.Namespace, raw: dict[str, Any]) -> RobotSessio
                 return self.env.home_pose
 
             @implements(GOTO_XYZR)
-            def goto_xyzr(
-                self, x: float, y: float, z: float, r: float | None = None, orientation_policy: str = "top_down"
-            ) -> None:
+            def goto_xyzr(self, x: float, y: float, z: float, r: float | None = None,
+                          orientation_policy: str = "top_down") -> None:
                 """移动到指定坐标 (x, y, z, r)。"""
                 self.env.move(x, y, z, r)
 
@@ -268,7 +270,7 @@ def main() -> int:
     """通用任务入口：按 config 的 adapter 建会话，用 --query 给任务，执行并输出结果。"""
     p = argparse.ArgumentParser(description="Generic task runner (jiuwensymbiosis).")
     p.add_argument("--config", required=True, help="Path to a robot config YAML (its adapter: field picks the robot).")
-    p.add_argument("--query", help='User task, e.g. --query "把箱子搬到桌上". The task is not in the config.')
+    p.add_argument("--query", help="User task, e.g. --query \"把箱子搬到桌上\". The task is not in the config.")
     p.add_argument(
         "--server-url",
         default=None,
@@ -280,11 +282,8 @@ def main() -> int:
         default=None,
         help=("Override the LLM API key (overrides YAML model.api_key)."),
     )
-    p.add_argument(
-        "--mock",
-        action="store_true",
-        help="Piper-only dry run: MockArmEnv + offline model. Implies --stepagent (no real LLM).",
-    )
+    p.add_argument("--mock", action="store_true",
+                   help="Piper-only dry run: MockArmEnv + offline model. Implies --stepagent (no real LLM).")
     p.add_argument(
         "--robot",
         default=None,
@@ -307,7 +306,9 @@ def main() -> int:
         default="hybrid",
         help="Agent mode: tool-calling, code-as-action, or both.",
     )
-    p.add_argument("--no-visual-feedback", action="store_true", help="Override config: disable VisualFeedbackRail.")
+    p.add_argument(
+        "--no-visual-feedback", action="store_true", help="Override config: disable VisualFeedbackRail."
+    )
     # --- fastagent tuning (real-time servo tracking at track_detect steps) ---
     p.add_argument(
         "--control-hz",

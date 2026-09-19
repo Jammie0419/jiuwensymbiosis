@@ -74,7 +74,9 @@ def probe_bridge(host: str, port: int, timeout_s: float) -> int:
             _out(f"[FAIL] 通信失败: {exc}")
             return 1
         if int(pong.get("v", 0)) != PROTOCOL_VERSION:
-            _out(f"[FAIL] 协议版本不匹配: 对端 v{pong.get('v')}, 本工具 v{PROTOCOL_VERSION}")
+            _out(
+                f"[FAIL] 协议版本不匹配: 对端 v{pong.get('v')}, 本工具 v{PROTOCOL_VERSION}"
+            )
             return 1
         _out("[OK] 链路通（协议 v1）")
 
@@ -107,7 +109,9 @@ def probe_direct(scene_path: str) -> int:
         import agx  # noqa: F401
     except ImportError:
         _out("[FAIL] import agx 失败——本脚本必须在 AGX 自带的 Python 环境里运行。")
-        _out("提示: 用 AGX 安装目录下的 python.exe 运行，或先运行 AGX 的环境初始化脚本。")
+        _out(
+            "提示: 用 AGX 安装目录下的 python.exe 运行，或先运行 AGX 的环境初始化脚本。"
+        )
         return 1
 
     _out(f"AGX Python OK ({sys.version.split()[0]})，加载场景: {scene_path}")
@@ -146,7 +150,9 @@ def check_config(config_path: str) -> int:
         problems.append(f"joint_names 缺少挖掘循环必需的关节: {missing}")
     for j in EXCAVATOR_JOINTS:
         if j in names and j not in limits:
-            problems.append(f"joint_limits 缺少 {j!r}（driver 无法做限位校验，会拒绝执行）")
+            problems.append(
+                f"joint_limits 缺少 {j!r}（driver 无法做限位校验，会拒绝执行）"
+            )
     # 关键帧越限检查（与 driver.move_joints_blocking 同规则）
     default_keys = {  # 与 work.DEFAULT_DIG_TUNING 对应的默认关键帧
         "ready_boom_deg": ("boom", 10.0),
@@ -166,11 +172,15 @@ def check_config(config_path: str) -> int:
         value = tuning.get(key, default_value)
         lo, hi = limits.get(joint, (float("-inf"), float("inf")))
         if not (lo <= value <= hi):
-            problems.append(f"关键帧 {key}={value} 超出 {joint} 限位 [{lo}, {hi}]（执行时会被拒绝）")
+            problems.append(
+                f"关键帧 {key}={value} 超出 {joint} 限位 [{lo}, {hi}]（执行时会被拒绝）"
+            )
     offset = tuning.get("swing_offset_deg", 0.0)
     lo, hi = limits.get("swing", (-180.0, 180.0))
     if lo > -180.0 or hi < 180.0:
-        _out(f"[提示] swing 限位 [{lo}, {hi}] 非 ±180 全行程：摆转归一化到 [-180,180)，")
+        _out(
+            f"[提示] swing 限位 [{lo}, {hi}] 非 ±180 全行程：摆转归一化到 [-180,180)，"
+        )
         _out("       若模型只允许部分回转，超出可达面的挖掘点会执行失败——属预期保护。")
     _ = offset
 
@@ -196,8 +206,14 @@ def _mini_yaml(text: str) -> dict[str, Any]:
         stripped = line.strip()
         if stripped.startswith("joint_names:"):
             section = None
-            ll["joint_names"] = [x.strip() for x in stripped.split("[", 1)[1].rstrip("]").split(",") if x.strip()]
-        elif stripped.startswith("joint_limits:") or stripped.startswith("dig_cycle_tuning:"):
+            ll["joint_names"] = [
+                x.strip()
+                for x in stripped.split("[", 1)[1].rstrip("]").split(",")
+                if x.strip()
+            ]
+        elif stripped.startswith("joint_limits:") or stripped.startswith(
+            "dig_cycle_tuning:"
+        ):
             section = "joint_limits" if "limits" in stripped else "tuning"
             ll[section] = {}
         elif section and ":" in stripped and indent >= 8:
@@ -220,17 +236,25 @@ def _render_report(report: dict[str, Any]) -> None:
         _out(f"机器: {machine.get('name')}")
         for j in machine.get("joints", []):
             rng = j.get("range", [None, None])
+            constraint = j.get("constraint")
+            constraint = (
+                ", ".join(constraint) if isinstance(constraint, list) else constraint
+            )
             _out(
-                f"  关节 {j.get('name'):<10} 约束={j.get('constraint'):<20} "
+                f"  关节 {j.get('name'):<10} 约束={constraint:<24} "
                 f"当前={j.get('angle')} 范围=[{rng[0]}, {rng[1]}] "
                 f"单位={j.get('unit')} 电机={'有' if j.get('has_motor') else '无'}"
             )
         for pile in machine.get("terrain", []):
-            _out(f"  料堆 {pile.get('name')}: ({pile.get('x_m')}, {pile.get('y_m')}) m, {pile.get('volume_m3')} m3")
+            _out(
+                f"  料堆 {pile.get('name')}: ({pile.get('x_m')}, {pile.get('y_m')}) m, {pile.get('volume_m3')} m3"
+            )
 
 
 def _render_suggested_config(report: dict[str, Any]) -> None:
-    _out("# ---- 建议配置片段（复制进 configs/agx_excavator/agx_excavator.local.yaml 的 low_level 段）----")
+    _out(
+        "# ---- 建议配置片段（复制进 configs/agx_excavator/agx_excavator.local.yaml 的 low_level 段）----"
+    )
     for machine in report.get("machines", []):
         joints = machine.get("joints", [])
         if not joints:
@@ -270,10 +294,20 @@ def _save_report(report: dict[str, Any], filename: str) -> None:
 
 # ============================================================================
 def main() -> int:
-    parser = argparse.ArgumentParser(description="AGX 场景探针：验证 jiuwensymbiosis 能否控制组里的模型")
-    parser.add_argument("--bridge", action="store_true", help="连桥接服务取场景清单（Linux 控制端）")
-    parser.add_argument("--direct", metavar="SCENE", help="在本机 AGX Python 里直接加载场景盘点（Windows）")
-    parser.add_argument("--check-config", metavar="YAML", help="核对一份适配器 YAML 配置是否自洽可执行")
+    parser = argparse.ArgumentParser(
+        description="AGX 场景探针：验证 jiuwensymbiosis 能否控制组里的模型"
+    )
+    parser.add_argument(
+        "--bridge", action="store_true", help="连桥接服务取场景清单（Linux 控制端）"
+    )
+    parser.add_argument(
+        "--direct",
+        metavar="SCENE",
+        help="在本机 AGX Python 里直接加载场景盘点（Windows）",
+    )
+    parser.add_argument(
+        "--check-config", metavar="YAML", help="核对一份适配器 YAML 配置是否自洽可执行"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9700)
     parser.add_argument("--timeout", type=float, default=10.0)

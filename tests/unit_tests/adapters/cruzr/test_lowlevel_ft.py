@@ -8,7 +8,7 @@ from jiuwensymbiosis.adapters.cruzr.lowlevel import CruzrLowLevel
 
 
 def _fake_wrench():
-    force = SimpleNamespace(x=1.0, y=2.0, z=2.0)  # |f| = sqrt(1+4+4) = 3
+    force = SimpleNamespace(x=1.0, y=2.0, z=2.0)   # |f| = sqrt(1+4+4) = 3
     torque = SimpleNamespace(x=0.0, y=0.0, z=0.0)
     return SimpleNamespace(wrench=SimpleNamespace(force=force, torque=torque))
 
@@ -43,7 +43,8 @@ def _stub_geometry_msgs(monkeypatch):
 def test_read_hand_ft_selects_topic(monkeypatch):
     _stub_geometry_msgs(monkeypatch)
     ll = object.__new__(CruzrLowLevel)
-    ll.cfg = CruzrConfig(left_hand_ft_topic="/mc/ft_states/L_hand_ft", right_hand_ft_topic="/mc/ft_states/R_hand_ft")
+    ll.cfg = CruzrConfig(left_hand_ft_topic="/mc/ft_states/L_hand_ft",
+                         right_hand_ft_topic="/mc/ft_states/R_hand_ft")
     ll._node = _FakeNode(_fake_wrench())
 
     out = ll.read_hand_ft("left")

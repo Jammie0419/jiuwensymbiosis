@@ -19,8 +19,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwensymbiosis.adapters._common.sim.config import SimMachineConfig
-from jiuwensymbiosis.adapters._common.sim.driver import SimMachineDriver
+from jiuwen_agx.sim.config import SimMachineConfig
+from jiuwen_agx.sim.driver import SimMachineDriver
 from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,14 @@ class SimMachineEnv(BaseRobotEnv):
         if self.cfg.terrain_enabled:
             caps.add("sensing.terrain")
         if self.cfg.camera_enabled:
-            caps.update({"vision.camera", "vision.depth", "vision.detection", "vision.eye_to_hand"})
+            caps.update(
+                {
+                    "vision.camera",
+                    "vision.depth",
+                    "vision.detection",
+                    "vision.eye_to_hand",
+                }
+            )
         return frozenset(caps)
 
     # ------------------------------------------------------------------ driver seam
@@ -104,7 +111,11 @@ class SimMachineEnv(BaseRobotEnv):
             try:
                 driver.close()
             except Exception as exc:
-                logger.warning("%s: driver.close() after failed connect raised %s", type(self).__name__, exc)
+                logger.warning(
+                    "%s: driver.close() after failed connect raised %s",
+                    type(self).__name__,
+                    exc,
+                )
             raise
         self._driver = driver
         self.capabilities = self._capabilities_for_config()
@@ -125,7 +136,9 @@ class SimMachineEnv(BaseRobotEnv):
         if self._driver is not None:
             try:
                 positions = self._driver.get_joint_positions()
-                joints = [float(positions[n]) for n in self.cfg.joint_names if n in positions]
+                joints = [
+                    float(positions[n]) for n in self.cfg.joint_names if n in positions
+                ]
             except Exception as exc:
                 logger.debug("[%s] read_joints failed: %s", self.cfg.name, exc)
         extra: dict[str, Any] = {"joint_units": self.cfg.joint_units or None}
@@ -147,7 +160,9 @@ class SimMachineEnv(BaseRobotEnv):
         self._require_driver().home()
 
     # ------------------------------------------------------------------ base verbs (base class raises; we delegate)
-    def navigate_relative(self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> dict:
+    def navigate_relative(
+        self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0
+    ) -> dict:
         return self._require_driver().navigate_relative(dx_m, dy_m, dyaw_rad)
 
     def navigate_arc(self, radius_m: float, dyaw_rad: float) -> dict:
@@ -157,7 +172,9 @@ class SimMachineEnv(BaseRobotEnv):
     def read_terrain(self) -> list[dict[str, Any]]:
         """Terrain truth for the get_terrain action (sensing.terrain-gated)."""
         if "sensing.terrain" not in self.capabilities:
-            raise NotImplementedError(f"{type(self).__name__}: terrain_enabled=False — no terrain truth")
+            raise NotImplementedError(
+                f"{type(self).__name__}: terrain_enabled=False — no terrain truth"
+            )
         return self._require_driver().read_terrain()
 
     def get_joint_positions(self) -> dict[str, float]:
@@ -182,18 +199,27 @@ class SimMachineEnv(BaseRobotEnv):
         if limits is None:
             return None
         # Re-insert in joint_names order for stable indexing.
-        return {name: limits[name] for name in self.cfg.joint_names if name in limits} or None
+        return {
+            name: limits[name] for name in self.cfg.joint_names if name in limits
+        } or None
 
     @joint_limits.setter
     def joint_limits(self, _: dict[str, tuple[float, float]] | None) -> None:
-        raise AttributeError("SimMachineEnv.joint_limits is read-only (read from config)")
+        raise AttributeError(
+            "SimMachineEnv.joint_limits is read-only (read from config)"
+        )
 
     @property
     def base_step_limits(self) -> tuple[float, float] | None:
         if not self.cfg.has_base or self.cfg.base_step_limits is None:
             return None
-        return (float(self.cfg.base_step_limits[0]), float(self.cfg.base_step_limits[1]))
+        return (
+            float(self.cfg.base_step_limits[0]),
+            float(self.cfg.base_step_limits[1]),
+        )
 
     @base_step_limits.setter
     def base_step_limits(self, _: tuple[float, float] | None) -> None:
-        raise AttributeError("SimMachineEnv.base_step_limits is read-only (read from config)")
+        raise AttributeError(
+            "SimMachineEnv.base_step_limits is read-only (read from config)"
+        )

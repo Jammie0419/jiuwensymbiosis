@@ -8,15 +8,15 @@ from __future__ import annotations
 import math
 
 import pytest
-
-from jiuwensymbiosis.adapters._common.sim.api import SimMachineApi
-from jiuwensymbiosis.adapters._common.sim.backend import (
+from jiuwen_agx.sim.api import SimMachineApi
+from jiuwen_agx.sim.backend import (
     MockSimBackend,
     create_backend,
 )
-from jiuwensymbiosis.adapters._common.sim.config import SimMachineConfig
-from jiuwensymbiosis.adapters._common.sim.driver import SimMachineDriver
-from jiuwensymbiosis.adapters._common.sim.env import SimMachineEnv
+from jiuwen_agx.sim.config import SimMachineConfig
+from jiuwen_agx.sim.driver import SimMachineDriver
+from jiuwen_agx.sim.env import SimMachineEnv
+
 from jiuwensymbiosis.tools.builder import list_tool_meta
 
 JOINTS = ("swing", "boom", "arm", "bucket")
@@ -36,7 +36,9 @@ def _cfg(**overrides) -> SimMachineConfig:
 
 
 def _driver(**overrides) -> SimMachineDriver:
-    driver = SimMachineDriver(_cfg(**overrides), backend=MockSimBackend(_cfg(**overrides)))
+    driver = SimMachineDriver(
+        _cfg(**overrides), backend=MockSimBackend(_cfg(**overrides))
+    )
     driver.connect()
     return driver
 
@@ -47,7 +49,15 @@ class TestConfig:
         cfg = SimMachineConfig.from_dict(
             {
                 "adapter": "x",
-                "env": {"cfg": {"low_level": {"name": "m", "joint_names": ["a", "b"], "has_base": True}}},
+                "env": {
+                    "cfg": {
+                        "low_level": {
+                            "name": "m",
+                            "joint_names": ["a", "b"],
+                            "has_base": True,
+                        }
+                    }
+                },
                 "model": {"api_base": "x"},
             }
         )
@@ -100,12 +110,20 @@ class TestMockBackend:
         backend.open()
         state = backend.send_joint_targets({"swing": 15.0}, timeout_s=1.0)
         assert state["swing"] == 15.0
-        assert backend.move_log[-1] == {"cmd": "move_joints", "targets": {"swing": 15.0}}
+        assert backend.move_log[-1] == {
+            "cmd": "move_joints",
+            "targets": {"swing": 15.0},
+        }
 
     def test_terrain_and_scoop_truth(self):
-        backend = MockSimBackend(SimMachineConfig(), piles=[{"name": "p", "x_m": 1.0, "y_m": 2.0, "volume_m3": 3.0}])
+        backend = MockSimBackend(
+            SimMachineConfig(),
+            piles=[{"name": "p", "x_m": 1.0, "y_m": 2.0, "volume_m3": 3.0}],
+        )
         backend.open()
-        assert backend.read_terrain() == [{"name": "p", "x_m": 1.0, "y_m": 2.0, "volume_m3": 3.0}]
+        assert backend.read_terrain() == [
+            {"name": "p", "x_m": 1.0, "y_m": 2.0, "volume_m3": 3.0}
+        ]
         assert backend.scoop_state() is False
         backend.mark_scoop(True)
         assert backend.scoop_state() is True
@@ -179,9 +197,15 @@ class TestDriver:
 # ============================================================================ env
 class TestEnv:
     def test_capabilities_follow_config(self):
-        assert SimMachineEnv(_cfg()).capabilities == frozenset({"motion.joint", "motion.base", "sensing.terrain"})
-        assert SimMachineEnv(_cfg(has_base=False, terrain_enabled=False)).capabilities == frozenset({"motion.joint"})
-        camera_env = SimMachineEnv(_cfg(camera_enabled=True, has_base=False, terrain_enabled=False))
+        assert SimMachineEnv(_cfg()).capabilities == frozenset(
+            {"motion.joint", "motion.base", "sensing.terrain"}
+        )
+        assert SimMachineEnv(
+            _cfg(has_base=False, terrain_enabled=False)
+        ).capabilities == frozenset({"motion.joint"})
+        camera_env = SimMachineEnv(
+            _cfg(camera_enabled=True, has_base=False, terrain_enabled=False)
+        )
         assert "vision.camera" in camera_env.capabilities
         assert "motion.base" not in camera_env.capabilities
 
@@ -217,7 +241,9 @@ class TestEnv:
     def test_observation_best_effort_when_backend_breaks(self):
         env = SimMachineEnv(_cfg())
         env.connect()
-        env.low_level._backend.read_joints = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        env.low_level._backend.read_joints = lambda: (_ for _ in ()).throw(
+            RuntimeError("boom")
+        )
         obs = env.get_observation()
         assert obs.joints is None  # survived
         assert obs.extra["joint_units"] == "deg"

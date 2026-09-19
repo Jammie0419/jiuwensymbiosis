@@ -531,15 +531,10 @@ class TestSo101ApiDelegates:
     def test_move_joint_reaches_driver(self):
         """Named in, vector out — the Env converts via ARM_JOINT_ORDER-keyed joint_limits."""
         api, _env, driver = _build_api()
-        api.move_joint(
-            {
-                "shoulder_pan": 1.0,
-                "shoulder_lift": 2.0,
-                "elbow_flex": 3.0,
-                "wrist_flex": 4.0,
-                "wrist_roll": 5.0,
-            }
-        )
+        api.move_joint({
+            "shoulder_pan": 1.0, "shoulder_lift": 2.0, "elbow_flex": 3.0,
+            "wrist_flex": 4.0, "wrist_roll": 5.0,
+        })
         assert ("joint", [1.0, 2.0, 3.0, 4.0, 5.0]) in driver.log
 
     def test_move_direction_routes_so101pose_not_namespace(self):

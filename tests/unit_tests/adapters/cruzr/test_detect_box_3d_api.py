@@ -34,7 +34,7 @@ def test_locate_for_grasp_ok(monkeypatch):
     ]
     out = api.locate_for_grasp("box")
     assert out["ok"]
-    assert out["width_mm"] > 0  # base-Y extent of the 40-pixel patch
+    assert out["width_mm"] > 0   # base-Y extent of the 40-pixel patch
     # height_mm (base-Z extent) ≈ 0 for a fronto-parallel patch at constant depth
     assert out["center_mm"][2] > 0
     assert abs(out["center_mm"][2] - 500.0) < 2.0
@@ -94,7 +94,6 @@ def test_locate_for_grasp_no_intrinsics(monkeypatch):
     monkeypatch.setattr(api, "_ensure_detector", lambda: None)
     monkeypatch.setattr(api, "_calib_intrinsics", lambda: None)
     api._seg_fn = lambda rgb, text_prompt="box": []
-
     # grab_frames returns (rgb, depth, None, tf) to trigger K=None path
     class _NoIntrLL:
         def grab_frames(self, camera="waist"):
@@ -126,7 +125,6 @@ def test_locate_for_grasp_requires_live_tf(monkeypatch):
     coordinates, so locate_for_grasp must reject a frame with no live TF even when
     a static calib is configured.
     """
-
     class _NoTfLL:
         def grab_frames(self, camera="waist"):
             h, w = 360, 640
@@ -154,7 +152,6 @@ def test_locate_for_grasp_requires_live_tf(monkeypatch):
 
 def test_locate_for_grasp_tool_tagged_vision():
     from jiuwensymbiosis.tools.builder import list_tool_meta
-
     api = CruzrApi(_Env())
     meta = {m["name"]: m for m in list_tool_meta(api)}
     assert "locate_for_grasp" in meta

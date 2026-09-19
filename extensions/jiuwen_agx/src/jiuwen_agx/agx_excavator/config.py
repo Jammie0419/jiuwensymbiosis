@@ -6,14 +6,14 @@
 Only what makes an excavator AN EXCAVATOR lives here: the work-tool reach
 envelope and the dig-cycle keyframe tuning. Everything else (backend, joints,
 limits, undercarriage, terrain, camera) comes from
-:class:`~jiuwensymbiosis.adapters._common.sim.config.SimMachineConfig`.
+:class:`~jiuwen_agx.sim.config.SimMachineConfig`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from jiuwensymbiosis.adapters._common.sim.config import SimMachineConfig
+from jiuwen_agx.sim.config import SimMachineConfig
 
 __all__ = ["AgxExcavatorConfig"]
 
@@ -39,7 +39,12 @@ class AgxExcavatorConfig(SimMachineConfig):
     )
     # 安全收拢姿态（走行/转场）。
     home_joints: dict[str, float] | None = field(
-        default_factory=lambda: {"swing": 0.0, "boom": -20.0, "arm": 25.0, "bucket": 10.0}
+        default_factory=lambda: {
+            "swing": 0.0,
+            "boom": -20.0,
+            "arm": 25.0,
+            "bucket": 10.0,
+        }
     )
 
     # ==================== 挖掘工作参数 ====================
@@ -58,7 +63,11 @@ class AgxExcavatorConfig(SimMachineConfig):
     def from_dict(cls, data):  # type: ignore[override]
         cfg = super().from_dict(data)
         if cfg.swing_unit not in ("deg", "rad"):
-            raise ValueError(f"{cls.__name__}: swing_unit must be 'deg' or 'rad', got {cfg.swing_unit!r}")
+            raise ValueError(
+                f"{cls.__name__}: swing_unit must be 'deg' or 'rad', got {cfg.swing_unit!r}"
+            )
         if cfg.dig_cycle_tuning:
-            cfg.dig_cycle_tuning = {str(k): float(v) for k, v in cfg.dig_cycle_tuning.items()}
+            cfg.dig_cycle_tuning = {
+                str(k): float(v) for k, v in cfg.dig_cycle_tuning.items()
+            }
         return cfg

@@ -24,7 +24,7 @@ def _cfg_or_skip():
 def test_available_and_neutral_clear():
     cfg = _cfg_or_skip()
     assert sc.available(cfg.urdf_path, cfg.urdf_package_dir) is True
-    q0 = sc.full_q(cfg.urdf_path, cfg.urdf_package_dir, {})  # neutral
+    q0 = sc.full_q(cfg.urdf_path, cfg.urdf_package_dir, {})   # neutral
     assert sc.in_self_collision(cfg.urdf_path, cfg.urdf_package_dir, q0) is False
 
 

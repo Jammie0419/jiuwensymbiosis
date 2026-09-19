@@ -28,13 +28,13 @@ class _LL:
     def __init__(self, drive_polls=0):
         self.nav_calls = []
         self.spin_started = 0
-        self.frames_asked = []  # cameras the look-around actually read
+        self.frames_asked = []          # cameras the look-around actually read
         self._drive_polls = drive_polls
         self._drive_count = 0
         self.drive_started = 0
         self.drive_stopped = 0
-        self.steer_calls = []  # head bearings fed to the forward worker during the creep
-        self.hold_calls = 0  # times the creep was paused because the head lost the anchor
+        self.steer_calls = []   # head bearings fed to the forward worker during the creep
+        self.hold_calls = 0     # times the creep was paused because the head lost the anchor
 
     def grab_frames(self, camera="waist"):
         """No image: these tests script the SEARCH RESULT, so the look-around must fail open
@@ -47,7 +47,7 @@ class _LL:
         return {"ok": True, "yaw_reached": dyaw}
 
     def start_base_spin(self, direction=1.0):
-        self.spin_started += 1  # asserted 0 everywhere: pan-scan must not spin
+        self.spin_started += 1        # asserted 0 everywhere: pan-scan must not spin
         return object()
 
     def start_base_drive(self):
@@ -73,8 +73,8 @@ class _LL:
 class _Env:
     def __init__(self, drive_polls=0):
         self.low_level = _LL(drive_polls=drive_polls)
-        self.cfg = CruzrConfig()  # real defaults: face tol 0.10, lost_max 3
-        self.cfg.head_search_yaw_positions_rad = (0.6, -0.6)  # deployed 2-look (left + right once)
+        self.cfg = CruzrConfig()   # real defaults: face tol 0.10, lost_max 3
+        self.cfg.head_search_yaw_positions_rad = (0.6, -0.6)   # deployed 2-look (left + right once)
 
 
 def _api(waist_seq, head_seq, *, side="object", drive_polls=0):
@@ -88,8 +88,8 @@ def _api(waist_seq, head_seq, *, side="object", drive_polls=0):
         api.locate_for_grasp = lambda object_name="box", reference=None, relation="on": next(wit)  # type: ignore[method-assign]
     else:
         api.locate_for_place = lambda object_name="table", reference=None, relation="on": next(wit)  # type: ignore[method-assign]
-    api.look_for = lambda object_name="box", on=None, camera=None: next(hit)  # type: ignore[method-assign]
-    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}  # type: ignore[method-assign]
+    api.look_for = lambda object_name="box", on=None, camera=None: next(hit)           # type: ignore[method-assign]
+    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}                     # type: ignore[method-assign]
     return api, env
 
 
@@ -101,15 +101,8 @@ _WNF = {"ok": False, "reason": "no_detection"}
 
 
 def _hfound(bearing=0.0):
-    return {
-        "ok": True,
-        "found": True,
-        "bearing_rad": bearing,
-        "image_h": 100,
-        "image_w": 200,
-        "bbox": [0, 0, 50, 50],
-        "score": 0.9,
-    }
+    return {"ok": True, "found": True, "bearing_rad": bearing, "image_h": 100, "image_w": 200,
+            "bbox": [0, 0, 50, 50], "score": 0.9}
 
 
 _HNF = {"ok": True, "found": False, "reason": "no_detection", "image_h": 100, "image_w": 200}
@@ -117,21 +110,14 @@ _HNF = {"ok": True, "found": False, "reason": "no_detection", "image_h": 100, "i
 # Grounded head reject: reference resolves but no target overlaps it. ``_grnd_miss_seen`` additionally
 # carries where the (colour-verified) target WAS seen, off the reference, so the drive loop re-aims
 # the head toward it (base held) to recover the on-reference overlap next poll.
-_GRND_MISS = {
-    "ok": True,
-    "found": False,
-    "verified": True,
-    "reason": "no_target_on_reference",
-    "image_h": 100,
-    "image_w": 200,
-}
+_GRND_MISS = {"ok": True, "found": False, "verified": True, "reason": "no_target_on_reference",
+              "image_h": 100, "image_w": 200}
 
 
 def _grnd_miss_seen(seen_bearing):
     return {**_GRND_MISS, "seen_bearing_rad": seen_bearing}
 
-
-_PI4 = round(math.pi, 4)  # the 180° fallback as recorded by the (4-dp-rounded) fake nav
+_PI4 = round(math.pi, 4)   # the 180° fallback as recorded by the (4-dp-rounded) fake nav
 
 
 def test_waist_current_view_hits_no_head_scan():
@@ -142,33 +128,27 @@ def test_waist_current_view_hits_no_head_scan():
     assert out["ok"] and out["status"] == "acquired"
     assert env.low_level.spin_started == 0
     assert env.low_level.drive_started == 0
-    assert env.low_level.nav_calls == []  # acquire only → never rotates (approach owns alignment)
+    assert env.low_level.nav_calls == []          # acquire only → never rotates (approach owns alignment)
 
 
 def test_front_panscan_found_then_coarse_approach():
     # Waist blind up front; the FRONT head pan-scan sees the box (bearing 0.3) → coarse-approach
     # (turn once, drive forward) until the waist acquires → align. No 180°.
     api, env = _api(
-        waist_seq=[
-            _WNF,  # step1 current-view waist miss
-            _WNF,  # drive poll1 waist miss → keep creeping
-            _wok(1000, 0),  # drive poll2 waist ACQUIRED → handoff (drive halts)
-            _wok(1000, 200),
-        ],  # fresh re-detect for align
-        head_seq=[
-            _hfound(bearing=0.3),  # front scan look1: found → coarse approach
-            _hfound(),
-        ],  # drive poll1 head: still sees anchor
-        side="object",
-        drive_polls=5,
-    )
+        waist_seq=[_WNF,            # step1 current-view waist miss
+                   _WNF,            # drive poll1 waist miss → keep creeping
+                   _wok(1000, 0),   # drive poll2 waist ACQUIRED → handoff (drive halts)
+                   _wok(1000, 200)],  # fresh re-detect for align
+        head_seq=[_hfound(bearing=0.3),   # front scan look1: found → coarse approach
+                  _hfound()],              # drive poll1 head: still sees anchor
+        side="object", drive_polls=5)
     out = approach._face_object(api, "box")
     assert out["ok"] and out["status"] == "acquired"
     assert env.low_level.spin_started == 0
-    assert env.low_level.drive_started == 1  # one continuous forward creep
+    assert env.low_level.drive_started == 1           # one continuous forward creep
     navs = env.low_level.nav_calls
-    assert navs == [(0.0, 0.0, 0.9)]  # ONLY the coarse turn (head_yaw 0.6 + bearing 0.3):
-    assert (0.0, 0.0, _PI4) not in navs  # no 180°, and NO centroid-align turn after acquire
+    assert navs == [(0.0, 0.0, 0.9)]                   # ONLY the coarse turn (head_yaw 0.6 + bearing 0.3):
+    assert (0.0, 0.0, _PI4) not in navs               # no 180°, and NO centroid-align turn after acquire
 
 
 def test_coarse_approach_is_waist_only_no_head_steer():
@@ -177,61 +157,48 @@ def test_coarse_approach_is_waist_only_no_head_steer():
     # mid-creep. head_seq carries JUST the one pan-scan hit; if the creep still polled the head it would
     # exhaust the iterator (StopIteration) — this test passing proves the creep does not.
     api, env = _api(
-        waist_seq=[
-            _WNF,  # step1 current-view waist miss
-            _WNF,  # drive poll1 waist miss → keep creeping (no head consulted)
-            _wok(1000, 0),  # drive poll2 waist ACQUIRED → handoff
-            _wok(1000, 200),
-        ],  # fresh re-detect at handoff
-        head_seq=[_hfound(bearing=0.3)],  # ONLY the pan-scan uses the head; the creep never does
-        side="object",
-        drive_polls=5,
-    )
+        waist_seq=[_WNF,             # step1 current-view waist miss
+                   _WNF,             # drive poll1 waist miss → keep creeping (no head consulted)
+                   _wok(1000, 0),    # drive poll2 waist ACQUIRED → handoff
+                   _wok(1000, 200)],  # fresh re-detect at handoff
+        head_seq=[_hfound(bearing=0.3)],   # ONLY the pan-scan uses the head; the creep never does
+        side="object", drive_polls=5)
     out = approach._face_object(api, "box")
     assert out["ok"] and out["status"] == "acquired"
     assert env.low_level.drive_started == 1 and env.low_level.drive_stopped == 1
-    assert env.low_level.steer_calls == []  # drives straight on the initial bearing — never steered
+    assert env.low_level.steer_calls == []          # drives straight on the initial bearing — never steered
 
 
 def test_front_miss_then_180_then_back_found():
     # Front pan-scan finds nothing → rotate 180° ONCE → the BACK pan-scan finds it (bearing 0.4) →
     # coarse-approach until the waist acquires → align.
     api, env = _api(
-        waist_seq=[
-            _WNF,  # step1 current-view waist miss
-            _WNF,  # drive poll1 waist miss
-            _wok(1000, 0),  # drive poll2 waist ACQUIRED
-            _wok(1000, 150),
-        ],  # fresh for align
-        head_seq=[
-            _HNF,
-            _HNF,  # front scan: 2 looks, both miss
-            _hfound(bearing=0.4),  # back scan look1: found
-            _hfound(),
-        ],  # drive poll1 head keep
-        side="surface",
-        drive_polls=5,
-    )
+        waist_seq=[_WNF,            # step1 current-view waist miss
+                   _WNF,            # drive poll1 waist miss
+                   _wok(1000, 0),   # drive poll2 waist ACQUIRED
+                   _wok(1000, 150)],  # fresh for align
+        head_seq=[_HNF, _HNF,             # front scan: 2 looks, both miss
+                  _hfound(bearing=0.4),   # back scan look1: found
+                  _hfound()],              # drive poll1 head keep
+        side="surface", drive_polls=5)
     out = approach._face_surface(api, "table")
     assert out["ok"] and out["status"] == "acquired"
     assert env.low_level.spin_started == 0
     assert env.low_level.drive_started == 1
     navs = env.low_level.nav_calls
-    assert navs[0] == (0.0, 0.0, _PI4)  # the 180° fallback comes first
-    assert navs[1] == (0.0, 0.0, 1.0)  # coarse turn = head_yaw 0.6 + in-image bearing 0.4
-    assert len(navs) == 2  # ...and nothing after — no centroid-align turn
-    assert out["turned_rad"] >= math.pi  # includes the 180° turn
+    assert navs[0] == (0.0, 0.0, _PI4)                # the 180° fallback comes first
+    assert navs[1] == (0.0, 0.0, 1.0)                 # coarse turn = head_yaw 0.6 + in-image bearing 0.4
+    assert len(navs) == 2                             # ...and nothing after — no centroid-align turn
+    assert out["turned_rad"] >= math.pi               # includes the 180° turn
 
 
 def test_all_miss_returns_not_found():
     # Waist blind and both head pan-scans (front + 180° + back) find nothing → fail safe with
     # ``panscan_exhausted``; caller must NOT grasp.
     api, env = _api(
-        waist_seq=[_WNF],  # step1 waist miss; no coarse approach (head misses)
-        head_seq=[_HNF, _HNF, _HNF, _HNF],  # 2 front looks + 2 back looks, all miss
-        side="object",
-        drive_polls=0,
-    )
+        waist_seq=[_WNF],                       # step1 waist miss; no coarse approach (head misses)
+        head_seq=[_HNF, _HNF, _HNF, _HNF],      # 2 front looks + 2 back looks, all miss
+        side="object", drive_polls=0)
     out = approach._face_object(api, "box")
     assert out["ok"] is False
     assert out["reason"] == "object_not_found"
@@ -239,7 +206,7 @@ def test_all_miss_returns_not_found():
     assert math.isclose(out["turned_rad"], math.pi, rel_tol=1e-6)
     assert env.low_level.spin_started == 0
     assert env.low_level.drive_started == 0
-    assert env.low_level.nav_calls == [(0.0, 0.0, _PI4)]  # only the 180° fallback
+    assert env.low_level.nav_calls == [(0.0, 0.0, _PI4)]   # only the 180° fallback
 
 
 def test_front_head_seen_but_waist_never_acquires_fails_safe():
@@ -248,17 +215,11 @@ def test_front_head_seen_but_waist_never_acquires_fails_safe():
     # it). Waist-only: the base drives straight until the worker self-stops (no head-lost hold/abort),
     # then ONE final post-stop waist look also misses → give up.
     api, env = _api(
-        waist_seq=[
-            _WNF,  # step1 waist miss
-            _WNF,
-            _WNF,
-            _WNF,  # 3 drive polls: waist never acquires
-            _WNF,
-        ],  # final post-stop look: still misses
-        head_seq=[_hfound(bearing=0.2)],  # front scan look1: found → coarse (creep consults head no more)
-        side="object",
-        drive_polls=3,
-    )
+        waist_seq=[_WNF,                   # step1 waist miss
+                   _WNF, _WNF, _WNF,        # 3 drive polls: waist never acquires
+                   _WNF],                   # final post-stop look: still misses
+        head_seq=[_hfound(bearing=0.2)],   # front scan look1: found → coarse (creep consults head no more)
+        side="object", drive_polls=3)
     out = approach._face_object(api, "box")
     assert out["ok"] is False
     assert out["reason"] == "object_not_found"
@@ -266,9 +227,9 @@ def test_front_head_seen_but_waist_never_acquires_fails_safe():
     assert math.isclose(out["turned_rad"], 0.0, abs_tol=1e-9)
     assert env.low_level.spin_started == 0
     assert env.low_level.drive_started == 1 and env.low_level.drive_stopped == 1
-    assert env.low_level.hold_calls == 0  # waist-only: never pauses on a head-lost poll
-    assert env.low_level.steer_calls == []  # drives straight — never steered
-    assert (0.0, 0.0, _PI4) not in env.low_level.nav_calls  # no 180° after a front head hit
+    assert env.low_level.hold_calls == 0                     # waist-only: never pauses on a head-lost poll
+    assert env.low_level.steer_calls == []                  # drives straight — never steered
+    assert (0.0, 0.0, _PI4) not in env.low_level.nav_calls   # no 180° after a front head hit
 
 
 def test_final_waist_detect_rescues_after_worker_selfstop():
@@ -276,26 +237,18 @@ def test_final_waist_detect_rescues_after_worker_selfstop():
     # the in-loop waist polls all missed. The base closed the last stretch after the final poll, so
     # ONE final waist look after stopping now acquires → handoff succeeds instead of a false give-up.
     api, env = _api(
-        waist_seq=[
-            _WNF,  # step1 current-view waist miss
-            _WNF,
-            _WNF,  # 2 drive polls: waist misses (head keeps tracking)
-            _wok(1000, 0),  # FINAL post-stop waist look: ACQUIRED
-            _wok(1000, 120),
-        ],  # fresh re-detect for align
-        head_seq=[
-            _hfound(bearing=0.2),  # front scan: found → coarse approach
-            _hfound(),
-            _hfound(),
-        ],  # both drive polls: head still tracking (never lost)
-        side="object",
-        drive_polls=2,
-    )  # worker self-stops after 2 polls
+        waist_seq=[_WNF,            # step1 current-view waist miss
+                   _WNF, _WNF,      # 2 drive polls: waist misses (head keeps tracking)
+                   _wok(1000, 0),   # FINAL post-stop waist look: ACQUIRED
+                   _wok(1000, 120)],  # fresh re-detect for align
+        head_seq=[_hfound(bearing=0.2),   # front scan: found → coarse approach
+                  _hfound(), _hfound()],   # both drive polls: head still tracking (never lost)
+        side="object", drive_polls=2)      # worker self-stops after 2 polls
     out = approach._face_object(api, "box")
     assert out["ok"] and out["status"] == "acquired"
     assert env.low_level.drive_started == 1 and env.low_level.drive_stopped == 1
-    assert env.low_level.hold_calls == 0  # head never lost → never paused
-    assert env.low_level.nav_calls == [(0.0, 0.0, 0.8)]  # ONLY the coarse turn; no centroid-align turn
+    assert env.low_level.hold_calls == 0                     # head never lost → never paused
+    assert env.low_level.nav_calls == [(0.0, 0.0, 0.8)]      # ONLY the coarse turn; no centroid-align turn
 
 
 def test_grounded_grasp_head_searches_target_verified_on_reference():
@@ -307,14 +260,10 @@ def test_grounded_grasp_head_searches_target_verified_on_reference():
     # (on="brown table" threaded all the way into the creep) — never a bare bearing-only head check.
     env = _Env(drive_polls=5)
     api = CruzrApi(env)
-    wit = iter(
-        [
-            _WNF,  # step1 grounded waist miss (ref color-rejected up close)
-            _WNF,  # drive poll1 waist miss → head-steered creep
-            _wok(1000, 0),  # drive poll2 waist: target-on-surface ACQUIRED
-            _wok(1000, 0),
-        ]
-    )  # fresh for align
+    wit = iter([_WNF,             # step1 grounded waist miss (ref color-rejected up close)
+                _WNF,             # drive poll1 waist miss → head-steered creep
+                _wok(1000, 0),    # drive poll2 waist: target-on-surface ACQUIRED
+                _wok(1000, 0)])   # fresh for align
     api.locate_for_grasp = lambda object_name="white box", reference=None, relation="on": next(wit)  # type: ignore[method-assign]
     head_calls = []
 
@@ -322,18 +271,18 @@ def test_grounded_grasp_head_searches_target_verified_on_reference():
         head_calls.append((object_name, on))
         return _hfound(bearing=0.2)
 
-    api.look_for = _head  # type: ignore[method-assign]
-    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}  # type: ignore[method-assign]
+    api.look_for = _head          # type: ignore[method-assign]
+    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}   # type: ignore[method-assign]
     out = approach._face_object(api, "white box", reference="brown table")
     assert out["ok"]
     names = [n for (n, _o) in head_calls]
     ons = [o for (_n, o) in head_calls]
-    assert names  # the head was actually consulted
-    assert all(n == "white box" for n in names)  # S2: head searches the REAL target
-    assert "brown table" not in names  # never chased the bare surface
-    assert env.low_level.drive_started == 1  # the coarse-approach creep ran
-    assert len(ons) >= 1  # head consulted in the pan-scan (creep is waist-only)
-    assert all(o == "brown table" for o in ons)  # ...grounded-verified on the reference (on set)
+    assert names                                             # the head was actually consulted
+    assert all(n == "white box" for n in names)              # S2: head searches the REAL target
+    assert "brown table" not in names                        # never chased the bare surface
+    assert env.low_level.drive_started == 1                  # the coarse-approach creep ran
+    assert len(ons) >= 1                                     # head consulted in the pan-scan (creep is waist-only)
+    assert all(o == "brown table" for o in ons)              # ...grounded-verified on the reference (on set)
 
 
 def test_grounded_grasp_hands_off_only_on_grounded_confirm():
@@ -347,14 +296,13 @@ def test_grounded_grasp_hands_off_only_on_grounded_confirm():
 
     def _detect(object_name="white box", reference=None, relation="on"):
         assert reference is not None, "coarse handoff must use the GROUNDED detection, never plain"
-        _detect.n += 1  # grounded acquires on the 3rd call (2nd creep poll)
+        _detect.n += 1                         # grounded acquires on the 3rd call (2nd creep poll)
         return {**_wok(1000, 0), "reference": reference} if _detect.n >= 3 else _WNF
-
     _detect.n = 0
 
-    api.locate_for_grasp = _detect  # type: ignore[method-assign]
+    api.locate_for_grasp = _detect                                         # type: ignore[method-assign]
     api.look_for = lambda object_name="x", on=None, camera=None: _hfound(bearing=0.2)  # type: ignore[method-assign]
-    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}  # type: ignore[method-assign]
+    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}                 # type: ignore[method-assign]
     out = approach._face_object(api, "white box", reference="brown table")
     assert out["ok"]
     assert env.low_level.drive_started == 1 and env.low_level.drive_stopped == 1
@@ -379,18 +327,18 @@ def test_grounded_place_head_searches_reference_object_verified_on_surface():
         head_calls.append((object_name, on))
         return _hfound(bearing=0.2)
 
-    api.look_for = _head  # type: ignore[method-assign]
-    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}  # type: ignore[method-assign]
+    api.look_for = _head          # type: ignore[method-assign]
+    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}   # type: ignore[method-assign]
     out = approach._face_surface(api, "white table", reference="water cup", relation="under")
     assert out["ok"]
     names = [n for (n, _o) in head_calls]
     ons = [o for (_n, o) in head_calls]
-    assert names  # the head was actually consulted
-    assert all(n == "water cup" for n in names)  # head searches the reference OBJECT
-    assert "white table" not in names  # never chased the bare surface noun
-    assert env.low_level.drive_started == 1  # the coarse-approach creep ran
-    assert len(ons) >= 1  # head consulted in the pan-scan (creep is waist-only)
-    assert all(o == "white table" for o in ons)  # ...grounded-verified on the surface (on set)
+    assert names                                             # the head was actually consulted
+    assert all(n == "water cup" for n in names)              # head searches the reference OBJECT
+    assert "white table" not in names                        # never chased the bare surface noun
+    assert env.low_level.drive_started == 1                  # the coarse-approach creep ran
+    assert len(ons) >= 1                                     # head consulted in the pan-scan (creep is waist-only)
+    assert all(o == "white table" for o in ons)              # ...grounded-verified on the surface (on set)
 
 
 def test_grounded_place_hands_off_only_on_grounded_confirm():
@@ -404,14 +352,13 @@ def test_grounded_place_hands_off_only_on_grounded_confirm():
 
     def _sense(object_name="white table", reference=None, relation="on"):
         assert reference is not None, "coarse handoff must use the GROUNDED surface sense, never plain"
-        _sense.n += 1  # grounded acquires on the 3rd call (2nd creep poll)
+        _sense.n += 1                          # grounded acquires on the 3rd call (2nd creep poll)
         return {**_wok(1000, 0), "reference": reference} if _sense.n >= 3 else _WNF
-
     _sense.n = 0
 
-    api.locate_for_place = _sense  # type: ignore[method-assign]
+    api.locate_for_place = _sense                                          # type: ignore[method-assign]
     api.look_for = lambda object_name="x", on=None, camera=None: _hfound(bearing=0.2)  # type: ignore[method-assign]
-    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}  # type: ignore[method-assign]
+    api.set_head = lambda yaw_rad, pitch_rad: {"ok": True}                # type: ignore[method-assign]
     out = approach._face_surface(api, "white table", reference="water cup", relation="under")
     assert out["ok"]
     assert env.low_level.drive_started == 1 and env.low_level.drive_stopped == 1

@@ -31,12 +31,12 @@ def _fake_run_factory(*, ok=True, has_depth=True, k=None, rc=0):
         meta = {"ok": ok, "has_depth": has_depth, "K": k}
         (out / "meta.json").write_text(json.dumps(meta))
         return SimpleNamespace(returncode=rc, stdout="", stderr="")
-
     return _fake_run
 
 
 def test_grab_returns_frame(monkeypatch):
-    monkeypatch.setattr(camera_mod.subprocess, "run", _fake_run_factory(k=[[100, 0, 1], [0, 100, 1], [0, 0, 1]]))
+    monkeypatch.setattr(camera_mod.subprocess, "run",
+                        _fake_run_factory(k=[[100, 0, 1], [0, 100, 1], [0, 0, 1]]))
     frame = CruzrCamera(CruzrConfig()).grab()
     assert frame is not None
     assert frame.rgb.shape == (2, 2, 3)
@@ -45,7 +45,8 @@ def test_grab_returns_frame(monkeypatch):
 
 
 def test_grab_without_depth_or_k(monkeypatch):
-    monkeypatch.setattr(camera_mod.subprocess, "run", _fake_run_factory(has_depth=False, k=None))
+    monkeypatch.setattr(camera_mod.subprocess, "run",
+                        _fake_run_factory(has_depth=False, k=None))
     frame = CruzrCamera(CruzrConfig()).grab()
     assert frame is not None
     assert frame.depth_m is None
@@ -63,7 +64,6 @@ def test_grab_returns_none_on_nonzero_rc(monkeypatch):
 
     def _boom(cmd, **kwargs):
         return SimpleNamespace(returncode=1, stdout="", stderr="boom")
-
     monkeypatch.setattr(camera_mod.subprocess, "run", _boom)
     assert CruzrCamera(CruzrConfig()).grab() is None
 
@@ -79,7 +79,7 @@ def test_grab_retries_with_fresh_worker_until_frame(monkeypatch):
     def _fail_then_ok(cmd, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
-            out = _output_dir_from_cmd(cmd)  # worker ran but caught no frame
+            out = _output_dir_from_cmd(cmd)          # worker ran but caught no frame
             (out / "meta.json").write_text(json.dumps({"ok": False, "reason": "no_color_frame"}))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return good(cmd, **kwargs)
@@ -88,7 +88,7 @@ def test_grab_retries_with_fresh_worker_until_frame(monkeypatch):
     frame = CruzrCamera(CruzrConfig()).grab()
     assert frame is not None
     assert frame.rgb.shape == (2, 2, 3)
-    assert calls["n"] == 2  # one retry with a fresh worker
+    assert calls["n"] == 2                            # one retry with a fresh worker
 
 
 def test_grab_no_retry_when_disabled(monkeypatch):
@@ -122,7 +122,8 @@ def test_head_cloud_worker_uses_aligned_color_topic():
     # Legacy head-cloud grab (kept for debug_align; the 2-D search no longer uses it): still the
     # left rect-color compressed stream + its point cloud, per head_aligned_color_topic.
     cmd = CruzrCamera(CruzrConfig())._head_cloud_cmd(Path("/tmp/head-cloud-test"))
-    assert cmd[cmd.index("--color-topic") + 1] == "/sensor/camera/stereo/left/image_rect_color/compressed"
+    assert cmd[cmd.index("--color-topic") + 1] == \
+        "/sensor/camera/stereo/left/image_rect_color/compressed"
     assert cmd[cmd.index("--color-msg-type") + 1] == "sensor_msgs/msg/CompressedImage"
     assert "--rectify-cruzr-stereo-left" not in cmd
 
@@ -136,7 +137,9 @@ def test_head_cloud_worker_uses_default_transports_env(monkeypatch):
         captured["env"] = kwargs["env"]
         out = _output_dir_from_cmd(cmd)
         np.save(out / "color.npy", np.zeros((2, 2, 3), dtype=np.uint8))
-        (out / "meta.json").write_text(json.dumps({"ok": True, "has_cloud": False, "tf_base_cam": None}))
+        (out / "meta.json").write_text(json.dumps(
+            {"ok": True, "has_cloud": False, "tf_base_cam": None}
+        ))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setenv("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
@@ -167,7 +170,7 @@ def test_head_cloud_worker_can_rectify_vendor_rgb_as_fallback():
 
 
 def test_cruzr_stereo_rectification_shape():
-    pytest.importorskip("cv2")  # opencv ships in the [full] / [calib] extras, not [dev]
+    pytest.importorskip("cv2")   # opencv ships in the [full] / [calib] extras, not [dev]
     from jiuwensymbiosis.adapters.cruzr.ros2.camera_worker import _rectify_cruzr_stereo_left
 
     rgb = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -185,9 +188,9 @@ def test_lowlevel_grab_frames_delegates_to_camera():
 
     class _FakeCam:
         def grab(self, camera="waist"):
-            return CameraFrame(
-                rgb=np.zeros((2, 2, 3), np.uint8), depth_m=np.ones((2, 2), np.float32), intrinsics=np.eye(3)
-            )
+            return CameraFrame(rgb=np.zeros((2, 2, 3), np.uint8),
+                               depth_m=np.ones((2, 2), np.float32),
+                               intrinsics=np.eye(3))
 
     ll._camera_obj = _FakeCam()
     rgb, depth, k, tf = ll.grab_frames()
@@ -245,18 +248,9 @@ def test_grab_parses_tf_base_cam(tmp_path, monkeypatch):
     np.save(out / "color.npy", np.zeros((4, 4, 3), dtype=np.uint8))
     np.save(out / "depth.npy", np.ones((4, 4), dtype=np.float32))
     tf = [[1, 0, 0, 10.0], [0, 1, 0, 20.0], [0, 0, 1, 30.0], [0, 0, 0, 1]]
-    (out / "meta.json").write_text(
-        json.dumps(
-            {
-                "ok": True,
-                "has_depth": True,
-                "K": [[345, 0, 320], [0, 345, 180], [0, 0, 1]],
-                "tf_base_cam": tf,
-                "width": 4,
-                "height": 4,
-            }
-        )
-    )
+    (out / "meta.json").write_text(json.dumps(
+        {"ok": True, "has_depth": True, "K": [[345, 0, 320], [0, 345, 180], [0, 0, 1]],
+         "tf_base_cam": tf, "width": 4, "height": 4}))
 
     class _Cfg:
         ros_python = "/usr/bin/python3"
@@ -272,11 +266,11 @@ def test_grab_parses_tf_base_cam(tmp_path, monkeypatch):
             returncode = 0
             stderr = ""
             stdout = ""
-
         return P()
 
     monkeypatch.setattr(cam_mod.subprocess, "run", _fake_run)
-    monkeypatch.setattr(cam_mod.tempfile, "TemporaryDirectory", lambda *a, **k: _DirCtx(str(out)))
+    monkeypatch.setattr(cam_mod.tempfile, "TemporaryDirectory",
+                        lambda *a, **k: _DirCtx(str(out)))
     frame = cam_mod.CruzrCamera(_Cfg()).grab("waist")
     assert frame is not None
     assert frame.tf_base_cam is not None
@@ -284,14 +278,9 @@ def test_grab_parses_tf_base_cam(tmp_path, monkeypatch):
 
 
 class _DirCtx:
-    def __init__(self, p):
-        self.p = p
-
-    def __enter__(self):
-        return self.p
-
-    def __exit__(self, *a):
-        return False
+    def __init__(self, p): self.p = p
+    def __enter__(self): return self.p
+    def __exit__(self, *a): return False
 
 
 def test_grab_head_builds_head_cmd_and_returns_rgb(monkeypatch):
@@ -303,9 +292,9 @@ def test_grab_head_builds_head_cmd_and_returns_rgb(monkeypatch):
         captured["env"] = kwargs["env"]
         out = _output_dir_from_cmd(cmd)
         np.save(out / "color.npy", np.zeros((3, 5, 3), dtype=np.uint8))
-        (out / "meta.json").write_text(
-            json.dumps({"ok": True, "has_depth": False, "K": None, "tf_base_cam": None, "width": 5, "height": 3})
-        )
+        (out / "meta.json").write_text(json.dumps(
+            {"ok": True, "has_depth": False, "K": None,
+             "tf_base_cam": None, "width": 5, "height": 3}))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(camera_mod.subprocess, "run", _fake_run)
@@ -324,8 +313,8 @@ def test_grab_head_builds_head_cmd_and_returns_rgb(monkeypatch):
     assert "FASTRTPS_DEFAULT_PROFILES_FILE" not in captured["env"]
     assert "FASTDDS_DEFAULT_PROFILES_FILE" not in captured["env"]
     assert "CYCLONEDDS_URI" not in captured["env"]
-    assert "--depth-topic" not in cmd  # head has no depth
-    assert "--ensure-rgb" in cmd  # grayscale-safe
+    assert "--depth-topic" not in cmd            # head has no depth
+    assert "--ensure-rgb" in cmd                 # grayscale-safe
     # TF is skipped for the head: optical frame passed empty
     assert cmd[cmd.index("--camera-optical-frame") + 1] == ""
 

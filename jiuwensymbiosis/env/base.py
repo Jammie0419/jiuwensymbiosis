@@ -34,8 +34,10 @@ logger = logging.getLogger(__name__)
 #   1. Append it here.
 #   2. (Optionally) add a Mixin in api/components.py that declares it.
 #   3. (Optionally) write a Rail that activates only when this string is present.
-KNOWN_CAPABILITIES: frozenset[str] = frozenset(
-    {
+# Out-of-tree extension packages add capabilities at runtime via
+# :func:`register_capability` instead of editing this file — see
+# docs/zh/how-to/write-an-extension-package.md.
+KNOWN_CAPABILITIES: set[str] = {
         "motion.cartesian",  # XYZ(R) end-effector commands in base frame
         "motion.joint",  # joint-space commands
         "motion.servo",  # non-blocking streaming pose commands (real-time servo loop)
@@ -67,16 +69,18 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # (dual_arm_grasp / dual_arm_place). What the arms hold is the separate grasp.* axis.
         "motion.dual_arm",
         "planning.reachability",  # URDF-based reachability / workspace prior for planning
-        # Machine-family work cycles beyond arm grasping: one capability per machine family,
-        # gating that family's compound work actions (excavator → dig). Same growth pattern
-        # as motion.lift / motion.dual_arm: the action speaks the WORK, not the joints.
-        "motion.excavator",  # excavator dig-and-dump work cycle
-        # The body's environment reports terrain truth (material piles with ground
-        # coordinates + volume) — the simulator seam for earthmoving bodies. A marker
-        # capability: no driver members, gated actions read it off the env/backend.
-        "sensing.terrain",
-    }
-)
+}
+
+
+def register_capability(name: str) -> None:
+    """Register an out-of-tree capability at runtime (extension-package seam).
+
+    Idempotent. ``KNOWN_CAPABILITIES`` is a plain set mutated IN PLACE, so every
+    ``from jiuwensymbiosis.env.base import KNOWN_CAPABILITIES`` binding — the
+    ``__init_subclass__`` gate below, the adapter validator, the pinned guard
+    test — observes the addition without re-import.
+    """
+    KNOWN_CAPABILITIES.add(str(name))
 
 # Capabilities NEITHER side declares: each derives its own half (the Api "do I hold a
 # judge", the Env "do I ship the model it reads" — see ``effective_capabilities``), and
@@ -495,9 +499,7 @@ class BaseRobotEnv(ABC):
         if len(values) != len(names):
             logger.warning(
                 "%s: get_angles() returned %d values for %d joint names; holding at 0.0",
-                self.name,
-                len(values),
-                len(names),
+                self.name, len(values), len(names),
             )
             return [0.0] * len(names)
         return [float(v) for v in values]

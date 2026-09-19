@@ -25,8 +25,8 @@ from typing import Any
 
 import numpy as np
 
-from jiuwensymbiosis.adapters._common.sim.backend import SimBackend, create_backend
-from jiuwensymbiosis.adapters._common.sim.config import SimMachineConfig
+from jiuwen_agx.sim.backend import SimBackend, create_backend
+from jiuwen_agx.sim.config import SimMachineConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +36,14 @@ __all__ = ["SimMachineDriver"]
 class SimMachineDriver:
     """Drive one simulated machine through a :class:`SimBackend`."""
 
-    def __init__(self, cfg: SimMachineConfig, backend: SimBackend | None = None) -> None:
+    def __init__(
+        self, cfg: SimMachineConfig, backend: SimBackend | None = None
+    ) -> None:
         """``backend`` injection is the test/simulator seam: None = build from cfg."""
         self._cfg = cfg
-        self._backend: SimBackend = backend if backend is not None else create_backend(cfg)
+        self._backend: SimBackend = (
+            backend if backend is not None else create_backend(cfg)
+        )
         self._connected = False
 
     # ------------------------------------------------------------------ lifecycle
@@ -49,7 +53,11 @@ class SimMachineDriver:
             return
         self._backend.open()
         self._connected = True
-        logger.info("[%s] sim backend %s connected.", self._cfg.name, type(self._backend).__name__)
+        logger.info(
+            "[%s] sim backend %s connected.",
+            self._cfg.name,
+            type(self._backend).__name__,
+        )
 
     def close(self) -> None:
         """Idempotent and safe at any state."""
@@ -96,7 +104,9 @@ class SimMachineDriver:
                 )
             position = float(value)
             if not math.isfinite(position):
-                raise ValueError(f"{self._cfg.name}: non-finite target for joint {joint!r}: {value!r}")
+                raise ValueError(
+                    f"{self._cfg.name}: non-finite target for joint {joint!r}: {value!r}"
+                )
             limits = self._cfg.joint_limits
             if limits is not None and joint in limits:
                 low, high = limits[joint]
@@ -109,13 +119,19 @@ class SimMachineDriver:
         if not clean:
             raise ValueError(f"{self._cfg.name}: empty joint command")
         return self._backend.send_joint_targets(
-            clean, timeout_s=float(timeout_s if timeout_s is not None else self._cfg.move_timeout_s)
+            clean,
+            timeout_s=float(
+                timeout_s if timeout_s is not None else self._cfg.move_timeout_s
+            ),
         )
 
     def home(self) -> None:
         """Return to the configured home joint posture. No home_joints = no-op."""
         if not self._cfg.home_joints:
-            logger.debug("[%s] home: no home_joints configured, treating as already home", self._cfg.name)
+            logger.debug(
+                "[%s] home: no home_joints configured, treating as already home",
+                self._cfg.name,
+            )
             return
         self.move_joints_blocking(dict(self._cfg.home_joints))
 
@@ -128,7 +144,12 @@ class SimMachineDriver:
             )
 
     def navigate_relative(
-        self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0, *, timeout_s: float | None = None
+        self,
+        dx_m: float,
+        dy_m: float = 0.0,
+        dyaw_rad: float = 0.0,
+        *,
+        timeout_s: float | None = None,
     ) -> dict:
         """Turn by ``dyaw_rad`` then advance ``dx_m`` metres (REP-103). Differential:
         a tracked undercarriage cannot strafe, so ``dy_m`` is ignored."""
@@ -136,22 +157,30 @@ class SimMachineDriver:
         self._require_base()
         if abs(float(dy_m)) > 1e-9:
             logger.debug(
-                "[%s] navigate_relative: dy_m=%s ignored (differential base cannot strafe)", self._cfg.name, dy_m
+                "[%s] navigate_relative: dy_m=%s ignored (differential base cannot strafe)",
+                self._cfg.name,
+                dy_m,
             )
         return self._backend.navigate_relative(
             float(dx_m),
             float(dyaw_rad),
-            timeout_s=float(timeout_s if timeout_s is not None else self._cfg.move_timeout_s),
+            timeout_s=float(
+                timeout_s if timeout_s is not None else self._cfg.move_timeout_s
+            ),
         )
 
-    def navigate_arc(self, radius_m: float, dyaw_rad: float, *, timeout_s: float | None = None) -> dict:
+    def navigate_arc(
+        self, radius_m: float, dyaw_rad: float, *, timeout_s: float | None = None
+    ) -> dict:
         """Drive ONE constant-curvature arc (signed radius, + = left)."""
         self._require_connected()
         self._require_base()
         return self._backend.navigate_arc(
             float(radius_m),
             float(dyaw_rad),
-            timeout_s=float(timeout_s if timeout_s is not None else self._cfg.move_timeout_s),
+            timeout_s=float(
+                timeout_s if timeout_s is not None else self._cfg.move_timeout_s
+            ),
         )
 
     def rotate_base(self, dyaw_rad: float, *, timeout_s: float | None = None) -> dict:

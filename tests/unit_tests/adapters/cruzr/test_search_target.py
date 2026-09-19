@@ -48,7 +48,7 @@ def test_search_target_found_centered(monkeypatch):
     ]
     out = api.search_target("box")
     assert out["ok"] and out["found"]
-    assert out["camera"] == "head"  # the result names the camera that answered
+    assert out["camera"] == "head"   # the result names the camera that answered
     assert out["image_w"] == 200 and out["image_h"] == 100
     assert abs(out["u_center"] - 100.0) < 1e-6
     assert abs(out["u_error_frac"]) < 1e-6
@@ -87,7 +87,6 @@ def test_search_target_no_camera(monkeypatch):
             @staticmethod
             def grab_frames(camera="waist"):
                 return None
-
         cfg = _Cfg()
 
     api = CruzrApi(_NoCamEnv())
@@ -117,7 +116,6 @@ def test_search_target_grayscale_is_stacked(monkeypatch):
 
 def test_search_target_tool_tagged_vision():
     from jiuwensymbiosis.tools.builder import list_tool_meta
-
     api = _api(np.zeros((100, 200, 3), dtype=np.uint8))
     meta = {m["name"]: m for m in list_tool_meta(api)}
     assert "search_target" in meta

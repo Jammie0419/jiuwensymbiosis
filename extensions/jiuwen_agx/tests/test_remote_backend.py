@@ -24,16 +24,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from jiuwen_agx.agx_excavator import build_agx_excavator_session
+from jiuwen_agx.sim.backend import RemoteSimBackend
 
-from jiuwensymbiosis.adapters._common.sim.backend import RemoteSimBackend
-from jiuwensymbiosis.adapters.agx_excavator import build_agx_excavator_session
-
-_REPO = Path(__file__).resolve().parents[4]
-_BRIDGE_PATH = _REPO / "scripts" / "agx_bridge_server.py"
+_REPO = Path(__file__).resolve().parents[1]
+_EXT = Path(__file__).resolve().parents[1]
+_BRIDGE_PATH = _EXT / "scripts" / "agx_bridge_server.py"
 
 
 def _load_bridge_module():
-    spec = importlib.util.spec_from_file_location("agx_bridge_server_under_test", _BRIDGE_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "agx_bridge_server_under_test", _BRIDGE_PATH
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -129,7 +131,9 @@ def bridge():
 
 
 def _backend(port: int) -> RemoteSimBackend:
-    cfg = SimpleNamespace(host="127.0.0.1", port=port, startup_timeout_s=5.0, move_timeout_s=5.0)
+    cfg = SimpleNamespace(
+        host="127.0.0.1", port=port, startup_timeout_s=5.0, move_timeout_s=5.0
+    )
     return RemoteSimBackend(cfg)
 
 
@@ -180,8 +184,14 @@ class TestRemoteBackendProtocol:
     def test_navigate_and_terrain_and_scoop(self, bridge):
         backend = _backend(bridge.port)
         backend.open()
-        assert backend.navigate_relative(0.5, 0.1, timeout_s=5.0) == {"dx_m": 0.5, "dyaw_rad": 0.1}
-        assert backend.navigate_arc(2.0, 0.3, timeout_s=5.0) == {"radius_m": 2.0, "dyaw_rad": 0.3}
+        assert backend.navigate_relative(0.5, 0.1, timeout_s=5.0) == {
+            "dx_m": 0.5,
+            "dyaw_rad": 0.1,
+        }
+        assert backend.navigate_arc(2.0, 0.3, timeout_s=5.0) == {
+            "radius_m": 2.0,
+            "dyaw_rad": 0.3,
+        }
         piles = backend.read_terrain()
         assert piles and {"name", "x_m", "y_m", "volume_m3"} <= set(piles[0])
         assert backend.scoop_state() is False

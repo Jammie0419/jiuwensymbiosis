@@ -135,24 +135,37 @@ def _real_session_builder(adapter: str) -> Callable[..., RobotSession]:
     """按约定返回某 adapter 的真机会话构建器(惰性导入,无 SDK 时仅在真跑时才失败)。
 
     约定:``jiuwensymbiosis.adapters.<adapter>`` 导出 ``build_<adapter>_session``,后者
-    带 ``.from_dict``(见 ``adapters/_common/builder.make_builder``)。直接采用**界面编辑过
-    的配置 dict**(而非重新读盘),使配置页改动对真机运行同样生效。
+    带 ``.from_dict``(见 ``adapters/_common/builder.make_builder``)。扩展包通过
+    entry-points 组 ``jiuwensymbiosis.adapters`` 提供(见 ``_extensions.py``),为回退来源。
+    直接采用**界面编辑过的配置 dict**(而非重新读盘),使配置页改动对真机运行同样生效。
     """
 
     def build(config_data: dict, *, include_sidecars: bool = True) -> RobotSession:
-        module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
-        factory = getattr(module, f"build_{adapter}_session")
+        factory: Callable[..., RobotSession] | None
+        try:
+            module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
+            factory = getattr(module, f"build_{adapter}_session")
+        except (ModuleNotFoundError, AttributeError):
+            from jiuwensymbiosis._extensions import discover_adapter_builders
+
+            factory = discover_adapter_builders().get(adapter)
+        if factory is None:
+            raise ModuleNotFoundError(f"adapter {adapter!r} not found (convention or extension)")
         return cast(RobotSession, factory.from_dict(config_data, include_sidecars=include_sidecars))
 
     return build
 
 
 def _adapter_available(adapter: str) -> bool:
-    """该 adapter 包是否存在(不执行其重依赖;仅 find_spec 定位)。"""
+    """该 adapter 包是否存在(不执行其重依赖;仅 find_spec 定位,扩展包查 entry-points)。"""
     try:
-        return importlib.util.find_spec(f"jiuwensymbiosis.adapters.{adapter}") is not None
+        if importlib.util.find_spec(f"jiuwensymbiosis.adapters.{adapter}") is not None:
+            return True
     except (ImportError, ValueError):
-        return False
+        pass
+    from jiuwensymbiosis._extensions import discover_adapter_builders
+
+    return adapter in discover_adapter_builders()
 
 
 # ------------------------------------------------------------------ 数据加载

@@ -12,17 +12,12 @@ def _tgt():
 
 
 def _fixed():
-    return {
-        "lifter_pitch_1_joint": 0.0,
-        "lifter_pitch_2_joint": 0.0,
-        "lifter_pitch_3_joint": 0.0,
-        "waist_yaw_joint": 0.0,
-    }
+    return {"lifter_pitch_1_joint": 0.0, "lifter_pitch_2_joint": 0.0,
+            "lifter_pitch_3_joint": 0.0, "waist_yaw_joint": 0.0}
 
 
 def test_dispatch_uses_pinocchio_when_available(monkeypatch):
     import jiuwensymbiosis.kinematics.ik_pinocchio as pik
-
     called = {}
 
     def _fake_pin(urdf_path, arm_joints, leaf_link, limits, *a, **k):
@@ -40,7 +35,6 @@ def test_dispatch_uses_pinocchio_when_available(monkeypatch):
 
 def test_dispatch_falls_back_to_dls_when_pin_unavailable(monkeypatch):
     import jiuwensymbiosis.kinematics.ik_pinocchio as pik
-
     legacy = {}
 
     def _fake_dls(chain, q_fixed, arm_joints, *a, **k):
@@ -57,7 +51,6 @@ def test_dispatch_falls_back_to_dls_when_pin_unavailable(monkeypatch):
 
 def test_dispatch_forwards_check_collision_and_package_dir(monkeypatch):
     import jiuwensymbiosis.kinematics.ik_pinocchio as pik
-
     seen = {}
 
     def _fake_pin(urdf_path, arm_joints, leaf_link, limits, *a, **k):

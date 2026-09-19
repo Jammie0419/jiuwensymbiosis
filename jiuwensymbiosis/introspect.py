@@ -40,13 +40,25 @@ def build_session(config_path: str) -> Any:
 
     The adapter is named by the config's ``adapter:`` field and resolved by the
     same convention the GUI registry uses — ``jiuwensymbiosis.adapters.<name>``
-    exports ``build_<name>_session`` with a ``.from_dict``. So a new body needs no
-    change here.
+    exports ``build_<name>_session`` with a ``.from_dict``. Extension packages
+    are the fallback (entry-points group ``jiuwensymbiosis.adapters``, see
+    ``jiuwensymbiosis/_extensions.py``). So a new body needs no change here.
     """
     raw = load_config(config_path)
     adapter = str(raw.get("adapter") or "piper")
-    module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
-    factory = getattr(module, f"build_{adapter}_session")
+    factory: Any = None
+    try:
+        module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
+        factory = getattr(module, f"build_{adapter}_session")
+    except (ModuleNotFoundError, AttributeError):
+        from jiuwensymbiosis._extensions import discover_adapter_builders
+
+        factory = discover_adapter_builders().get(adapter)
+    if factory is None:
+        raise ModuleNotFoundError(
+            f"adapter {adapter!r} not found: neither jiuwensymbiosis.adapters.{adapter} "
+            f"nor an entry-point-declared extension provides build_{adapter}_session"
+        )
     return factory.from_dict(raw)
 
 

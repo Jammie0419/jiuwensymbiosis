@@ -9,18 +9,11 @@ from jiuwensymbiosis.adapters.cruzr.api import run_approach
 
 def _cfg(**over):
     base = dict(
-        head_yaw_joint="head_yaw_joint",
-        head_pitch_joint="head_pitch_joint",
+        head_yaw_joint="head_yaw_joint", head_pitch_joint="head_pitch_joint",
         head_search_yaw_positions_rad=(0.0, 0.6, -0.6),
-        head_search_pitch_rad=-0.35,
-        head_forward_yaw_rad=0.0,
-        head_forward_pitch_rad=0.0,
-        center_tol_frac=0.08,
-        approach_step_m=0.4,
-        approach_max_iterations=5,
-        probe_bbox_frac=0.25,
-        grasp_forward_min_m=0.30,
-        grasp_forward_max_m=0.50,
+        head_search_pitch_rad=-0.35, head_forward_yaw_rad=0.0, head_forward_pitch_rad=0.0,
+        center_tol_frac=0.08, approach_step_m=0.4, approach_max_iterations=5,
+        probe_bbox_frac=0.25, grasp_forward_min_m=0.30, grasp_forward_max_m=0.50,
         lost_target_max=3,
     )
     base.update(over)
@@ -63,17 +56,9 @@ class FakeApi:
 
 
 def _found(bearing=0.0, u_err=0.0, bbox=(0, 0, 50, 50), image_h=100, image_w=200, v_center=None):
-    return {
-        "ok": True,
-        "found": True,
-        "bearing_rad": bearing,
-        "u_error_frac": u_err,
-        "bbox": list(bbox),
-        "image_h": image_h,
-        "image_w": image_w,
-        "score": 0.9,
-        "v_center": image_h / 2.0 if v_center is None else v_center,
-    }
+    return {"ok": True, "found": True, "bearing_rad": bearing, "u_error_frac": u_err,
+            "bbox": list(bbox), "image_h": image_h, "image_w": image_w, "score": 0.9,
+            "v_center": image_h / 2.0 if v_center is None else v_center}
 
 
 def _missing():
@@ -81,28 +66,17 @@ def _missing():
 
 
 def _det_ok(center_x_m):
-    return {
-        "ok": True,
-        "center_mm": [center_x_m * 1000.0, 0.0, 780.0],
-        "width_mm": 300.0,
-        "height_mm": 200.0,
-        "front_x_mm": center_x_m * 1000.0 - 100,
-        "back_x_mm": center_x_m * 1000.0 + 100,
-        "top_z_mm": 880.0,
-        "n_points": 500,
-    }
+    return {"ok": True, "center_mm": [center_x_m * 1000.0, 0.0, 780.0],
+            "width_mm": 300.0, "height_mm": 200.0, "front_x_mm": center_x_m * 1000.0 - 100,
+            "back_x_mm": center_x_m * 1000.0 + 100, "top_z_mm": 880.0, "n_points": 500}
 
 
 def test_acquire_by_head_then_handoff():
     # Head sweep: not found at yaw 0.0 and 0.6; found at -0.6 with in-image bearing 0.1.
     # Then approach iter 1: centered, big bbox -> waist detect in band -> handoff.
     api = FakeApi(
-        search_results=[
-            _missing(),
-            _missing(),
-            _found(bearing=0.1),
-            _found(bbox=(0, 0, 60, 100)),
-        ],  # bbox height 100/100 -> probes
+        search_results=[_missing(), _missing(), _found(bearing=0.1),
+                        _found(bbox=(0, 0, 60, 100))],   # bbox height 100/100 -> probes
         detect_results=[_det_ok(0.4)],
     )
     out = run_approach(api, "box")
@@ -120,10 +94,10 @@ def test_center_then_step_then_handoff():
     # centered small bbox -> step; centered big bbox -> detect in band -> handoff.
     api = FakeApi(
         search_results=[
-            _found(bearing=0.0),  # acquisition (yaw 0.0)
+            _found(bearing=0.0),                              # acquisition (yaw 0.0)
             _found(u_err=0.3, bearing=-0.36, bbox=(0, 0, 10, 10)),  # off-center, small
-            _found(u_err=0.0, bbox=(0, 0, 10, 10)),  # centered, small
-            _found(u_err=0.0, bbox=(0, 0, 60, 100)),  # centered, big -> probe
+            _found(u_err=0.0, bbox=(0, 0, 10, 10)),           # centered, small
+            _found(u_err=0.0, bbox=(0, 0, 60, 100)),          # centered, big -> probe
         ],
         detect_results=[_det_ok(0.35)],
     )
@@ -194,7 +168,8 @@ def test_head_pitch_tracks_low_box():
     # Box low in the head frame (v_center=80 of 100) -> head looks down to keep it in
     # view: v_err=(80-50)/100=0.3, +gain(-0.5)*0.3 = -0.15 from forward (0.0).
     api = FakeApi(
-        search_results=[_found(bearing=0.0), _found(u_err=0.0, bbox=(0, 0, 60, 100), v_center=80)],
+        search_results=[_found(bearing=0.0),
+                        _found(u_err=0.0, bbox=(0, 0, 60, 100), v_center=80)],
         detect_results=[_det_ok(0.40)],
     )
     out = run_approach(api, "box")
@@ -208,11 +183,9 @@ def test_beyond_band_clamps_forward_step():
     # clamped to center_x - max = 0.20 (not the full approach_step_m=0.4);
     # next probe (0.40) is in-band -> handoff.
     api = FakeApi(
-        search_results=[
-            _found(bearing=0.0),
-            _found(u_err=0.0, bbox=(0, 0, 60, 100)),
-            _found(u_err=0.0, bbox=(0, 0, 60, 100)),
-        ],
+        search_results=[_found(bearing=0.0),
+                        _found(u_err=0.0, bbox=(0, 0, 60, 100)),
+                        _found(u_err=0.0, bbox=(0, 0, 60, 100))],
         detect_results=[_det_ok(0.70), _det_ok(0.40)],
     )
     out = run_approach(api, "box")

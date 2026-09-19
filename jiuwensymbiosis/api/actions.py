@@ -55,8 +55,6 @@ from jiuwensymbiosis.contracts import (
     ApproachFailure,
     ApproachResult,
     BasePoint,
-    DigFailure,
-    DigResult,
     GraspFailure,
     GraspResult,
     ObjectGeometryResult,
@@ -64,7 +62,6 @@ from jiuwensymbiosis.contracts import (
     SearchResult,
     SensingFailure,
     SurfaceGeometryResult,
-    TerrainScan,
 )
 
 # ``ActionSpec`` / ``UnknownCapability`` are defined next to ``ToolMeta`` (api/decorators.py)
@@ -137,11 +134,11 @@ GOTO_XYZR = ActionSpec(
 GOTO_POSE = ActionSpec(
     name="goto_pose",
     description="Move the end-effector TIP to an absolute 6-DoF pose (x, y, z in mm; rx, ry, rz in deg), "
-    "base frame — the same point goto_xyzr and get_pose speak about, so a pose read from one "
-    "can be commanded to the other. Use it when the ORIENTATION matters; when top-down with a "
-    "yaw will do, goto_xyzr says the same thing with fewer numbers to get wrong. On an arm "
-    "with fewer joints than the pose demands, position is enforced and orientation is "
-    "best-effort.",
+        "base frame — the same point goto_xyzr and get_pose speak about, so a pose read from one "
+        "can be commanded to the other. Use it when the ORIENTATION matters; when top-down with a "
+        "yaw will do, goto_xyzr says the same thing with fewer numbers to get wrong. On an arm "
+        "with fewer joints than the pose demands, position is enforced and orientation is "
+        "best-effort.",
     capability="motion.cartesian",
     params=("pose",),
     required_params=("pose",),
@@ -184,7 +181,7 @@ MOVE_DIRECTION = ActionSpec(
 GET_POSE = ActionSpec(
     name="get_pose",
     description="Get the current end-effector TIP pose in mm/deg, base frame — the same point goto_xyzr and "
-    "goto_pose command, so a pose read here can be handed straight back to either.",
+        "goto_pose command, so a pose read here can be handed straight back to either.",
     capability="motion.cartesian",
     params=(),
 )
@@ -260,7 +257,8 @@ MOVE_NAMED_JOINT = ActionSpec(
 
 GET_JOINT_POSITIONS = ActionSpec(
     name="get_joint_positions",
-    description="Read the latest known joint positions, keyed by joint name, in the body's joint_units.",
+    description="Read the latest known joint positions, keyed by joint name, in the body's "
+    "joint_units.",
     capability="motion.joint",
     params=(),
     planner_visible=False,  # diagnostic; WorldState already carries joints into the prompt
@@ -272,7 +270,7 @@ GET_JOINT_POSITIONS = ActionSpec(
 OPEN_GRIPPER = ActionSpec(
     name="open_gripper",
     description="Open the parallel gripper, releasing whatever is held. width_mm is a HINT: a gripper "
-    "with no width control accepts it and ignores it.",
+        "with no width control accepts it and ignores it.",
     capability="grasp.parallel",
     params=("width_mm",),
     provides=("payload.clear",),
@@ -282,7 +280,7 @@ OPEN_GRIPPER = ActionSpec(
 CLOSE_GRIPPER = ActionSpec(
     name="close_gripper",
     description="Close the parallel gripper onto the target. Call it only once the tip is at the grasp "
-    "pose. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
+        "pose. force_n is a HINT: a gripper with no force control accepts it and ignores it.",
     capability="grasp.parallel",
     params=("force_n",),
     requires=("payload.clear",),
@@ -612,53 +610,6 @@ DUAL_ARM_PLACE = ActionSpec(
     tags=("motion",),
 )
 
-# =============================================================================
-# Simulator work cycles — motion.excavator / sensing.terrain
-# One capability per machine family (same growth pattern as motion.lift / motion.dual_arm):
-# the action speaks the WORK, the joints stay implementation. Terrain truth is the
-# simulator seam earthmoving bodies share, so it is gated on its own sensing capability.
-# =============================================================================
-DIG = ActionSpec(
-    name="dig",
-    description=(
-        "Execute one excavator dig-and-dump cycle: swing to face the dig ground point, scoop "
-        "one bucket of material, swing to the dump point, release. Both points are ground "
-        "coordinates in the base frame, in METRES (REP-103), and must lie inside this body's "
-        "reachable annulus — if a spot is out of reach, drive the undercarriage there first "
-        "(navigate_relative), then dig. Refuses while the bucket is still loaded; dump or home "
-        "first. Read get_terrain for where the material actually is — never guess coordinates."
-    ),
-    capability="motion.excavator",
-    params=("dig_x_m", "dig_y_m", "dump_x_m", "dump_y_m"),
-    required_params=("dig_x_m", "dig_y_m", "dump_x_m", "dump_y_m"),
-    param_schema={
-        "dig_x_m": {"type": "number", "description": "dig ground point X in base frame (metres)"},
-        "dig_y_m": {"type": "number", "description": "dig ground point Y in base frame (metres)"},
-        "dump_x_m": {"type": "number", "description": "dump ground point X in base frame (metres)"},
-        "dump_y_m": {"type": "number", "description": "dump ground point Y in base frame (metres)"},
-    },
-    requires=("payload.clear",),
-    provides=("payload.clear",),
-    invalidates=("body.home",),
-    invalidates_locations=True,  # digging reshapes the terrain: prior pile observations go stale
-    result=DigResult | DigFailure,
-    tags=("motion",),
-)
-
-GET_TERRAIN = ActionSpec(
-    name="get_terrain",
-    description=(
-        "Read the terrain truth this body's environment reports: material piles as {name, x_m, "
-        "y_m, volume_m3} ground points in the base frame (metres, REP-103). Zero-cost "
-        "observation — call it before dig instead of guessing where material is, and after "
-        "digging to see what moved."
-    ),
-    capability="sensing.terrain",
-    params=(),
-    result=TerrainScan,
-    tags=("sensing",),
-)
-
 
 ACTIONS: Mapping[str, ActionSpec] = _register(
     GOTO_XYZR,
@@ -691,9 +642,22 @@ ACTIONS: Mapping[str, ActionSpec] = _register(
     SEARCH_TARGET,
     DUAL_ARM_GRASP,
     DUAL_ARM_PLACE,
-    DIG,
-    GET_TERRAIN,
 )
+
+
+def register_actions(*specs: ActionSpec) -> None:
+    """Register out-of-tree action specs into the shared vocabulary (extension seam).
+
+    Extension packages declare their ActionSpecs locally and push them here at
+    import time (see docs/zh/how-to/write-an-extension-package.md). The same
+    vocabulary-entry rules as ``_register`` apply: unique name, declared params,
+    readable result shape when ``produces_location``.
+
+    ``ACTIONS`` is a plain dict mutated IN PLACE, so every
+    ``from jiuwensymbiosis.api.actions import ACTIONS`` binding observes the
+    additions without re-import.
+    """
+    ACTIONS.update(_register(*specs))
 
 
 class ContractViolation(TypeError):

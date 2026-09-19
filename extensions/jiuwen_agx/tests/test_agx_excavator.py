@@ -8,12 +8,12 @@ from __future__ import annotations
 import math
 
 import pytest
+from jiuwen_agx.agx_excavator import build_agx_excavator_session
+from jiuwen_agx.agx_excavator.api import AgxExcavatorApi
+from jiuwen_agx.agx_excavator.config import AgxExcavatorConfig
+from jiuwen_agx.agx_excavator.env import AgxExcavatorEnv
+from jiuwen_agx.agx_excavator.work import REQUIRED_JOINTS, execute_dig_cycle
 
-from jiuwensymbiosis.adapters.agx_excavator import build_agx_excavator_session
-from jiuwensymbiosis.adapters.agx_excavator.api import AgxExcavatorApi
-from jiuwensymbiosis.adapters.agx_excavator.config import AgxExcavatorConfig
-from jiuwensymbiosis.adapters.agx_excavator.env import AgxExcavatorEnv
-from jiuwensymbiosis.adapters.agx_excavator.work import REQUIRED_JOINTS, execute_dig_cycle
 from jiuwensymbiosis.tools.builder import list_tool_meta
 
 
@@ -29,7 +29,14 @@ class TestConfig:
     def test_yaml_overlay_merges_with_defaults(self):
         cfg = AgxExcavatorConfig.from_dict(
             {
-                "env": {"cfg": {"low_level": {"backend": "mock", "dig_cycle_tuning": {"dig_boom_deg": -50.5}}}},
+                "env": {
+                    "cfg": {
+                        "low_level": {
+                            "backend": "mock",
+                            "dig_cycle_tuning": {"dig_boom_deg": -50.5},
+                        }
+                    }
+                },
             }
         )
         assert cfg.backend == "mock"
@@ -41,7 +48,9 @@ class TestConfig:
     def test_env_adds_work_capability(self):
         env = AgxExcavatorEnv(AgxExcavatorConfig())
         assert "motion.excavator" in env.capabilities
-        assert env.capabilities == frozenset({"motion.joint", "motion.base", "sensing.terrain", "motion.excavator"})
+        assert env.capabilities == frozenset(
+            {"motion.joint", "motion.base", "sensing.terrain", "motion.excavator"}
+        )
 
 
 # ============================================================================ work cycle
@@ -72,24 +81,38 @@ class TestDigCycle:
         execute_dig_cycle(driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.0)
         expected = math.degrees(math.atan2(1.0, -2.0))
         assert driver.moves[0] == {"swing": pytest.approx(expected)}
-        assert {"swing": pytest.approx(math.degrees(math.atan2(0.0, 3.0)))} == driver.moves[4]
+        assert {
+            "swing": pytest.approx(math.degrees(math.atan2(0.0, 3.0)))
+        } == driver.moves[4]
 
     def test_swing_offset_is_applied_and_normalised(self):
         driver = _SpyDriver()
         # offset rotates the whole dig plane; atan2(-2,0)=-90 + (-45) = -135
         execute_dig_cycle(
-            driver, dig_x_m=0.0, dig_y_m=-2.0, dump_x_m=0.0, dump_y_m=2.0, tuning={"swing_offset_deg": -45.0}
+            driver,
+            dig_x_m=0.0,
+            dig_y_m=-2.0,
+            dump_x_m=0.0,
+            dump_y_m=2.0,
+            tuning={"swing_offset_deg": -45.0},
         )
         assert driver.moves[0] == {"swing": pytest.approx(-135.0)}
         # wrap-around: atan2(2,0)=90 + 135 = 225 -> normalised to -135
         execute_dig_cycle(
-            driver, dig_x_m=0.0, dig_y_m=2.0, dump_x_m=0.0, dump_y_m=2.0, tuning={"swing_offset_deg": 135.0}
+            driver,
+            dig_x_m=0.0,
+            dig_y_m=2.0,
+            dump_x_m=0.0,
+            dump_y_m=2.0,
+            tuning={"swing_offset_deg": 135.0},
         )
         assert driver.moves[0] == {"swing": pytest.approx(-135.0)}
 
     def test_cycle_shape_and_scoop_truth(self):
         driver = _SpyDriver()
-        result = execute_dig_cycle(driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5)
+        result = execute_dig_cycle(
+            driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5
+        )
         assert len(driver.moves) == 6  # 对准/就位/下铲/收斗/摆转/卸料
         assert result["volume_m3"] > 0
         assert result["cycle_s"] >= 0.0
@@ -111,25 +134,35 @@ class TestDigCycle:
     def test_refuses_point_outside_reach_annulus(self):
         driver = _SpyDriver()
         with pytest.raises(ValueError, match="annulus"):
-            execute_dig_cycle(driver, dig_x_m=20.0, dig_y_m=0.0, dump_x_m=3.0, dump_y_m=0.0)
+            execute_dig_cycle(
+                driver, dig_x_m=20.0, dig_y_m=0.0, dump_x_m=3.0, dump_y_m=0.0
+            )
         with pytest.raises(ValueError, match="annulus"):
-            execute_dig_cycle(driver, dig_x_m=0.0, dig_y_m=0.0, dump_x_m=3.0, dump_y_m=0.0)
+            execute_dig_cycle(
+                driver, dig_x_m=0.0, dig_y_m=0.0, dump_x_m=3.0, dump_y_m=0.0
+            )
 
     def test_refuses_when_still_loaded(self):
         driver = _SpyDriver()
         driver.mark_scoop(True)
         with pytest.raises(ValueError, match="loaded"):
-            execute_dig_cycle(driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5)
+            execute_dig_cycle(
+                driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5
+            )
 
     def test_refuses_body_missing_required_joints(self):
         driver = _SpyDriver(joint_names=("swing", "boom"))
         with pytest.raises(ValueError, match="needs joints"):
-            execute_dig_cycle(driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5)
+            execute_dig_cycle(
+                driver, dig_x_m=-2.0, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5
+            )
 
     def test_refuses_non_finite_point(self):
         driver = _SpyDriver()
         with pytest.raises(ValueError, match="finite"):
-            execute_dig_cycle(driver, dig_x_m=math.nan, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5)
+            execute_dig_cycle(
+                driver, dig_x_m=math.nan, dig_y_m=1.0, dump_x_m=3.0, dump_y_m=0.5
+            )
 
 
 # ============================================================================ api / session
@@ -145,7 +178,9 @@ class TestApi:
 
     def test_tools_include_the_work_cycle(self):
         session = self._built()
-        names = {entry["name"] for entry in list_tool_meta(session.api, env=session.env)}
+        names = {
+            entry["name"] for entry in list_tool_meta(session.api, env=session.env)
+        }
         assert "dig" in names
         assert {"move_joint", "navigate_relative", "get_terrain", "home"} <= names
 

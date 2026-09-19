@@ -10,7 +10,7 @@ Three lines of substance: add ``motion.excavator`` to the class-level superset
 
 from __future__ import annotations
 
-from jiuwensymbiosis.adapters._common.sim.env import SimMachineEnv
+from jiuwen_agx.sim.env import SimMachineEnv
 
 __all__ = ["AgxExcavatorEnv"]
 

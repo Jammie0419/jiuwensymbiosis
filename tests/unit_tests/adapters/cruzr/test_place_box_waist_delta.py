@@ -24,10 +24,10 @@ def test_rotate_arm_target_rotates_pos_and_dirs():
 
     out = _rotate_arm_target(tgt, rz90, t)
 
-    assert np.allclose(out.pos_m, (0.0, 1.0, 0.0))  # (1,0,0) -> (0,1,0)
+    assert np.allclose(out.pos_m, (0.0, 1.0, 0.0))         # (1,0,0) -> (0,1,0)
     assert np.allclose(out.approach, (0.0, 1.0, 0.0))
-    assert np.allclose(out.paddle, (-1.0, 0.0, 0.0))  # (0,1,0) -> (-1,0,0)
-    assert out.tcp_offset_local == (-0.09, 0.0, 0.0)  # tool-frame: unchanged
+    assert np.allclose(out.paddle, (-1.0, 0.0, 0.0))       # (0,1,0) -> (-1,0,0)
+    assert out.tcp_offset_local == (-0.09, 0.0, 0.0)       # tool-frame: unchanged
 
 
 def _api_with_real_cfg():
@@ -54,7 +54,7 @@ def test_waist_delta_noop_without_recorded_grasp_waist():
 
     assert api._last_grasp_waist_yaw is None
     out = api._rotate_targets_for_waist_delta(chain, q_fixed, tgts)
-    assert out is tgts  # untouched: plain place, no prior turn
+    assert out is tgts                                     # untouched: plain place, no prior turn
 
 
 def test_waist_delta_noop_when_no_turn():
@@ -64,7 +64,7 @@ def test_waist_delta_noop_when_no_turn():
     chain = parse_chain(cfg.urdf_path, "base_link", cfg.left_arm_leaf)
     tgts = _targets()
     api._last_grasp_waist_yaw = 0.4
-    q_fixed = {**_LIFTER0, "waist_yaw_joint": 0.4}  # current == grasp -> no rotation
+    q_fixed = {**_LIFTER0, "waist_yaw_joint": 0.4}          # current == grasp -> no rotation
 
     out = api._rotate_targets_for_waist_delta(chain, q_fixed, tgts)
     assert out is tgts
@@ -77,12 +77,12 @@ def test_waist_delta_rotates_targets_on_turn():
     chain = parse_chain(cfg.urdf_path, "base_link", cfg.left_arm_leaf)
     approach, descend, clamp = _targets()
     api._last_grasp_waist_yaw = 0.0
-    q_fixed = {**_LIFTER0, "waist_yaw_joint": 0.3}  # turned +0.3 rad since grasp
+    q_fixed = {**_LIFTER0, "waist_yaw_joint": 0.3}          # turned +0.3 rad since grasp
 
     _, _, clamp2 = api._rotate_targets_for_waist_delta(chain, q_fixed, (approach, descend, clamp))
 
     for a in ("left", "right"):
         old, new = np.asarray(clamp[a].pos_m), np.asarray(clamp2[a].pos_m)
-        assert not np.allclose(old, new)  # target moved with the box
-        assert abs(new[2] - old[2]) < 1e-6  # upright torso: waist axis vertical, z preserved
+        assert not np.allclose(old, new)                   # target moved with the box
+        assert abs(new[2] - old[2]) < 1e-6                 # upright torso: waist axis vertical, z preserved
         assert not np.allclose(clamp[a].paddle, clamp2[a].paddle)  # paddle-face dir rotated too

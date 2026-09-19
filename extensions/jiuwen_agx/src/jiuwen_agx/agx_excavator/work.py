@@ -87,7 +87,10 @@ def execute_dig_cycle(
     point lies outside the reachable annulus, a required joint is missing, or
     the bucket is still loaded from a previous cycle.
     """
-    points = (("dig", float(dig_x_m), float(dig_y_m)), ("dump", float(dump_x_m), float(dump_y_m)))
+    points = (
+        ("dig", float(dig_x_m), float(dig_y_m)),
+        ("dump", float(dump_x_m), float(dump_y_m)),
+    )
     for label, x, y in points:
         if not (math.isfinite(x) and math.isfinite(y)):
             raise ValueError(f"{label} point is not finite: ({x}, {y})")
@@ -102,17 +105,25 @@ def execute_dig_cycle(
     available = set(driver.joint_names)
     missing = [name for name in REQUIRED_JOINTS if name not in available]
     if missing:
-        raise ValueError(f"dig cycle needs joints {REQUIRED_JOINTS}; this body lacks {missing}")
+        raise ValueError(
+            f"dig cycle needs joints {REQUIRED_JOINTS}; this body lacks {missing}"
+        )
 
     if driver.scoop_state():
-        raise ValueError("bucket is still loaded — dump it (or home) before digging again")
+        raise ValueError(
+            "bucket is still loaded — dump it (or home) before digging again"
+        )
 
     t = {**DEFAULT_DIG_TUNING, **(tuning or {})}
     # swing 目标单位跟随 swing_unit；偏移键兼容旧名 swing_offset_deg（deg）
     if "swing_offset" in t:
         offset = t["swing_offset"]
     else:
-        offset = t["swing_offset_deg"] if swing_unit == "deg" else math.radians(t["swing_offset_deg"])
+        offset = (
+            t["swing_offset_deg"]
+            if swing_unit == "deg"
+            else math.radians(t["swing_offset_deg"])
+        )
     bearing_dig = math.atan2(dig_y_m, dig_x_m)
     bearing_dump = math.atan2(dump_y_m, dump_x_m)
     if swing_unit == "deg":
@@ -126,13 +137,35 @@ def execute_dig_cycle(
     # 对准 → 就位 → 下铲 → 收斗(装满) → 摆转 → 卸料
     driver.move_joints_blocking({"swing": swing_dig})
     driver.move_joints_blocking(
-        {"boom": t["ready_boom_deg"], "arm": t["ready_arm_deg"], "bucket": t["ready_bucket_deg"]}
+        {
+            "boom": t["ready_boom_deg"],
+            "arm": t["ready_arm_deg"],
+            "bucket": t["ready_bucket_deg"],
+        }
     )
-    driver.move_joints_blocking({"boom": t["dig_boom_deg"], "arm": t["dig_arm_deg"], "bucket": t["dig_bucket_deg"]})
-    driver.move_joints_blocking({"boom": t["curl_boom_deg"], "arm": t["curl_arm_deg"], "bucket": t["curl_bucket_deg"]})
+    driver.move_joints_blocking(
+        {
+            "boom": t["dig_boom_deg"],
+            "arm": t["dig_arm_deg"],
+            "bucket": t["dig_bucket_deg"],
+        }
+    )
+    driver.move_joints_blocking(
+        {
+            "boom": t["curl_boom_deg"],
+            "arm": t["curl_arm_deg"],
+            "bucket": t["curl_bucket_deg"],
+        }
+    )
     driver.mark_scoop(True)
     driver.move_joints_blocking({"swing": swing_dump})
-    driver.move_joints_blocking({"boom": t["dump_boom_deg"], "arm": t["dump_arm_deg"], "bucket": t["dump_bucket_deg"]})
+    driver.move_joints_blocking(
+        {
+            "boom": t["dump_boom_deg"],
+            "arm": t["dump_arm_deg"],
+            "bucket": t["dump_bucket_deg"],
+        }
+    )
     driver.mark_scoop(False)
     cycle_s = time.perf_counter() - started
 

@@ -41,16 +41,25 @@ class TestKnownCapabilities:
             # The body can aim a camera by turning something (head / waist / base), so it
             # can look around for a target instead of only seeing what is in front of it.
             "vision.search",
-            # Machine-family work cycles + simulator terrain truth (2026-09-13, AGX sim
-            # adapters): one motion.* per machine family gating its compound work action,
-            # and the shared sim seam earthmoving bodies read piles through.
-            "motion.excavator",
-            "sensing.terrain",
         }
-        assert KNOWN_CAPABILITIES == expected
+        # Superset (not ==): extension packages register machine-family capabilities at
+        # runtime via register_capability (docs/zh/how-to/write-an-extension-package.md),
+        # so extra names may be present depending on what is installed.
+        assert KNOWN_CAPABILITIES >= expected
 
-    def test_is_frozenset(self):
-        assert isinstance(KNOWN_CAPABILITIES, frozenset)
+    def test_is_set(self):
+        assert isinstance(KNOWN_CAPABILITIES, set)
+
+    def test_register_capability_is_idempotent(self):
+        from jiuwensymbiosis.env.base import register_capability
+
+        before = set(KNOWN_CAPABILITIES)
+        register_capability("test.seam_capability")
+        register_capability("test.seam_capability")  # idempotent
+        assert "test.seam_capability" in KNOWN_CAPABILITIES
+        assert set(KNOWN_CAPABILITIES) - before == {"test.seam_capability"}
+        KNOWN_CAPABILITIES.discard("test.seam_capability")  # restore for other tests
+        assert "test.seam_capability" not in KNOWN_CAPABILITIES
 
 
 class TestRobotObservation:

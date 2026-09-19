@@ -329,17 +329,6 @@ class VisionDriver(Protocol):
         """Loaded hand-eye calibration payload, or None."""
 
 
-@runtime_checkable
-class TerrainDriver(Protocol):
-    """Optional terrain-truth slice — the simulator seam for earthmoving bodies
-    (capability ``sensing.terrain``; a sim backend reports it, real hardware
-    rarely can)."""
-
-    def read_terrain(self) -> list[dict[str, Any]]:
-        """Material piles as {name, x_m, y_m, volume_m3} ground points in the
-        base frame, in metres (REP-103). Empty list = no piles reported."""
-
-
 # ---------------------------------------------------------------------------
 # Composite driver types for adapters whose driver implements multiple protocols.
 # A multi-protocol ``Protocol`` subclass gives true static type checking (mypy /

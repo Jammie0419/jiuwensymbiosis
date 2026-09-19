@@ -7,7 +7,6 @@ picks the native backend). The native path used to publish the raw target once,
 slewing the arm to it at max rate. It must smoothstep from the measured joints
 instead — a dense duration-based trajectory over ramp_duration_s.
 """
-
 import jiuwensymbiosis.adapters.cruzr.lowlevel as ll_mod
 from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.lowlevel import CruzrLowLevel
@@ -37,7 +36,8 @@ def test_native_move_ramps_from_measured_no_jump(monkeypatch):
     assert abs(setpoints[0]["j2"] - start["j2"]) < 0.02
     assert setpoints[-1] == target
     # every consecutive step is tiny — the signature of "no jump"
-    maxstep = max(abs(setpoints[i][j] - setpoints[i - 1][j]) for i in range(1, len(setpoints)) for j in target)
+    maxstep = max(abs(setpoints[i][j] - setpoints[i - 1][j])
+                  for i in range(1, len(setpoints)) for j in target)
     assert maxstep < 0.02
 
 
@@ -56,7 +56,8 @@ def test_native_move_ramp_duration_override_shortens_trajectory(monkeypatch):
     assert len(setpoints) == 100  # 0.4 * 250, not the 375 of the default
     assert abs(setpoints[0]["j1"] - start["j1"]) < 0.03
     assert setpoints[-1] == target
-    maxstep = max(abs(setpoints[i][j] - setpoints[i - 1][j]) for i in range(1, len(setpoints)) for j in target)
+    maxstep = max(abs(setpoints[i][j] - setpoints[i - 1][j])
+                  for i in range(1, len(setpoints)) for j in target)
     assert maxstep < 0.05  # still smooth, just fewer/larger-than-1.5s steps
 
 
@@ -64,9 +65,8 @@ def test_move_joints_blocking_passes_ramp_override(monkeypatch):
     # set_head relies on move_joints_blocking forwarding ramp_duration_s to the ramp helper.
     ll = _driver(monkeypatch)
     seen: dict = {}
-    monkeypatch.setattr(
-        ll, "_ramp_to_targets_native", lambda targets, *, ramp_duration_s=None: seen.update(dur=ramp_duration_s) or True
-    )
+    monkeypatch.setattr(ll, "_ramp_to_targets_native",
+                        lambda targets, *, ramp_duration_s=None: seen.update(dur=ramp_duration_s) or True)
     monkeypatch.setattr(ll, "get_joint_positions", lambda: {"h_yaw": 0.0})
     monkeypatch.setattr(ll, "publish_joint_positions", lambda d: None)
     monkeypatch.setattr(ll, "_targets_reached", lambda t: True)
