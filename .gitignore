@@ -15,4 +15,5 @@ jiuwen_motion_log/
 tmp/
 # 标定产物与写回配置时留下的备份,都是本机运行的结果
 configs/*/calibration/
-*.yaml.bakagx_scene_report.json
+*.yaml.bak
+agx_scene_report.json
