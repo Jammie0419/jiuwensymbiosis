@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import socket
 from typing import Any
 
@@ -173,9 +174,16 @@ class AgxSceneAdapter:
         # ---- 挖掘机模型（AGX 自带 365；内部加载自身 .agx 并装配履带/液压缸）
         from agxPythonModules.models.excavators.excavator365 import Excavator365
 
+        # JIUWEN_KEYBOARD=1 时启用官方键盘手动控制（noVNC/RDP 里直接按键开挖掘机）
+        keyboard = gamepad = None
+        if os.environ.get("JIUWEN_KEYBOARD") == "1":
+            keyboard = Excavator365.default_keyboard_settings()
+            gamepad = Excavator365.default_gamepad_controls()
+            print("[agx_bridge] keyboard control ENABLED (a/z bucket, s/x stick, arrows arm+cabin, PgUp/PgDn tracks)", flush=True)
+
         excavator = Excavator365(
-            gamepad_controls=None,
-            keyboard_controls=None,
+            gamepad_controls=gamepad,
+            keyboard_controls=keyboard,
             use_low_degree_tracks_model=True,
         )
         excavator.setRotation(terrain.getRotation())
