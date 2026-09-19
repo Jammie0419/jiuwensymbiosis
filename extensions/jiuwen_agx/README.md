@@ -138,6 +138,30 @@ agxViewer /opt/Algoryx/AGX-2.42.2.1/data/models/BedTruck.agx \
   指定**哪个是货箱、哪些是驱动轮（探针输出可辅助确认）
 - 无 license 时与挖掘机相同：命令通、执行器不动
 
+## 多模型同场景 / 自己建的模型
+
+**同一场景放多台机器**（比如挖掘机 + 卡车）：一个桥接实例就能控制——约束是在
+整个场景范围里查找的，把各机器的关节合进一份 `--joints` + `--joint-map`：
+
+```bash
+python extensions/jiuwen_agx/scripts/agx_bridge_server.py \
+  --scene 混合场景.agx \
+  --joints swing,boom,arm,bucket,bed \
+  --joint-map swing=CabinHinge,boom=ArmPrismatic1,arm=StickPrismatic,bucket=BucketPrismatic,bed=BedHinge1
+```
+
+`move_joint({"bed": 0.6})` 控卡车货箱、`dig(...)` 控挖掘机，同一条连接顺序执行。
+**限制**：单桥接同时只接受一个控制连接（两个 LLM 会话要排队/分时）；
+`navigate_relative` 行走目前只实现履带差速（挖掘机）——轮式机器的行走见
+上方卡车章节第 5 步配方。
+
+**自己建的模型**：只要模型里有你命名过的 Hinge / Prismatic 约束，加载场景后
+用探针（`--bridge` 清单）确认约束名 → `--joint-map` 映射 → 全部通用动作
+（`move_joint` / `get_joint_positions` / `home`）即刻可用。`.agx` 文件里以基类
+包装的约束会自动下转型（Hinge/Prismatic），Lock 类自动跳过。不需要写任何
+专属代码——专属代码（dig/DUMP 这类工作循环）只在想让 LLM 用自然语言调用
+复合动作时才需要。
+
 ## Windows 兼容性
 
 | 文件 | 跑在哪 | Windows 兼容 |

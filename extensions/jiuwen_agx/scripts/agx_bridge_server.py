@@ -103,12 +103,19 @@ class AgxSceneAdapter:
         self._listener = None
         self._conn = None
         self._read_buffer = b""
+        self._write_buffer = b""  # 非阻塞 send 的未竟字节，pump 每步排空
         self._bridge_session: BridgeSession | None = None
         self._drive_plan: tuple[list, float] | None = None  # (hinges, 停车仿真时刻)
 
     # -- 场景
     def load(self) -> None:
         if self.build_excavator:
+            if self.mode == "headless":
+                raise ValueError(
+                    "--excavator 需要 viewer 模式（agxViewer 插件）：挖掘机模型的"
+                    "agxPythonModules 依赖 viewer 的 environment 单例，headless 下不可用。"
+                    "改用：agxViewer scripts/agx_viewer_bridge.agxPy（或 --demo / --scene）。"
+                )
             self._load_excavator_scene()
             return
         if self.scene_path:
@@ -292,7 +299,10 @@ class AgxSceneAdapter:
             sim = self._require_sim()
             target = sim.getTimeStamp() + duration_s
             while sim.getTimeStamp() < target:
+                before = sim.getTimeStamp()
                 sim.stepTo(target)
+                if sim.getTimeStamp() <= before:  # 仿真被暂停/时间不走 → 防死循环
+                    raise RuntimeError("simulation clock is not advancing (paused?)")
         else:
             import time
 
@@ -540,6 +550,9 @@ class AgxSceneAdapter:
                 return
             except OSError:
                 return
+        self._drain_writes()
+        if self._conn is None:
+            return
         try:
             data = self._conn.recv(65536)
             if not data:
@@ -571,8 +584,23 @@ class AgxSceneAdapter:
             self._send_response(response)
 
     def _send_response(self, response: dict[str, Any]) -> None:
+        """非阻塞发送：一次写不完的余量进 _write_buffer，由后续 pump 步排空。
+
+        （之前 sendall 遇 EAGAIN 会把大响应——比如大清单——当成连接错误直接断连。）
+        """
+        self._write_buffer += (json.dumps(response) + "\n").encode("utf-8")
+        self._drain_writes()
+
+    def _drain_writes(self) -> None:
+        if self._conn is None or not self._write_buffer:
+            return
         try:
-            self._conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
+            sent = self._conn.send(self._write_buffer)
+            self._write_buffer = self._write_buffer[sent:]
+            if not self._write_buffer:
+                self._write_buffer = b""
+        except BlockingIOError:
+            pass  # 内核缓冲满了，下一步继续
         except (ConnectionError, OSError):
             self._close_conn()
 
@@ -584,6 +612,7 @@ class AgxSceneAdapter:
         finally:
             self._conn = None
             self._read_buffer = b""
+            self._write_buffer = b""
 
 
 class DemoSceneAdapter(AgxSceneAdapter):
