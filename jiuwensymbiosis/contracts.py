@@ -275,8 +275,14 @@ class PileInfo(TypedDict):
 
 
 class TerrainScan(TypedDict):
-    """Success shape returned by ``get_terrain``."""
+    """Success shape returned by ``get_terrain``.
 
+    ``ok`` is required: the fast runner treats a bound step's return as a
+    usable detection only when ``ok`` is truthy (same convention as the other
+    sensing results).
+    """
+
+    ok: Literal[True]
     piles: list  # list[PileInfo]
 
 

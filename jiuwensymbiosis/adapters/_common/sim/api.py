@@ -58,7 +58,7 @@ class SimMachineApi(BaseRobotApi):
     @implements(GET_TERRAIN)
     def get_terrain(self) -> dict:
         """Material piles as {name, x_m, y_m, volume_m3} — the dig planner's map."""
-        return {"piles": [dict(pile) for pile in self.env.read_terrain()]}
+        return {"ok": True, "piles": [dict(pile) for pile in self.env.read_terrain()]}
 
     # home() is inherited from BaseRobotApi (@implements(HOME) → defaults.home).
     # Stage B adds GET_IMAGE / PIXEL_TO_BASE_XYZ here once a sim camera reports

@@ -370,13 +370,9 @@ class AgxSceneAdapter:
     # -- 地形 / 铲斗
     def read_terrain(self) -> list[dict[str, Any]]:
         if self._terrain is not None:
-            # 平整沙地场景：报告一个覆盖全场的"土堆"条目；挖点即地面坐标
-            volume = (
-                float(self._terrain.getProperties().getMaxParticleActivationVolume())
-                if hasattr(self._terrain.getProperties(), "getMaxParticleActivationVolume")
-                else 1.0
-            )
-            return [{"name": "soil_field", "x_m": 0.0, "y_m": 0.0, "volume_m3": volume}]
+            # 平整沙地场景：土壤无处不在，报告一个"机身前方 3 m"的代表性可挖点
+            #（基座系；确保落在可达环带内，LLM 引用它即得到合法 dig 目标）
+            return [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "volume_m3": 1.0}]
         return [dict(p) for p in self._piles]
 
     def scoop_state(self) -> bool:
@@ -415,7 +411,7 @@ class AgxSceneAdapter:
             )
         terrain = []
         if self._terrain is not None:
-            terrain = [{"name": "soil_field", "x_m": 0.0, "y_m": 0.0, "volume_m3": 1.0}]
+            terrain = [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "volume_m3": 1.0}]
         machine_name = "excavator365" if self._excavator is not None else "scene"
         return {"machines": [{"name": machine_name, "joints": joints, "terrain": terrain}]}
 
