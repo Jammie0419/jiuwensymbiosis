@@ -44,7 +44,7 @@ source "$AGX_DIR/setup_env.bash"
 export JIUWEN_SCRIPTS_DIR="$REPO_DIR/scripts"
 export JIUWEN_BRIDGE_HOST="0.0.0.0"
 export JIUWEN_BRIDGE_PORT="$BRIDGE_PORT"
-agxViewer "$JIUWEN_SCRIPTS_DIR/agx_viewer_bridge.agxPy" &
+agxViewer "$JIUWEN_SCRIPTS_DIR/agx_viewer_bridge.agxPy" 2>>/tmp/agx_viewer_noise.log &
 AGX_PID=$!
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')

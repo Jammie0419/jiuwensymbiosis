@@ -17,4 +17,4 @@ export JIUWEN_BRIDGE_PORT="${JIUWEN_BRIDGE_PORT:-9700}"
 
 echo "[agx_viewer_live] agxViewer + bridge on :$JIUWEN_BRIDGE_PORT"
 echo "[agx_viewer_live] 控制端验证: python scripts/agx_scene_probe.py --bridge --port $JIUWEN_BRIDGE_PORT"
-exec agxViewer "$JIUWEN_SCRIPTS_DIR/agx_viewer_bridge.agxPy"
+exec agxViewer "$JIUWEN_SCRIPTS_DIR/agx_viewer_bridge.agxPy" 2>>/tmp/agx_viewer_noise.log
