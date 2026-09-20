@@ -47,6 +47,49 @@ python examples/run_task.py \
 > 结束观看：服务器终端 `Ctrl+C`（自动清理全部 4 个进程）。
 > 局部提醒：VNC 无密码、仅限实验室局域网，不要把 6080 端口暴露公网。
 
+## Windows 本机跑 AGX + Linux 服务器当大脑（推荐部署）
+
+你们实验室的形态：**Windows 电脑上有 AGX（含 license）+ 这份仓库代码**，
+Linux 服务器上有 jiuwensymbiosis 环境与 LLM 配置。分工：
+
+```
+Windows（身体+屏幕）：agxViewer 窗口 + 桥接(:9700)     ← 就在你面前，实时看
+Linux 服务器（大脑）  ：run_task.py + DeepSeek ----> 局域网 IP 连桥接
+```
+
+**Windows 侧**（开 "AGX Command Line" 开始菜单项，AGX 自带 Python 环境）：
+
+```bat
+cd /d C:\你的路径\jiuwensymbiosis\extensions\jiuwen_agx\scripts
+agx_viewer_bridge.bat
+:: 或加载自建场景：
+:: set JIUWEN_BRIDGE_SCENE=C:\...\my.agx && agx_viewer_bridge.bat
+```
+
+首次运行放行防火墙（管理员 cmd 一次）：`netsh advfirewall firewall add rule name="AGX Bridge" dir=in action=allow protocol=TCP localport=9700`。
+agxViewer 窗口弹出即代表桥接就绪（日志有 `pump listening`）。
+
+**服务器侧**（改一处配置：host 指向那台 Windows 的局域网 IP）：
+
+```yaml
+# extensions/jiuwen_agx/configs/agx_excavator/agx_excavator.local.yaml
+env:
+  cfg:
+    low_level:
+      host: "10.157.x.x"        # ← Windows 电脑的局域网 IP（ipconfig 查看）
+```
+
+```bash
+python examples/run_task.py \
+  --config extensions/jiuwen_agx/configs/agx_excavator/agx_excavator.local.yaml \
+  --query "把土堆的土挖一斗倒到挖点右边3米处"
+```
+
+先验证链路：`python extensions/jiuwen_agx/scripts/agx_scene_probe.py --bridge --host <Windows IP> --port 9700`。
+**注意**：`.local.yaml` 被 gitignore，git 拉过去的仓库里**没有**这份文件——
+服务器上那份带着 DeepSeek 密钥的 local.yaml 留在服务器即可（这正是
+"大脑在服务器、身体在 Windows"架构的优点：密钥不进 Windows、不进 git）。
+
 ## 三种操控方式
 
 | 方式 | 命令 | 适合 |
