@@ -91,6 +91,21 @@ def buildScene():
           f"(build_excavator={build_excavator}, joints={joint_names})", flush=True)
 
 
+def _preflight_port() -> None:
+    """端口已被占用就拒绝启动 —— 见 ``port_busy_hint``：Windows 允许重复绑定，
+    两个桥接同时监听时客户端连到哪一个是**不确定的**（暂停中的旧窗口尤其阴）。
+    """
+    from agx_bridge_server import port_busy, port_busy_hint
+
+    host = os.environ.get("JIUWEN_BRIDGE_HOST", "0.0.0.0")
+    port = int(os.environ.get("JIUWEN_BRIDGE_PORT", "9700"))
+    if port_busy(host, port):
+        print(f"[agx_viewer_bridge] {port_busy_hint(host, port)}", flush=True)
+        sys.exit(2)
+
+
+_preflight_port()
+
 init = init_app(
     name=__name__,
     scenes=[(buildScene, "1")],

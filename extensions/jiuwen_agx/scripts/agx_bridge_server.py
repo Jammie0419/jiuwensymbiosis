@@ -72,6 +72,30 @@ def pump_stall_state(
     return (None, warned)
 
 
+def port_busy(host: str, port: int, timeout_s: float = 1.5) -> bool:
+    """端口上是否已经有人在监听（能建立 TCP 连接就算）。
+
+    必须检查：Windows 允许 ``SO_REUSEADDR`` 重复绑定同一端口，两个桥接同时监听时
+    客户端连到哪一个是**不确定的**（实测踩过：一个暂停的旧实例占着端口，新实例
+    又绑上去，命令随机落到不应答的那个）。所以启动前先探测，有人就拒绝启动。
+    """
+    probe_host = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+    try:
+        with socket.create_connection((probe_host, port), timeout=timeout_s):
+            return True  # 能连上 = 端口被占（哪怕对端不应答，比如暂停中的旧桥接）
+    except OSError:
+        return False
+
+
+def port_busy_hint(host: str, port: int) -> str:
+    """端口被占用时给用户的可操作提示（两个入口共用同一段话）。"""
+    return (
+        f"端口 {host}:{port} 已被占用 —— 多半是另一个桥接实例（包括暂停中的旧 AGX 窗口）。\n"
+        "  先关掉旧的 AGX 窗口，或改 JIUWEN_BRIDGE_PORT 再启动。\n"
+        "  两个桥接同时监听同一端口时，客户端连到哪一个是**不确定的**。"
+    )
+
+
 class AgxSceneAdapter:
     """AGX 场景接入点 —— 把仿真器包成 8 个方法，与 SimBackend 语义一致。
 
@@ -570,7 +594,7 @@ class AgxSceneAdapter:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((host, port))
-        server.listen(1)
+        server.listen(8)
         server.setblocking(False)
         self._listener = server
         self._bridge_session = BridgeSession(self)
@@ -871,10 +895,13 @@ def serve(scene: AgxSceneAdapter, host: str, port: int, *, load: bool = True) ->
     """Blocking serve loop: load the scene, then accept clients one at a time."""
     if load:
         scene.load()
+    if port_busy(host, port):
+        print(f"[agx_bridge] {port_busy_hint(host, port)}", flush=True)
+        raise SystemExit(1)
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((host, port))
-    server.listen(1)
+    server.listen(8)
     print(
         f"[agx_bridge] listening on {host}:{port} (protocol v{PROTOCOL_VERSION}, joints={list(scene.joint_names)})",
         flush=True,

@@ -62,4 +62,4 @@
 | 多会话并行控制两台机器 | 单机单人工作流，单桥接分时控制已够（桥接一次只服务一个客户端） |
 | inprocess 后端（本进程 import agx） | venv 是 3.12.7、AGX 绑定是精确 3.12.10，跨解释器装不进去；remote 桥接就是长期架构 |
 | 换开源仿真引擎（MuJoCo/Isaac 等） | 组里模型/场景全在 AGX 格式，换引擎等于推翻课题 |
-| 服务器 + 浏览器观看（x11vnc/noVNC、`agx_viewer_*.sh`） | 已改为 Windows 本机窗口，那条路不再用（脚本保留仅供 Linux 端参考） |
+| 服务器 + 浏览器观看（x11vnc/noVNC） | 已改为 Windows 本机窗口，那条路不再用；对应的 `agx_viewer_*.sh` 已删除（需要时从 git 历史取回） |

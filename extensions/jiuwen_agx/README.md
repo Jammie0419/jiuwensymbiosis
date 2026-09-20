@@ -43,6 +43,8 @@ rem ③ 另开一个终端发任务（任务不进 config，一律用 --query �
 | --- | --- |
 | 命令显示成功、画面纹丝不动 | 连到了内存演示机。控制端连上时会打印对端机器名：`demo_excavator` 就是连错了，真机报 `excavator365` |
 | 探针/任务超时，桥接像死了一样 | **AGX 窗口里的仿真被暂停了**（按了空格/暂停键）：泵挂在每仿真步回调上，不步进就不收发网络。桥接控制台会打印 `WARNING: 仿真已暂停 …`，在窗口里按空格/播放键恢复即可 |
+| 起桥接时提示「端口 9700 已被占用」 | 已有实例在监听（多半是没关掉的旧 AGX 窗口）。**关掉旧窗口**，或改 `JIUWEN_BRIDGE_PORT` 再启动——两个桥接同时监听同一端口时，客户端连到哪一个是**不确定的**（Windows 允许重复绑定），所以启动前会拒绝 |
+| 桥接跑着跑着自己没了 | AGX 窗口被关掉或按了 ESC（`ExampleApplication` 的默认行为：关窗/ESC 即退出 run loop）。重启 `start_agx_bridge.bat` 即可 |
 | 规划失败，提示 `dig requires ['payload.clear'] but the state here is ['payload.held']` | 铲斗载料误判。空斗贴地时 AGX Terrain 的 aggregate 本底 0~1 kg，阈值取小了就永久"有料"。阈值见 `agx_bridge_server.py:LOADED_MASS_THRESHOLD_KG`，用 `inventory` 的 `bucket_mass_kg` 校准 |
 | 用 `agxViewer 插件.agxPy` 起不来：`No module named 'agxPythonModules'` | agxViewer 会用用户配置文件的环境重建进程，丢掉 PATH/PYTHONPATH，于是加载到别的 Python（本机 Anaconda 3.12.7），而 AGX 模块要求精确 3.12.10。**用 `start_agx_bridge.bat`** |
 | `dig` 报 `joint 'X' target ... outside configured limits` | 关键帧与限位单位不一致（回转 rad / 液压缸 m）。跑 `--check-config` 逐条看，见"关节单位" |
@@ -138,7 +140,6 @@ AGX 自带 `data/models/BedTruck.agx`（17 刚体 / 17 约束）。关键约束�
 | `start_demo_bridge.ps1` | Windows | 无 AGX 时的协议联调（内存假机，带警告横幅） |
 | `monitor_ui.py` | 仓库 venv | NiceGUI 面板：对端身份 / 原生单位关节读数 / 手动设目标 |
 | `agx_scene_probe.py` | 两边 | `--direct`（AGX python 本地盘点）/ `--bridge`（远程清单）/ `--check-config`（配置闸门） |
-| `agx_viewer_live.sh` / `agx_viewer_stream.sh` | Linux（Xvfb + x11vnc） | 旧的服务器+浏览器观看路径，现已不用，保留供参考 |
 
 跨平台边界 = 版本化 JSON 行协议 over TCP。跨机控制（AGX 在另一台机器）时把 config
 的 `host` 改成那台机器的 IP，启动前设 `JIUWEN_BRIDGE_HOST=0.0.0.0`，并放行防火墙：

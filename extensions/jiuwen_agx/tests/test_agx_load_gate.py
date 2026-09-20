@@ -105,3 +105,51 @@ class TestPumpStallWatchdog:
         assert warned is False
         assert message is not None and "恢复" in message
         assert module.pump_stall_state(0.5, warned) == (None, False)
+
+
+class TestPortGuard:
+    """Windows 允许 SO_REUSEADDR 重复绑定：两个桥接同时监听同一端口时，客户端
+    连到哪一个是**不确定的**（实测踩过）。所以启动前必须探测并拒绝。"""
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+        probe.close()
+        return port
+
+    def test_free_port_is_not_busy(self):
+        module, _ = _adapter_with_shovel(None)
+        assert module.port_busy("127.0.0.1", self._free_port()) is False
+
+    def test_listening_port_is_busy(self):
+        import socket
+
+        module, _ = _adapter_with_shovel(None)
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen(8)
+            port = int(server.getsockname()[1])
+            assert module.port_busy("127.0.0.1", port) is True
+
+    def test_wildcard_host_probes_loopback(self):
+        """绑 0.0.0.0 的实例必须能被检测到 —— 否则每个新实例都以为端口是空的。"""
+        import socket
+
+        module, _ = _adapter_with_shovel(None)
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen(8)
+            port = int(server.getsockname()[1])
+            assert module.port_busy("0.0.0.0", port) is True
+
+    def test_busy_hint_is_actionable(self):
+        module, _ = _adapter_with_shovel(None)
+        hint = module.port_busy_hint("127.0.0.1", 9700)
+        assert "已被占用" in hint
+        assert "关掉旧的 AGX 窗口" in hint and "JIUWEN_BRIDGE_PORT" in hint
