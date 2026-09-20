@@ -1,71 +1,65 @@
-# 待办清单 — license 到位后按此推进
+# 待办清单
 
-> 适用范围已按实际使用方式过滤：**服务器跑桥接 → Windows 浏览器观看 → LLM
-> 控制挖掘机/组内模型**。不适配这项工作流的条目已剔除（见文末"已排除项"）。
+> 工作方式（2026-09 起）：**Windows 本机**跑 AGX + 桥接（`scripts\start_agx_bridge.bat`，
+> 自带窗口），本仓库 venv 发任务。服务器/浏览器观看那条路已不用。
 
-## A. license 后立即要做的调优（已实现、未验证）
+## 0. 已经跑通的（别再怀疑，也别重做）
 
-> 放好 `~/.config/agx/agx.lic` → 重启 `agx_viewer_stream.sh` → 按 A1→A5 顺序做。
-> 每条的验收标准都写明了，做完一项勾一项。
+- LLM 命令全链路实测通过：`get_terrain → dig(3,0 → 6,0) → home` 三步 `ok`，
+  真实 365 挖掘机走完 12 个关键帧，单轮 18.7 s，关节停在 dump 关键帧值上。
+- 单位契约：`joint_units: null` + `swing_unit: "rad"`，关键帧取自 AGX 官方
+  `digCycle` 并收敛到实测行程内；`--check-config` 通过。
+- 载料判定：`LOADED_MASS_THRESHOLD_KG = 50`（空斗贴地本底实测 0~1 kg）。
+- 启动方式：AGX 自带 python 直跑插件（`init_app` 自建 ExampleApplication）。
+  **不要改回 `agxViewer 插件.agxPy`**——agxViewer 重建进程会丢掉 PATH/PYTHONPATH。
 
-- [ ] **A1. 确认执行器解锁**
-  重启 viewer 后终端不再刷 `License not valid`；浏览器里按 `a`（键盘模式）铲斗有微动。
-- [ ] **A2. 伺服参数标定**（`scripts/agx_bridge_server.py` 的 `set_joint_targets`）
-  现有阻尼 = 官方 logInterpolate 公式 + 距离自适应，但从未在有力学负载下跑过。
-  逐关节试 `move_joint`： swing/boom/arm/bucket 各走全行程，观察是否到位、
-  有无超调震荡。不合适就调 `damping = max(damping, 2/60)` 的下限和
-  `distance * 0.1` 的插值斜率。
-  **验收**：每关节 ±3.6°(0.063 rad)/±1 cm 容差内 30 秒内稳定到位。
-- [ ] **A3. 回转零位标定（swing_offset）**
-  让模型上车摆到基座 +X 方向，探针读 swing 当前角，取其负值填进
-  `configs/agx_excavator/agx_excavator.local.yaml` 的
-  `dig_cycle_tuning.swing_offset`（单位 rad）。
-  **验收**：`dig` 后挖点方向与画面一致。
-- [ ] **A4. 挖掘关键帧调优（dig_cycle_tuning，单位是米）**
-  现值是按缸程推算的占位值。按"对准→就位→下铲→收斗→摆转→卸料"逐步观察，
-  重点：`dig_arm_deg`（斗杆伸出量，决定吃土深度）、`curl_*`（收斗是否兜住土）、
-  `dump_bucket_deg`（倒干净）。改完即生效（config 每次运行重新读）。
-  **验收**：一斗 `dig` 后 `scoop_state` 为 true（铲斗颗粒质量 >1 kg），
-  倒点处可见土堆。
-- [ ] **A5. 可达包络实测修正（reach_min_m / reach_max_m）**
-  现值 1~8 m 是估算。在画面里把铲齿摆到最近/最远能挖到的位置，读探针
-  swing/boom/arm 角度反算半径，更新 local.yaml。
-  **验收**：画面里明显可挖的点，`dig` 不报 "outside the reachable annulus"；
-  明显够不着的点，`dig` 正确拒绝。
+## A. 还需要"看着画面"标定的
 
-## B. 缺失能力（适配工作流，按影响排序）
+- [ ] **A1. 回转零位（swing_offset_deg）**
+  `dig` 的摆转目标 = `atan2(挖点) + swing_offset_deg`。让上车摆到基座 +X 方向，
+  用 `monitor_ui.py` 读 swing 当前角（rad），取其负值换算成度填进
+  `dig_cycle_tuning.swing_offset_deg`。
+  **验收**：`dig` 时铲斗朝向画面里的挖点，而不是偏一个固定角。
+- [ ] **A2. 关键帧微调（dig_cycle_tuning，原生单位）**
+  现值来自官方自动挖掘循环，已收敛进限位；但 `dump_boom_deg: 0.38` 顶在上限
+  0.4 附近，`ready_arm_deg: -0.82` 贴近下限 -0.88。逐帧看：吃土够不够深
+  （`dig_arm_deg`）、收斗兜不兜得住土（`curl_*`）、倒不倒得干净（`dump_bucket_deg`）。
+  **验收**：一斗挖完 `scoop_state` 为 true（`inventory` 的 `bucket_mass_kg` 明显
+  大于空斗本底），倒点处画面可见土堆。
+- [ ] **A3. 可达包络（reach_min_m / reach_max_m）**
+  现值 1~6 m 是估算。把铲齿摆到最近/最远能挖到的位置，读关节角反算半径。
+  **验收**：明显可挖的点不报 `outside the reachable annulus`；够不着的点正确拒绝。
+- [ ] **A4. 伺服表现（set_joint_targets 的阻尼）**
+  现用官方 `logInterpolate` 距离自适应阻尼 + 从 Motor 继承的 forceRange。
+  逐关节走全行程，看有无超调/抖动/顶限位异响。
+  **验收**：每关节 ±1 cm / ±0.063 rad 容差内 30 s 稳定到位。
+
+## B. 缺失能力（按影响排序）
 
 - [ ] **B1. 机器位置感知（影响：高）**
-  现状：`navigate_relative` 是开环（速度×时间），底盘走完后的实际位置框架
-  不知道——远距离作业后再挖，坐标系全靠推算，会漂。
-  做法：桥接增加 `read_pose()`（从 AGX 根刚体读世界位姿，减去初始位姿得
-  相对位移），塞进 `get_observation().extra`；`navigate_relative` 改为
-  行走中轮询位姿直到位移达标（闭环），替代速度×时间估算。
-  **验收**：走 2 m 再探针，报告的位移与画面一致（误差 <5 cm）。
+  `navigate_relative` 是开环（速度×时间），底盘走完后的实际位置框架不知道，
+  远距离作业后坐标系会漂。做法：桥接加 `read_pose()`（AGX 根刚体世界位姿减去
+  初始位姿）塞进 `get_observation().extra`，`navigate_relative` 改为轮询位移闭环。
+  **验收**：走 2 m 后报告的位移与画面一致（误差 <5 cm）。
 - [ ] **B2. 地形体积真更新（影响：中）**
-  现状：挖完土 `get_terrain` 报的 volume 不变，LLM"复查地形"看到假数据，
-  判断不了"挖没挖到、装没装满"。
-  做法：`read_terrain` 从 agxTerrain 读实际参数（已挖除体积 /
-  `getTotalAggregateMass` 换算），让"复查"真的反映变化。
+  `read_terrain` 的 volume 仍是常量，LLM"复查地形"看不到变化（铲斗质量已有真值，
+  见 `inventory.bucket_mass_kg`）。做法：从 agxTerrain 读已挖除体积。
   **验收**：挖一斗前后两次 `get_terrain`，volume 有可见差异。
 - [ ] **B3. 轮式导航（影响：中，控制卡车行走时才需要）**
-  现状：`navigate_relative` 是履带差速（挖掘机链轮专用），卡车/装载机不能行走。
-  做法：把驱动源从 `exc.sprocket_hinges` 泛化为 `--joint-map` 声明的轮组
-  （如 `drive_left=Hinge2,Hinge4`、`drive_right=Hinge3,Hinge5`），差速逻辑不变。
+  `navigate_relative` 是履带差速（`exc.sprocket_hinges` 专用）。做法：把驱动源
+  泛化为 `--joint-map` 声明的轮组，差速逻辑不变。
   **验收**：卡车场景 `navigate_relative(2.0)` 后画面里卡车前移约 2 m。
-- [ ] **B4. 挖掘逐帧失败重试（影响：低）**
-  现状：某个关键帧超时就跳下一帧，可能"没挖到也算挖完一斗"。
-  做法：`dig` 循环里对超时关键帧重试一次（重新下目标再等），两次不到即
-  返回 `DigFailure`，让 LLM 重新规划。
-  **验收**：人为把某关键帧目标设成限位外的值，`dig` 返回 ok=False 而非假成功。
+- [ ] **B4. 关键帧失败重试（影响：低）**
+  某个关键帧超时即跳下一帧，可能"没挖到也算挖完一斗"。做法：超时帧重试一次，
+  两次不到返回 `DigFailure`。
+  **验收**：人为把关键帧设成限位外的值，`dig` 返回 ok=False 而非假成功。
 
-## C. 已排除项（不适配当前使用方式，做了也用不上）
+## C. 已排除项（附原因）
 
-| 被剔除项 | 剔除原因 |
+| 被剔除项 | 原因 |
 | --- | --- |
-| 视觉模型进仿真环（AGX 渲染帧→检测服务） | 你的任务用地形真值（get_terrain）即可；仅当导师要求 LLM"看图决策"时再立项 |
-| 多会话并行控制两台机器 | 你是单机单人工作流，单桥接分时控制已够 |
-| inprocess 后端（本进程 import agx） | 硬性不可行：AGX 绑定只有 Python 3.10，框架要求 3.12——remote 桥接就是最终架构 |
-| 探针 `--direct` 模式实现 | `--bridge` 模式已覆盖同一功能；`--direct` 只在同事 Windows 机器脱离本仓库工作时才用 |
-| Windows 侧桥接实测 | 你的观看方式是浏览器看服务器画面，桥接跑在服务器；仅在需要借用同事 Windows 机器跑桥接时才需要 |
+| 视觉模型进仿真环（AGX 渲染帧→检测服务） | 任务用地形真值（`get_terrain`）即可；仅当要求 LLM"看图决策"时再立项 |
+| 多会话并行控制两台机器 | 单机单人工作流，单桥接分时控制已够（桥接一次只服务一个客户端） |
+| inprocess 后端（本进程 import agx） | venv 是 3.12.7、AGX 绑定是精确 3.12.10，跨解释器装不进去；remote 桥接就是长期架构 |
 | 换开源仿真引擎（MuJoCo/Isaac 等） | 组里模型/场景全在 AGX 格式，换引擎等于推翻课题 |
+| 服务器 + 浏览器观看（x11vnc/noVNC、`agx_viewer_*.sh`） | 已改为 Windows 本机窗口，那条路不再用（脚本保留仅供 Linux 端参考） |

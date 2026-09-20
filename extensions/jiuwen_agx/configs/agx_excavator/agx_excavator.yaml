@@ -8,7 +8,8 @@
 #   inprocess —— 本进程 import agx 直接驱动场景（需 AGX Python 环境；阶段B）
 #   remote    —— TCP 桥接 scripts/agx_bridge_server.py（跑在 AGX 自带 Python 里）
 #
-# joint_limits / 关键帧 / 可达包络均为占位默认值，接入真实 AGX 模型后按实测修改。
+# joint_limits / 关键帧 / 可达包络：mock 后端下是占位默认值；接**真 AGX** 必须
+# 换成实测值（见下面 "接真 AGX" 注释块，数值来自探针实测 + AGX 官方挖掘循环）。
 # 不想让本机改动出现在 git status 里，可复制成 agx_excavator.local.yaml 再改
 # （.gitignore 忽略 *.local.yaml），--config 指向该副本即可。
 
@@ -24,8 +25,41 @@ env:
       startup_timeout_s: 60.0
       move_timeout_s: 30.0
 
-      # --- 工作关节（deg；顺序 = q 索引顺序）
+      # --- 工作关节（顺序 = q 索引顺序）
       joint_names: ["swing", "boom", "arm", "bucket"]
+      # mock 后端用 deg；**接真 AGX 365 时**：AGX 是混合单位（回转 rad、三个液压缸
+      # 是米），joint_units 必须留空，另用 swing_unit 声明回转单位——照抄下面：
+      #
+      #   joint_units: null          # 混合单位：不能撒谎成 deg/rad
+      #   swing_unit: "rad"          # 漏了它 dig 会把角度当弧度发，第一帧就被限位拒
+      #   joint_limits:              # 探针实测行程（--direct / --bridge）
+      #     swing: [-3.14159, 3.14159]   # rad（模型本身无限位回转，这里按 ±π 收）
+      #     boom: [-0.7, 0.4]            # m（ArmPrismatic1/2，双缸整组同步）
+      #     arm: [-0.88, 0.8]            # m（StickPrismatic）
+      #     bucket: [-1.0, 0.312]        # m（BucketPrismatic）
+      #   home_joints:               # 原生单位；0 是行程中位（安全）
+      #     swing: 0.0
+      #     boom: 0.0
+      #     arm: 0.0
+      #     bucket: 0.0
+      #   dig_cycle_tuning:          # 值 = 该关节原生单位（boom/arm/bucket 是**米**）
+      #     ready_boom_deg: 0.10       # 键名沿用历史 *_deg，值是原生单位
+      #     ready_arm_deg: -0.82
+      #     ready_bucket_deg: -0.65
+      #     dig_boom_deg: -0.25
+      #     dig_arm_deg: 0.30
+      #     dig_bucket_deg: -0.70
+      #     curl_boom_deg: 0.02
+      #     curl_arm_deg: 0.70
+      #     curl_bucket_deg: 0.10
+      #     dump_boom_deg: 0.38
+      #     dump_arm_deg: -0.40
+      #     dump_bucket_deg: -0.80
+      #     bucket_volume_m3: 0.6
+      #
+      # （关键帧取自 AGX 官方 data/python/agxTerrain/excavator_365_terrain.agxpy 的
+      #   digCycle，已收敛进实测行程内侧；改完先跑
+      #   `agx_scene_probe.py --check-config <你的 config>` 过闸门。）
       joint_units: "deg"
       joint_limits:                # 接入 AGX 模型后按实测改
         swing: [-180.0, 180.0]

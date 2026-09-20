@@ -53,8 +53,10 @@ class AgxSceneAdapter:
 
     两种运行模式：
       headless —— 独立进程：适配器自己拥有仿真循环（send 后 stepTo 到位）。
-      viewer   —— agxViewer 的 .agxPy 插件：viewer 拥有步进（实时渲染，
-                  用户 RDP 看到的就是被控制的仿真），适配器只设伺服目标并轮询。
+      viewer   —— 宿主应用拥有步进与渲染（AGX 自带 python 跑 agx_viewer_bridge.agxPy
+                  时的 ExampleApplication，或 agxViewer）：适配器只设伺服目标，
+                  网络收发挂在每步回调里非阻塞泵（既不能阻塞渲染主线程，也不能
+                  从别的线程碰 AGX 对象）。
 
     场景两种来源：
       scene_path 加载 .agx 文件（约束按 --joint-map / 自动发现映射）
@@ -91,7 +93,8 @@ class AgxSceneAdapter:
         self.scene_path = scene_path
         self.mode = mode
         self.build_excavator = build_excavator
-        # viewer 模式走"每步回调泵"（agxViewer 会冻结后台线程，不能用线程服务）
+        # viewer 模式走"每步回调泵"：仿真步进与渲染都在宿主主线程，网络收发
+        # 不能阻塞它、也不能从别的线程碰 AGX 对象，只能挂在每步回调里。
         self.pump_mode = mode == "viewer"
         self._joints: dict[str, float] = dict.fromkeys(joint_names, 0.0)
         self._scoop = False
@@ -117,9 +120,9 @@ class AgxSceneAdapter:
         if self.build_excavator:
             if self.mode == "headless":
                 raise ValueError(
-                    "--excavator 需要 viewer 模式（agxViewer 插件）：挖掘机模型的"
-                    "agxPythonModules 依赖 viewer 的 environment 单例，headless 下不可用。"
-                    "改用：agxViewer scripts/agx_viewer_bridge.agxPy（或 --demo / --scene）。"
+                    "--excavator 需要 viewer 模式（宿主应用拥有步进）：挖掘机模型的"
+                    "agxPythonModules 依赖宿主应用的 environment 单例，headless 下不可用。"
+                    "改用：scripts/start_agx_bridge.bat（或 --demo / --scene）。"
                 )
             self._load_excavator_scene()
             return
@@ -136,7 +139,7 @@ class AgxSceneAdapter:
     def _load_scene_file(self, path: str) -> None:
         """加载 .agx 场景文件并自动发现铰链/棱柱约束。
 
-        viewer 模式下场景由 agxViewer 命令行加载（本适配器只做约束发现）；
+        viewer 模式下场景由宿主应用加载（本适配器只做约束发现）；
         headless 模式用 ``agxIO.readFile``（2.42 的场景加载 API）。
         """
         import agxIO
@@ -145,7 +148,7 @@ class AgxSceneAdapter:
         if self.mode == "viewer":
             from agxPythonModules.utils.environment import simulation
 
-            self._sim = simulation()  # viewer 拥有仿真；agxViewer 已加载场景
+            self._sim = simulation()  # 宿主应用拥有仿真（场景已由它加载）
         else:
             self._sim = agxSDK.Simulation()
             if not agxIO.readFile(path, self._sim):
@@ -532,7 +535,7 @@ class AgxSceneAdapter:
         }
 
     # ------------------------------------------------------------------
-    # pump 网络（viewer 模式专用）—— agxViewer 会冻结后台线程，所以网络
+    # pump 网络（viewer 模式专用）—— 宿主应用拥有步进（主线程），所以网络
     # 收发全部放在 StepEventCallback.pre 的每步回调里非阻塞完成。
     # ------------------------------------------------------------------
     def start_pump(self, host: str, port: int) -> None:

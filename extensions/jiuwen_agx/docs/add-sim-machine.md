@@ -4,36 +4,41 @@
 > jiuwensymbiosis。共享仿真底座已就位（`adapters/_common/sim/`），**新机器是
 > 一个薄包，不是从零开始的适配器**。
 
-## 本地联调已就绪（AGX Linux 版，服务器上）
+## 本机联调（Windows，AGX 2.42.2.1）
 
-服务器已装 AGX 2.42.2.1（`/opt/Algoryx/AGX-2.42.2.1`）。链路架构：
+本机装 AGX 2.42.2.1（`E:\AGX-2.42.2.1`，自带 Python 3.12.10）。链路架构：
 
 ```
-RDP 会话里的 agxViewer（实时画面，viewer 拥有仿真循环）
-    └─ agx_viewer_bridge.agxPy 插件：非阻塞泵，每仿真步收发网络
-控制端（本仓库）: RemoteSimBackend → 127.0.0.1:9700 → move_joint/dig/get_terrain
+AGX 窗口 + 仿真循环（AGX 自带 python 跑 agx_viewer_bridge.agxPy，
+                     init_app 自建 ExampleApplication）
+    └─ 插件：非阻塞泵，每仿真步收发网络
+控制端（本仓库 .venv）: RemoteSimBackend → 127.0.0.1:9700 → move_joint/dig/get_terrain
 ```
 
-注意：AGX 的 Python 绑定只有 3.10，jiuwensymbiosis 要求 3.12，所以即使在本机
-也走桥接协议（进程内 import agx 不可行）。agxViewer 会冻结后台线程，因此桥接
-不做线程服务，而是挂每步回调（`StepEventCallback.pre`）非阻塞泵。
+两个"为什么"（都是实测踩出来的）：
+
+- **为什么不用 `agxViewer 插件.agxPy`**：agxViewer 会用*用户配置文件*的环境重建
+  进程，丢掉调用方设的 PATH/PYTHONPATH，于是加载到机器上别的 Python（本机是
+  Anaconda 3.12.7）。AGX 的 python 模块要求精确 3.12.10，导入直接失败
+  （`No module named 'agxPythonModules'`）。用 AGX 自带 python 跑插件，环境得以
+  保留，窗口一样有——`init_app` 会自己建 `ExampleApplication`。
+- **为什么进程内 `import agx` 不做**：框架跑在自己的 venv，AGX 绑定绑定的是精确
+  小版本（3.12.10），跨解释器装不进去。不是"AGX 只有 3.10"——那是旧版 AGX 的
+  情况。桥接协议就是长期架构；`inprocess` 后端只是给"venv 恰好同小版本"留的口子。
 
 ### 启动与验收（三步）
 
-1. **RDP 到服务器**（`mstsc` → 服务器 IP，账号 lzm），图形会话里运行：
-   ```bash
-   bash scripts/agx_viewer_live.sh
-   ```
-   弹出挖掘机 + 沙地画面，桥接监听 :9700。无画面需求时可用 xvfb 无头跑。
+1. **起 AGX + 桥接**：`scripts\start_agx_bridge.bat`（双击）→ 弹出挖掘机 + 沙地
+   窗口，桥接监听 127.0.0.1:9700。不需要画面时走 headless：
+   `%AGX_DIR%\python-x64\python.exe scripts\agx_bridge_server.py --scene 场景.agx`。
 2. **控制端验证**：`python scripts/agx_scene_probe.py --bridge` → 应看到
    excavator365 的 4 关节（swing=CabinHinge rad、boom=双缸 m、arm/bucket=m）。
 3. **发任务**：`python examples/run_task.py --config configs/agx_excavator/agx_excavator.local.yaml --query "..."`。
 
-### license 门控（重要）
+### license
 
-**无 license 时：场景构建、约束发现、桥接链路、探针全部可用；但所有执行器
-（Lock1D/Motor1D）被 AGX 全局禁用——关节不会动。** license 文件放到
-`~/.config/agx/` 后重启 viewer 即解锁。这是"命令通但不动"的唯一原因。
+AGX 需要本机许可证：`C:\Users\<你>\AppData\Local\Algoryx\agx\agx.lfx`
+（用 AGX 安装目录的 `LicenseManager.bat` 激活/刷新）。本机已激活——实测挖掘机可动。
 
 ### 混合单位（AGX 挖掘机特有）
 
@@ -90,9 +95,10 @@ swing（CabinHinge）是**弧度**，boom/arm/bucket（液压缸 Prismatic）是
 - **离线开发**：`backend: mock`（默认），零依赖，全链路可测。
 - **接 AGX**：二选一——
   - `remote` + `scripts/agx_bridge_server.py`（跑在 AGX 自带 Python 里）：桥接
-    机器无关，**一台服务所有仿真机器**；先 `--demo` 联通链路，再填
-    `AgxSceneAdapter` 的 TODO(AGX) 方法。
-  - `inprocess`：jiuwensymbiosis 进程内 `import agx`（需 AGX Python 兼容时）。
+    机器无关，**一台服务所有仿真机器**；先 `--demo` 联通链路，再 `--scene`
+    加载真实场景（约束自动发现，已实现，清单见 `inventory`）。
+  - `inprocess`：jiuwensymbiosis 进程内 `import agx`（需 venv 与 AGX 的 Python
+    小版本恰好一致；当前不是，故未实现）。
 - 新后端形态（ros2/grpc）：`@register_backend("xxx")` 一个类即可，不改调用方。
 
 ## AGX 真机验收（四步，每步有通过标准）
@@ -100,37 +106,38 @@ swing（CabinHinge）是**弧度**，boom/arm/bucket（液压缸 Prismatic）是
 适用于"组里的 AGX 模型（Windows）能不能被控制"这个问题——按步走，每步都
 有明确判据，卡在哪一步就修哪一步。
 
-### 第 ① 步：模型可识别（Windows 跑探针）
+### 第 ① 步：模型可识别（本机跑探针）
 
-在 AGX 那台 Windows 机器上，用 **AGX 自带的 Python** 运行：
+用 **AGX 自带的 Python** 运行（先按 `start_agx_bridge.bat` 里那三行设好
+`PATH`/`PYTHONHOME`/`PYTHONPATH`）：
 
 ```bat
-python agx_scene_probe.py --direct 场景文件.agx
+%AGX_DIR%\python-x64\python.exe scripts\agx_scene_probe.py --direct "场景文件.agx"
 ```
 
-**通过标准**：报告里列出挖掘机的 4 个铰链（对准 swing/boom/arm/bucket 的
-约束），每个都有实际角度范围和单位；末尾输出建议配置片段。
+**通过标准**：报告里列出场景的全部可驱动约束（含类型/当前角/行程/单位），
+每个都有实际角度范围和单位；末尾输出建议配置片段。
 卡住的话看提示：`import agx` 失败 = 没用 AGX 的 Python；列表为空 = 模型
 约束没有挂电机/命名不规范，把报告发给写模型的同事。
 
-> `--direct` 的 AGX 遍历代码待场景接口确认后启用（脚本内有 TODO(AGX) 注释，
-> 说明需要遍历哪些对象）。在那之前可用第 ②③ 步的 `inventory` 路径代替。
-
-### 第 ② 步：链路通（Windows 起桥接服务）
+### 第 ② 步：链路通（本机起桥接服务）
 
 ```bat
-python agx_bridge_server.py --scene 场景文件.agx --port 9700
-:: 首次运行放行防火墙：
+scripts\start_agx_bridge.bat                        rem 挖掘机 + 窗口 + 桥接:9700
+:: 或 headless 加载任意场景：
+%AGX_DIR%\python-x64\python.exe scripts\agx_bridge_server.py --scene 场景文件.agx --port 9700
+:: 首次运行放行防火墙（仅跨机控制时需要）：
 netsh advfirewall firewall add rule name="AGX Bridge" dir=in action=allow protocol=TCP localport=9700
 ```
 
-**通过标准**：打印 `listening on 0.0.0.0:9700 (protocol v1, joints=[...])`，
-无报错。演示链路可用 `--demo` 参数先验证（不需要加载场景）。
+**通过标准**：打印 `pump listening on ...:9700`（或 headless 的
+`listening on ...:9700 (protocol v1, joints=[...])`），无报错。
+只验协议不接 AGX 时用 `scripts\start_demo_bridge.ps1`（内存假机）。
 
-### 第 ③ 步：控制端可达（Linux 跑探针）
+### 第 ③ 步：控制端可达（本仓库 venv 跑探针）
 
 ```bash
-python scripts/agx_scene_probe.py --bridge --host <Windows机器IP> --port 9700
+python scripts/agx_scene_probe.py --bridge --host 127.0.0.1 --port 9700   # 跨机填 Windows 的 IP
 ```
 
 **通过标准**：`[OK] 链路通（协议 v1）` + `[OK] 场景清单已取回`，清单与第 ①
@@ -139,10 +146,10 @@ python scripts/agx_scene_probe.py --bridge --host <Windows机器IP> --port 9700
 ### 第 ④ 步：模型真的动（最终证明）
 
 把第 ③ 步生成的配置片段填进 `configs/agx_excavator/agx_excavator.local.yaml`，
-先核对配置自洽，再发一条真实任务：
+先核对配置自洽，再发一条真实任务（控制端和 AGX 可以在同一台机器上）：
 
 ```bash
-# 核对：关节/限位/关键帧自洽性
+# 核对：关节/限位/关键帧自洽性（关键帧越限会在这里就被点出来）
 python scripts/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml
 
 # 真实任务（LLM key 已配置时）：
@@ -151,8 +158,8 @@ python examples/run_task.py \
   --query "把左边土堆挖一斗倒到右边"
 ```
 
-**通过标准**：Windows 窗口里挖掘机完成一次完整的挖-倒动作（对准→下铲→收斗
-→摆转→卸料），Linux 侧命令以退出码 0 结束。走到这一步即"确定能控制"。
+**通过标准**：AGX 窗口里挖掘机完成一次完整的挖-倒动作（对准→下铲→收斗
+→摆转→卸料），命令以退出码 0 结束。走到这一步即"确定能控制"。
 
 ### 卡车（自卸车）怎么接
 
