@@ -33,7 +33,10 @@ _units: dict[str, str] = {}
 
 
 def send_command(cmd: str, params: dict | None = None, timeout: float = 5.0) -> dict:
-    """One request = one connection = one JSON line (bridge protocol v1)."""
+    """One request = one connection = one JSON line (bridge protocol v1).
+
+    失败信息写成人话：桥接一次只服务一个客户端，跑着 run_task.py 时这里必然超时。
+    """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
@@ -44,6 +47,13 @@ def send_command(cmd: str, params: dict | None = None, timeout: float = 5.0) -> 
             sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
             response = sock.recv(65536).decode("utf-8")
         return json.loads(response.strip())
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": "超时——桥接一次只服务一个客户端，是不是 run_task.py 正连着？",
+        }
+    except OSError as exc:
+        return {"ok": False, "error": f"连不上（{exc}）——桥接起了吗？见 start_agx_bridge.bat"}
     except Exception as exc:  # noqa: BLE001 - 面板永不因断连崩掉
         return {"ok": False, "error": str(exc)}
 

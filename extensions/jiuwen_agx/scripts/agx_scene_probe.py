@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 from typing import Any
@@ -100,32 +101,85 @@ def probe_bridge(host: str, port: int, timeout_s: float) -> int:
 # --direct 模式：在 AGX Python 里跑，遍历场景
 # ============================================================================
 def probe_direct(scene_path: str) -> int:
-    # The probe runs on AGX's bundled Windows Python, which may be older than
-    # this repo's floor — the guard is deliberate, not a py311 relic.
+    # The probe runs on AGX's bundled Windows Python (3.12 in AGX 2.42), which is
+    # a different interpreter from this repo's venv — the floor guard is about
+    # AGX's Python, not a py311 relic.
     if sys.version_info < (3, 8):  # noqa: UP036
         _out(f"[FAIL] AGX 自带 Python 版本过低: {sys.version}（需要 3.8+）")
         return 1
     try:
         import agx  # noqa: F401
+        import agxIO
+        import agxSDK
     except ImportError:
         _out("[FAIL] import agx 失败——本脚本必须在 AGX 自带的 Python 环境里运行。")
         _out(
-            "提示: 用 AGX 安装目录下的 python.exe 运行，或先运行 AGX 的环境初始化脚本。"
+            "提示: 用 AGX 安装目录下的 python.exe 运行（先设好 PYTHONPATH/PATH），"
         )
+        _out("      或直接用 scripts/start_agx_bridge.bat 起桥接后走 --bridge。")
         return 1
 
     _out(f"AGX Python OK ({sys.version.split()[0]})，加载场景: {scene_path}")
-    # TODO(AGX): 下面三段按 AGX 实际 API 填——结构与 --bridge 的 inventory 输出一致，
-    # 同事只需把遍历结果装进同样的 dict 形状，两侧工具即共用渲染/生成逻辑。
-    #
-    #   1) 加载场景: agx.loadScene(scene_path) 或 agxScene = agx.Scene(scene_path)
-    #   2) 遍历约束: sim.getConstraints() → 对每个 agx.Hinge / agx.Primitive
-    #                记录 name / type / angle / range / hasMotor
-    #   3) 遍历地形: sim.getTerrains() → name / 质心 / 包围盒
-    _out("[FAIL] --direct 模式的 AGX 遍历代码尚未实现（TODO(AGX) 块）。")
-    _out("替代路径: 让桥接服务的 AgxSceneAdapter.inventory 参考本函数注释实现，")
-    _out("然后用 --bridge 模式远程取清单——效果相同且无需在 Windows 手动传文件。")
-    return 1
+
+    # 复用桥接适配器的 SWIG 下转型（.agx 里的约束以基类包装加载）
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from agx_bridge_server import AgxSceneAdapter
+
+    sim = agxSDK.Simulation()
+    if not agxIO.readFile(scene_path, sim):
+        _out(f"[FAIL] 加载场景失败: {scene_path}")
+        return 1
+
+    # --direct 的用途是"这个场景里有什么"，所以列**全部**可驱动约束，
+    # 而不是只列映射过的词表关节（那是 --bridge/inventory 的视角）。
+    joints: list[dict[str, Any]] = []
+    skipped = 0
+    for constraint in sim.getConstraints():
+        actuator = AgxSceneAdapter._as_actuator(constraint)
+        if actuator is None:  # Lock 等不可驱动约束：跳过（数量在末尾汇总）
+            skipped += 1
+            continue
+        is_hinge = type(actuator).__name__ == "Hinge"
+        rng = actuator.getRange1D().getRange()
+        lo, hi = float(rng.lower()), float(rng.upper())
+        if lo == float("-inf"):
+            lo, hi = -180.0, 180.0  # 全行程回转：按 ±180 报告（与 inventory 一致）
+        joints.append(
+            {
+                "name": actuator.getName(),
+                "constraint": actuator.getName(),
+                "type": type(actuator).__name__,
+                "angle": float(actuator.getAngle()),
+                "range": [lo, hi],
+                "unit": "rad" if is_hinge else "m",
+                "has_motor": actuator.getMotor1D() is not None,
+            }
+        )
+
+    terrain: list[dict[str, Any]] = []
+    get_terrains = getattr(sim, "getTerrains", None)
+    for index, terra in enumerate(get_terrains() if get_terrains else []):
+        terrain.append(
+            {"name": terra.getName() or f"terrain_{index}", "x_m": 0.0, "y_m": 0.0, "volume_m3": 0.0}
+        )
+
+    report = {
+        "machines": [
+            {
+                "name": os.path.basename(scene_path),
+                "joints": joints,
+                "terrain": terrain,
+            }
+        ]
+    }
+    _render_report(report)
+    _out("")
+    if skipped:
+        _out(f"（另有 {skipped} 个不可驱动约束（Lock 等）已跳过）")
+    _render_suggested_config(report)
+    _out("")
+    _save_report(report, "agx_scene_report.json")
+    return 0
 
 
 # ============================================================================
