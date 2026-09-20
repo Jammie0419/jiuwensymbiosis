@@ -152,9 +152,12 @@ class TestRemoteBackendProtocol:
         backend.close()
 
     def test_error_response_raises(self):
+        # open() 现在会先 ping、再 inventory（认对端身份，见 _report_peer），
+        # 所以脚本里三条响应：ping → inventory → 出错的那条。
         fake = _ScriptedFake(
             [
                 {"v": 1, "ok": True, "pong": True},
+                {"v": 1, "ok": False, "error": "inventory unsupported"},
                 {"v": 1, "ok": False, "error": "machine on fire"},
             ]
         )
@@ -163,6 +166,31 @@ class TestRemoteBackendProtocol:
         with pytest.raises(RuntimeError, match="machine on fire"):
             backend.read_joints()
         backend.close()
+
+    def test_open_warns_when_peer_is_demo_machine(self, bridge, caplog):
+        """连到内存演示机必须在 open() 就喊出来——"连上了但不动"的头号原因。"""
+        backend = _backend(bridge.port)
+        with caplog.at_level("WARNING", logger="jiuwen_agx.sim.backend"):
+            backend.open()
+        backend.close()
+        assert any(
+            "demo_excavator" in rec.message and "演示机" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_open_ignores_unknown_inventory(self, caplog):
+        """老桥不认 inventory 时只记 debug，不能挡住连接。"""
+        fake = _ScriptedFake(
+            [
+                {"v": 1, "ok": True, "pong": True},
+                {"v": 1, "ok": False, "error": "unknown command 'inventory'"},
+            ]
+        )
+        backend = _backend(fake.port)
+        with caplog.at_level("WARNING", logger="jiuwen_agx.sim.backend"):
+            backend.open()  # 不抛
+        backend.close()
+        assert not [r for r in caplog.records if r.levelno >= 30]
 
     def test_joint_round_trip(self, bridge):
         backend = _backend(bridge.port)

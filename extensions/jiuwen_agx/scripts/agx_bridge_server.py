@@ -37,6 +37,11 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 
+# 铲斗"载料"判定阈值（kg）。不能取小值：空斗贴地时 AGX Terrain 会把接触区土壤
+# 算进铲斗 aggregate，读数不为 0；而满载一斗（约 0.6 m³ 沙土）是数百公斤量级。
+# 实测校准方法：inventory 的 bucket_mass_kg 字段（空斗/满载各读一次）。
+LOADED_MASS_THRESHOLD_KG = 50.0
+
 # 演示机器的地形真值（基座系，米）。
 DEMO_PILES: list[dict[str, Any]] = [
     {"name": "soil_pile", "x_m": -2.0, "y_m": 1.0, "volume_m3": 2.0},
@@ -451,11 +456,16 @@ class AgxSceneAdapter:
 
     def scoop_state(self) -> bool:
         if self._shovel is not None:
-            mass = float(
-                self._shovel.getSoilParticleAggregate().getTotalAggregateMass()
-            )
-            return mass > 1.0  # kg 阈值
+            return self.bucket_mass_kg() > LOADED_MASS_THRESHOLD_KG
         return self._scoop
+
+    def bucket_mass_kg(self) -> float:
+        """铲斗内土壤颗粒总质量（kg）。注意空斗贴地时也有读数（接触区土壤被算进
+        aggregate），所以"是否载料"必须用远高于该本底噪声的阈值 —— 见
+        :data:`LOADED_MASS_THRESHOLD_KG`；实测值可从 inventory 的 bucket_mass_kg 读。"""
+        if self._shovel is None:
+            return 0.0
+        return float(self._shovel.getSoilParticleAggregate().getTotalAggregateMass())
 
     def mark_scoop(self, loaded: bool) -> None:
         # AGX 真值是测出来的（铲斗内颗粒质量），此写接口仅为协议兼容
@@ -508,7 +518,17 @@ class AgxSceneAdapter:
             terrain = [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "volume_m3": 1.0}]
         machine_name = "excavator365" if self._excavator is not None else "scene"
         return {
-            "machines": [{"name": machine_name, "joints": joints, "terrain": terrain}]
+            "machines": [
+                {
+                    "name": machine_name,
+                    "joints": joints,
+                    "terrain": terrain,
+                    # 诊断用：空斗本底 vs 满载各是多少，据此校准载料阈值
+                    "bucket_mass_kg": self._safe(self.bucket_mass_kg),
+                    "loaded_threshold_kg": LOADED_MASS_THRESHOLD_KG,
+                    "scoop_loaded": self._safe(self.scoop_state),
+                }
+            ]
         }
 
     # ------------------------------------------------------------------

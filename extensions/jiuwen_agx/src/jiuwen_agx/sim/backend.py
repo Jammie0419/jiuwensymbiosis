@@ -351,6 +351,40 @@ class RemoteSimBackend:
             raise RuntimeError(
                 f"bridge protocol version mismatch: peer v{peer_version}, client v{PROTOCOL_VERSION}"
             )
+        self._report_peer()
+
+    def _report_peer(self) -> None:
+        """把对端身份打进日志 —— "连上了但怎么都不动"最常见的原因是连到了
+        ``--demo`` 的内存假机（它照单全收所有命令，只是没有任何物理）。
+
+        ``inventory`` 是协议里的可选查询：老桥不支持时只记 debug，绝不影响连接。
+        """
+        try:
+            machines = self._call({"cmd": "inventory"}).get("machines") or []
+        except Exception as exc:  # noqa: BLE001 - 对端不认 inventory 不算错误
+            logger.debug("bridge %s:%s 未返回 inventory（%s）；对端身份未知",
+                         self._host, self._port, exc)
+            return
+        if not machines:
+            logger.warning(
+                "bridge %s:%s 报告 no machines —— 命令不会有任何动作",
+                self._host, self._port,
+            )
+            return
+        machine = machines[0]
+        name = str(machine.get("name", "?"))
+        joints = [str(j.get("name")) for j in (machine.get("joints") or [])]
+        if name.startswith("demo"):
+            logger.warning(
+                "bridge %s:%s 的对端是 %r —— 内存演示机：命令会被\"成功\"应答，"
+                "但不会有任何物理动作。要驱动真实 AGX，用 scripts/agx_viewer_bridge.agxPy"
+                "（在 agxViewer 里跑）。",
+                self._host, self._port, name,
+            )
+        else:
+            logger.info(
+                "bridge %s:%s 对端机器 %r，关节 %s", self._host, self._port, name, joints
+            )
 
     def close(self) -> None:
         file, sock = self._file, self._sock

@@ -47,6 +47,87 @@ python examples/run_task.py \
 > 结束观看：服务器终端 `Ctrl+C`（自动清理全部 4 个进程）。
 > 局部提醒：VNC 无密码、仅限实验室局域网，不要把 6080 端口暴露公网。
 
+## Windows 本机跑 AGX（本机 = 身体 + 屏幕）
+
+不做无头直播、就想在本机看着挖掘机动时用这条路径：**AGX 仿真 + 窗口 + 桥接
+在同一个进程里**，控制端连本机 9700。
+
+```bat
+rem 1. 双击（或在任意 cmd 里跑）——它会自己弹 AGX 窗口（365 挖掘机 + 沙地）
+extensions\jiuwen_agx\scripts\start_agx_bridge.bat
+
+rem 2. 另开一个普通终端跑控制端（用本仓库 .venv）
+.venv\Scripts\python.exe examples\run_task.py ^
+  --config extensions\jiuwen_agx\configs\agx_excavator\agx_excavator.local.yaml ^
+  --query "挖一斗土倒到旁边"
+```
+
+启动脚本做的事：设好 `PATH/PYTHONHOME/PYTHONPATH`（AGX 自带 Python），
+再执行 `%AGX_DIR%\python-x64\python.exe agx_viewer_bridge.agxPy`——
+`init_app` 会自己建 `agxOSG.ExampleApplication`，窗口与仿真循环都来自它。
+`AGX_DIR` 默认 `E:\AGX-2.42.2.1`，装到别处就设这个环境变量。
+
+> **为什么不是 `agxViewer agx_viewer_bridge.agxPy`**：agxViewer 会用*用户配置文件*
+> 的环境重建进程，丢掉我们设的 PATH/PYTHONPATH，于是加载到机器上别的 Python
+> （本机是 Anaconda 3.12.7），而 AGX 的 Python 模块要求精确 3.12.10，导入直接
+> 失败：`No module named 'agxPythonModules'`。这是实测结论，别再往回改。
+
+跨机部署（Windows 跑画面、另一台机器跑大脑）时把控制端 config 里的
+`host` 改成 Windows 的局域网 IP，并在 Windows 上放行防火墙 9700/TCP
+（启动前设 `JIUWEN_BRIDGE_HOST=0.0.0.0`）。
+
+> `.local.yaml` 被 gitignore，仓库里没有这份文件——按
+> `configs/agx_excavator/agx_excavator.yaml` 复制一份再改。
+
+### 三条启动路径别搞混（这是最容易踩的坑）
+
+| 目的 | 命令 | 会动吗 |
+| --- | --- | --- |
+| **真 AGX**（看画面、演示） | `scripts/start_agx_bridge.bat` | ✅ 窗口里的挖掘机真动 |
+| **只验协议/规划链路**（无 AGX） | `scripts/start_demo_bridge.ps1` | ❌ 内存假机，命令"成功"但没物理 |
+| **核对场景真值**（不改动任何东西） | `python scripts/agx_scene_probe.py --bridge --port 9700` | — 只读清单（关节名/范围/单位） |
+
+**症状对照**：任务显示成功、但窗口里的机器纹丝不动 —— 十有八九是连到了
+内存演示机。控制端连上时会把对端机器名打进日志：看见
+`bridge 127.0.0.1:9700 的对端是 'demo_excavator'` 就是连错了，
+真机会报 `excavator365`。
+
+另一个曾经踩过的坑：任务直接报"规划失败 / dig 前置条件不满足"。世界状态里的
+`payload.held` 来自桥接对铲斗土壤质量的实测，阈值见
+`agx_bridge_server.py:LOADED_MASS_THRESHOLD_KG`——空斗贴地时接触区土壤会被算进
+aggregate（实测本底 0~1 kg），阈值取小了就会永久判定"斗里有料"，`dig` 永远
+不可规划。改阈值前先用 `inventory` 的 `bucket_mass_kg` 读一次实际值。
+
+### 关节单位：AGX 365 是混合单位（改限位前必读）
+
+| 关节 | AGX 约束 | 单位 |
+| --- | --- | --- |
+| swing | `CabinHinge` | 弧度 rad |
+| boom | `ArmPrismatic1/2`（双缸） | 米 m |
+| arm | `StickPrismatic` | 米 m |
+| bucket | `BucketPrismatic` | 米 m |
+
+因此 config 里 `joint_units` **留空**（`null`，混合单位不能撒谎成 deg/rad），
+回转单位由 `swing_unit: "rad"` 单独指明；`joint_limits`、`dig_cycle_tuning`
+里的 boom/arm/bucket 关键帧一律填**米**（键名沿用历史 `*_deg` 命名，值是原生单位）。
+
+填之前先跑探针 `--bridge` 拿实测范围，再跑闸门自检：
+
+```bash
+python scripts/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml
+```
+
+它会逐条报出"关键帧越限"这类问题——dig 执行时会遇到的拒绝，在这里提前暴露。
+
+想手动摆姿态抄数（填 `home_joints` / `dig_cycle_tuning` 用）：
+
+```bash
+python scripts/monitor_ui.py --port 9700        # 浏览器 http://127.0.0.1:8050
+```
+
+面板顶部标出对端是哪台机器（demo 会红字警告），可逐个关节设目标并读回原生值；
+也可以 `set JIUWEN_KEYBOARD=1` 后用键盘开，面板负责读数。
+
 ## 三种操控方式
 
 | 方式 | 命令 | 适合 |
@@ -167,15 +248,15 @@ python extensions/jiuwen_agx/scripts/agx_bridge_server.py \
 | 文件 | 跑在哪 | Windows 兼容 |
 | --- | --- | --- |
 | `agx_bridge_server.py` | **Windows**（AGX 自带 Python，headless）或 Linux | ✅ 纯标准库；已审计：无 Unix 专属调用、print 全 ASCII、异常经 JSON 传输（ensure_ascii 转义） |
-| `agx_viewer_bridge.agxPy` | **Windows**（agxViewer 内嵌 Python 3.10） | ✅ 同上 |
+| `agx_viewer_bridge.agxPy` | **Windows**（AGX 自带 Python 3.12，自带窗口）或 Linux（xvfb） | ✅ 同上；必须用 AGX 自带 python 跑，不能交给 agxViewer（见上文） |
+| `start_agx_bridge.bat` / `start_demo_bridge.ps1` | **Windows** | ✅ 前者设好 AGX 环境后调 AGX python；后者纯标准库 mock |
 | `agx_scene_probe.py` | 两边 | ✅ `_out()` 带 GBK 控制台兜底 |
-| `agx_viewer_live.sh` / `agx_viewer_stream.sh` | **Linux 服务器**（bash + Xvfb + x11vnc） | ❌ 不适用于 Windows——Windows 侧直接用 `agxViewer` 命令行 |
+| `agx_viewer_live.sh` / `agx_viewer_stream.sh` | **Linux 服务器**（bash + Xvfb + x11vnc） | ❌ 不适用于 Windows——Windows 侧用 `start_agx_bridge.bat` |
 | jiuwensymbiosis 核心（框架、LLM、安全护栏） | Linux 服务器 | 与 Windows 无关 |
 
 跨平台边界 = 版本化 JSON 行协议 over TCP。**在 Windows 上启动的推荐姿势**：
-打开 "AGX Command Line"（开始菜单），`cd` 到本扩展 `scripts/` 目录，执行
-`agxViewer agx_viewer_bridge.agxPy`（viewer 模式）或
-`python agx_bridge_server.py --scene 场景.agx`（headless）。
+`scripts\start_agx_bridge.bat`（真 AGX，自带窗口 + 桥接）或
+`python agx_bridge_server.py --scene 场景.agx`（headless，无窗口）。
 Windows 防火墙首次运行需放行端口：`netsh advfirewall firewall add rule name="AGX Bridge" dir=in action=allow protocol=TCP localport=9700`。
 
 ## 后端
@@ -184,7 +265,7 @@ Windows 防火墙首次运行需放行端口：`netsh advfirewall firewall add r
 | --- | --- |
 | `mock` | 内存模拟，零依赖，离线开发/测试 |
 | `remote`（推荐） | TCP 桥接本脚本；`--demo` 无需 AGX；`--scene` 加载任意 .agx |
-| `inprocess` | 本进程 import agx（需 AGX Python 3.10 环境；骨架就位） |
+| `inprocess` | 本进程 import agx（需 AGX 自带 Python 3.12 环境；骨架就位） |
 
 ## 添加下一台仿真机器
 

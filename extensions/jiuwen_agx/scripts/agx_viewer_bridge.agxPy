@@ -1,19 +1,28 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""agxViewer 桥接插件 —— 在 viewer 进程内起 jiuwensymbiosis 桥接服务。
+"""AGX 挖掘机桥接插件 —— 起 jiuwensymbiosis 桥接服务 + 自带渲染窗口。
 
-用法（viewer 拥有仿真循环与实时渲染；配置全部走环境变量，避免与 agxViewer
-自己的命令行解析冲突）：
+用 **AGX 自带的 Python** 运行（不是 agxViewer，原因见下）。`init_app` 在
+``__name__ == "__main__"`` 且无已存在 AGX 上下文时会自己创建
+``agxOSG.ExampleApplication``：窗口、仿真循环、渲染都由它提供，本脚本只加
+场景与每步网络泵。
 
-    # 程序化搭建自带 365 挖掘机 + 沙地（无场景文件）：
-    JIUWEN_BRIDGE_PORT=9700 agxViewer agx_viewer_bridge.agxPy
+    rem 推荐：一键（内部设好 PATH/PYTHONHOME/PYTHONPATH 后调 AGX python）
+    start_agx_bridge.bat
 
-    # 加载 .agx 场景文件（viewer 先加载，脚本后自动发现约束）：
-    JIUWEN_BRIDGE_PORT=9700 agxViewer 场景.agx --attachScript agx_viewer_bridge.agxPy
+    rem 等价的手工方式（AGX Command Line 里）：
+    set PYTHONPATH=%AGX_DIR%\\bin\\x64\\agxpy;%AGX_DIR%\\data\\python\\modules
+    %AGX_DIR%\\python-x64\\python.exe agx_viewer_bridge.agxPy
 
-    # 无头自动化（xvfb 虚拟显示，协议全通、画面不可见）：
-    JIUWEN_BRIDGE_PORT=9700 xvfb-run -a agxViewer agx_viewer_bridge.agxPy
+    rem 无头（Linux 虚拟屏；协议全通、画面不可见）：
+    xvfb-run -a $AGX_DIR/python-x64/python agx_viewer_bridge.agxPy
+
+**不要用 ``agxViewer agx_viewer_bridge.agxPy``**：agxViewer 会用*用户配置文件*
+的环境重建进程，丢掉我们设的 PATH/PYTHONPATH，于是加载到机器上别的 Python
+（例如 Anaconda 3.12.7），而 AGX 的 Python 模块要求精确 3.12.10，导入直接失败
+（``No module named 'agxPythonModules'``）。用 AGX 自带 python 跑本脚本，
+环境得以保留，窗口一样有。
 
 环境变量：
     JIUWEN_SCRIPTS_DIR        仓库 scripts 目录（定位 agx_bridge_server.py；默认按本文件位置推导）
@@ -21,13 +30,11 @@
     JIUWEN_BRIDGE_PORT        监听端口（默认 9700）
     JIUWEN_BRIDGE_JOINTS      关节名逗号分隔（默认 swing,boom,arm,bucket）
     JIUWEN_BRIDGE_JOINT_MAP   关节→约束名映射（如 swing=CabHinge,boom=BoomCyl）
-    JIUWEN_BRIDGE_EXCAVATOR   "1"=程序化搭建挖掘机；"0"=对 viewer 已加载场景做约束发现（默认：场景为空则搭建）
+    JIUWEN_BRIDGE_EXCAVATOR   "1"=程序化搭建挖掘机；"0"=对已加载场景做约束发现（默认：场景为空则搭建）
 
 之后从控制端验证/驱动：
     python scripts/agx_scene_probe.py --bridge --port 9700
     python examples/run_task.py --config configs/agx_excavator/agx_excavator.local.yaml ...
-
-本脚本由 agxViewer 的内嵌 Python (3.10) 执行。
 """
 
 import os
