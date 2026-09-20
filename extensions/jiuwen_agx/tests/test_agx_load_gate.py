@@ -82,3 +82,26 @@ class TestLoadedMassThreshold:
         assert adapter.scoop_state() is False
         adapter.mark_scoop(True)
         assert adapter.scoop_state() is True
+
+
+class TestPumpStallWatchdog:
+    """仿真暂停 = 泵停摆 = 桥接静默失联。判定逻辑必须只在状态变化时报一次。"""
+
+    def test_stepping_quiet(self):
+        module, _ = _adapter_with_shovel(None)
+        assert module.pump_stall_state(0.5, False) == (None, False)
+
+    def test_first_stall_warns_once(self):
+        module, _ = _adapter_with_shovel(None)
+        message, warned = module.pump_stall_state(6.0, False)
+        assert warned is True
+        assert message is not None and "暂停" in message and "空格" in message
+        # 持续暂停不刷屏
+        assert module.pump_stall_state(9.0, warned) == (None, True)
+
+    def test_recovery_reported_once(self):
+        module, _ = _adapter_with_shovel(None)
+        message, warned = module.pump_stall_state(0.5, True)
+        assert warned is False
+        assert message is not None and "恢复" in message
+        assert module.pump_stall_state(0.5, warned) == (None, False)

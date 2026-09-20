@@ -33,9 +33,15 @@ import base64
 import json
 import os
 import socket
+import threading
+import time
 from typing import Any
 
 PROTOCOL_VERSION = 1
+
+# 看门狗：仿真一旦暂停，"每步回调泵"就不再被调用，桥接静默失联——客户端只看到
+# 超时，完全看不出原因。这个阈值是"多久没步进就提示"的秒数。
+PUMP_STALL_WARN_S = 5.0
 
 # 铲斗"载料"判定阈值（kg）。不能取小值：空斗贴地时 AGX Terrain 会把接触区土壤
 # 算进铲斗 aggregate，读数不为 0；而满载一斗（约 0.6 m³ 沙土）是数百公斤量级。
@@ -46,6 +52,24 @@ LOADED_MASS_THRESHOLD_KG = 50.0
 DEMO_PILES: list[dict[str, Any]] = [
     {"name": "soil_pile", "x_m": -2.0, "y_m": 1.0, "volume_m3": 2.0},
 ]
+
+
+def pump_stall_state(
+    gap_s: float, warned: bool, *, threshold: float = PUMP_STALL_WARN_S
+) -> tuple[str | None, bool]:
+    """看门狗判定（纯函数，便于测试）：(要打印的消息或 None, 新的 warned 状态)。
+
+    只在"状态变化"时给消息，避免每 2 秒刷屏。
+    """
+    if gap_s > threshold and not warned:
+        return (
+            f"[agx_bridge] WARNING: 仿真已暂停 {gap_s:.0f} s —— 泵不再运行，桥接不会"
+            "应答（客户端只会看到超时）。在 AGX 窗口里按空格/播放键恢复步进。",
+            True,
+        )
+    if gap_s <= threshold and warned:
+        return ("[agx_bridge] 仿真已恢复步进，桥接恢复应答。", False)
+    return (None, warned)
 
 
 class AgxSceneAdapter:
@@ -114,6 +138,9 @@ class AgxSceneAdapter:
         self._write_buffer = b""  # 非阻塞 send 的未竟字节，pump 每步排空
         self._bridge_session: BridgeSession | None = None
         self._drive_plan: tuple[list, float] | None = None  # (hinges, 停车仿真时刻)
+        # 看门狗只读这个时间戳（主线程每步刷新），不碰任何 AGX 对象
+        self._last_pump_ts = time.monotonic()
+        self._watchdog_started = False
 
     # -- 场景
     def load(self) -> None:
@@ -547,13 +574,37 @@ class AgxSceneAdapter:
         server.setblocking(False)
         self._listener = server
         self._bridge_session = BridgeSession(self)
+        self._start_stall_watchdog()
         print(
             f"[agx_bridge] pump listening on {host}:{port} (protocol v{PROTOCOL_VERSION})",
             flush=True,
         )
 
+    def _start_stall_watchdog(self) -> None:
+        """泵停摆的报警线程 —— 只读时间戳，不碰 AGX 对象（跨线程安全）。
+
+        仿真暂停（窗口里按了空格/暂停键）时 ``pump`` 不再被调用，桥接静默失联，
+        客户端只看到超时。这条日志把"没反应"变成"能看懂"。
+        """
+        if self._watchdog_started:
+            return
+        self._watchdog_started = True
+
+        def _watch() -> None:
+            warned = False
+            while True:
+                time.sleep(2.0)
+                message, warned = pump_stall_state(
+                    time.monotonic() - self._last_pump_ts, warned
+                )
+                if message is not None:
+                    print(message, flush=True)
+
+        threading.Thread(target=_watch, name="agx-pump-watchdog", daemon=True).start()
+
     def pump(self) -> None:
         """viewer 每个仿真步调用一次（主线程）：接受连接、读请求、回响应、执行停车计划。"""
+        self._last_pump_ts = time.monotonic()  # 看门狗心跳
         if self._listener is None:
             return
         if self._drive_plan is not None:

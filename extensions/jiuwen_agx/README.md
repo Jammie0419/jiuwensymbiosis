@@ -42,6 +42,7 @@ rem ③ 另开一个终端发任务（任务不进 config，一律用 --query �
 | 症状 | 原因与处理 |
 | --- | --- |
 | 命令显示成功、画面纹丝不动 | 连到了内存演示机。控制端连上时会打印对端机器名：`demo_excavator` 就是连错了，真机报 `excavator365` |
+| 探针/任务超时，桥接像死了一样 | **AGX 窗口里的仿真被暂停了**（按了空格/暂停键）：泵挂在每仿真步回调上，不步进就不收发网络。桥接控制台会打印 `WARNING: 仿真已暂停 …`，在窗口里按空格/播放键恢复即可 |
 | 规划失败，提示 `dig requires ['payload.clear'] but the state here is ['payload.held']` | 铲斗载料误判。空斗贴地时 AGX Terrain 的 aggregate 本底 0~1 kg，阈值取小了就永久"有料"。阈值见 `agx_bridge_server.py:LOADED_MASS_THRESHOLD_KG`，用 `inventory` 的 `bucket_mass_kg` 校准 |
 | 用 `agxViewer 插件.agxPy` 起不来：`No module named 'agxPythonModules'` | agxViewer 会用用户配置文件的环境重建进程，丢掉 PATH/PYTHONPATH，于是加载到别的 Python（本机 Anaconda 3.12.7），而 AGX 模块要求精确 3.12.10。**用 `start_agx_bridge.bat`** |
 | `dig` 报 `joint 'X' target ... outside configured limits` | 关键帧与限位单位不一致（回转 rad / 液压缸 m）。跑 `--check-config` 逐条看，见"关节单位" |
