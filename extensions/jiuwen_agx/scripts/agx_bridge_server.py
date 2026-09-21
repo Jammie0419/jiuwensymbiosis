@@ -446,6 +446,12 @@ class AgxSceneAdapter:
         def _duration(left: float, right: float, seconds: float) -> None:
             if self.pump_mode:
                 # 记录停车计划，pump() 里按仿真时间执行
+                if self._drive_plan is not None:
+                    print(
+                        "[agx_bridge] WARNING: 上一条底盘命令还没走完就被新命令覆盖 —— "
+                        "客户端应当轮询 base_state 等到位（否则相对位移会丢失）",
+                        flush=True,
+                    )
                 self._drive_plan = (list(hinges), self._sim.getTimeStamp() + seconds)
             else:
                 _apply(left, right)
@@ -468,6 +474,21 @@ class AgxSceneAdapter:
         if self.pump_mode and abs(dx_m) <= 1e-4 and abs(dyaw_rad) <= 1e-4:
             _apply(0.0, 0.0)
         return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
+
+    def base_state(self) -> dict[str, Any]:
+        """底盘还在动吗？—— pump 模式的底盘命令"发了就走"，客户端靠这个等到位。
+
+        没有它，连发的多条相对命令会互相**覆盖**停车时刻（实测：9 条
+        ``rotate_base(0.7)`` 在 0.13 s 内发完，只剩一次 1.4 s 行驶 ≈ 转了 0.7 rad
+        而不是 2π）。SimBackend 承诺这些调用是阻塞的，这里补上可观测的到达信号。
+        """
+        if self._drive_plan is None or self._sim is None:
+            return {"busy": False, "remaining_s": 0.0}
+        _hinges, stop_at = self._drive_plan
+        remaining = max(0.0, float(stop_at) - float(self._sim.getTimeStamp()))
+        # 预计时间已走完就不算忙：泵通常下一步就清标志，但万一仿真卡在边界
+        # （或被暂停），客户端不该为此白等到自己的超时。
+        return {"busy": remaining > 0.0, "remaining_s": remaining}
 
     def navigate_arc(
         self, radius_m: float, dyaw_rad: float, timeout_s: float
@@ -493,6 +514,12 @@ class AgxSceneAdapter:
             h.getMotor1D().setEnable(True)
             h.getMotor1D().setSpeed(s)
         if self.pump_mode:
+            if self._drive_plan is not None:
+                print(
+                    "[agx_bridge] WARNING: 上一条底盘命令还没走完就被新命令覆盖 —— "
+                    "客户端应当轮询 base_state 等到位（否则相对位移会丢失）",
+                    flush=True,
+                )
             self._drive_plan = (hinges, self._sim.getTimeStamp() + duration)
         else:
             self._step(duration)
@@ -846,13 +873,24 @@ class BridgeSession:
         )
         return {"joints": joints}
 
+    def _base_motion_reply(self, result: dict[str, Any]) -> dict[str, Any]:
+        """底盘命令的回复：pump 模式补 ``async`` + 预计耗时，客户端据此等到位。
+
+        不补的话，客户端以为命令瞬间完成（相对位移会互相覆盖），
+        ``RemoteSimBackend`` 也就无从轮询 —— 见 ``AgxSceneAdapter.base_state``。
+        """
+        if not getattr(self._scene, "pump_mode", False):
+            return {"result": result}
+        state = self._scene.base_state()
+        return {"result": result, "async": True, "eta_s": state.get("remaining_s", 0.0)}
+
     def _cmd_navigate_relative(self, request: dict[str, Any]) -> dict[str, Any]:
         result = self._scene.navigate_relative(
             self._num(request, "dx_m", 0.0),
             self._num(request, "dyaw_rad", 0.0),
             self._num(request, "timeout_s", 30.0),
         )
-        return {"result": result}
+        return self._base_motion_reply(result)
 
     def _cmd_navigate_arc(self, request: dict[str, Any]) -> dict[str, Any]:
         result = self._scene.navigate_arc(
@@ -860,7 +898,10 @@ class BridgeSession:
             self._num(request, "dyaw_rad", 0.0),
             self._num(request, "timeout_s", 30.0),
         )
-        return {"result": result}
+        return self._base_motion_reply(result)
+
+    def _cmd_base_state(self, _request: dict[str, Any]) -> dict[str, Any]:
+        return dict(self._scene.base_state())
 
     def _cmd_terrain(self, _request: dict[str, Any]) -> dict[str, Any]:
         return {"piles": self._scene.read_terrain()}

@@ -95,6 +95,7 @@ class _ScriptedFake:
 
     def __init__(self, responses: list[dict]) -> None:
         self._responses = iter(responses)
+        self.seen: list[str] = []  # 收到的命令序列（断言"有没有轮询"）
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind(("127.0.0.1", 0))
@@ -112,7 +113,11 @@ class _ScriptedFake:
         with conn:
             reader = conn.makefile("r", encoding="utf-8", newline="\n")
             writer = conn.makefile("w", encoding="utf-8", newline="\n")
-            for _line in reader:
+            for line in reader:
+                try:
+                    self.seen.append(str(json.loads(line).get("cmd", "")))
+                except json.JSONDecodeError:
+                    self.seen.append("<bad json>")
                 try:
                     response = next(self._responses)
                 except StopIteration:
@@ -325,3 +330,57 @@ class TestEndToEndViaDemoBridge:
         assert rc == 0
         machines = report["machines"]
         assert machines[0]["name"] == "demo_excavator"
+
+
+class TestBaseMotionCompletion:
+    """pump 模式的底盘命令是"发了就走"：客户端必须轮询 base_state 等到位。
+
+    否则连发的相对命令互相覆盖停车时刻（实测 9×0.7 rad 只走出 0.7 rad）。
+    """
+
+    def test_async_reply_is_polled_until_idle(self):
+        fake = _ScriptedFake(
+            [
+                {"v": 1, "ok": True, "pong": True},          # ping
+                {"v": 1, "ok": False, "error": "no inventory"},  # open() 的身份查询
+                {"v": 1, "ok": True, "result": {"dx_m": 0.0, "dyaw_rad": 0.7}, "async": True, "eta_s": 1.4},
+                {"v": 1, "ok": True, "busy": True, "remaining_s": 1.2},
+                {"v": 1, "ok": True, "busy": False, "remaining_s": 0.0},
+            ]
+        )
+        backend = _backend(fake.port)
+        backend.open()
+        result = backend.navigate_relative(0.0, 0.7, timeout_s=5.0)
+        backend.close()
+        assert result == {"dx_m": 0.0, "dyaw_rad": 0.7}
+        assert fake.seen == ["ping", "inventory", "navigate_relative", "base_state", "base_state"]
+
+    def test_sync_reply_is_not_polled(self):
+        fake = _ScriptedFake(
+            [
+                {"v": 1, "ok": True, "pong": True},
+                {"v": 1, "ok": False, "error": "no inventory"},
+                {"v": 1, "ok": True, "result": {"dx_m": 1.0, "dyaw_rad": 0.0}},
+            ]
+        )
+        backend = _backend(fake.port)
+        backend.open()
+        backend.navigate_relative(1.0, 0.0, timeout_s=5.0)
+        backend.close()
+        assert fake.seen == ["ping", "inventory", "navigate_relative"]
+
+    def test_old_bridge_without_base_state_does_not_wait(self):
+        """老桥不认 base_state：只记 debug，命令结果照常返回（向后兼容）。"""
+        fake = _ScriptedFake(
+            [
+                {"v": 1, "ok": True, "pong": True},
+                {"v": 1, "ok": False, "error": "no inventory"},
+                {"v": 1, "ok": True, "result": {"dx_m": 0.0, "dyaw_rad": 0.3}, "async": True},
+                {"v": 1, "ok": False, "error": "unknown command 'base_state'"},
+            ]
+        )
+        backend = _backend(fake.port)
+        backend.open()
+        result = backend.navigate_relative(0.0, 0.3, timeout_s=5.0)
+        backend.close()
+        assert result == {"dx_m": 0.0, "dyaw_rad": 0.3}

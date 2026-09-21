@@ -461,6 +461,27 @@ class RemoteSimBackend:
         return joints
 
     # -- undercarriage
+    def _await_base_idle(self, timeout_s: float, cmd: str) -> None:
+        """pump 模式的底盘命令是"发了就走"：轮询到停车，恢复本协议承诺的阻塞语义。
+
+        不轮询的后果实测过：连发的多条**相对**命令互相覆盖停车时刻（9 条
+        ``rotate_base(0.7)`` 在 0.13 s 内发完，只走了一次 1.4 s ≈ 0.7 rad，
+        而不是 2π）。桥接不认识 ``base_state``（老版本）时不等待，只记 debug。
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + float(timeout_s) + 5.0
+        while _time.monotonic() < deadline:
+            try:
+                state = self._call({"cmd": "base_state"})
+            except Exception as exc:  # noqa: BLE001 - 老桥没有这条命令
+                logger.debug("%s: base_state unavailable (%s); not waiting", cmd, exc)
+                return
+            if not state.get("busy"):
+                return
+            _time.sleep(0.2)
+        logger.warning("%s: base motion still busy after %.1fs", cmd, timeout_s)
+
     def navigate_relative(
         self, dx_m: float, dyaw_rad: float, *, timeout_s: float
     ) -> dict:
@@ -473,6 +494,8 @@ class RemoteSimBackend:
             },
             read_timeout_s=float(timeout_s) + 5.0,
         )
+        if resp.get("async"):
+            self._await_base_idle(timeout_s, "navigate_relative")
         return dict(resp["result"])
 
     def navigate_arc(
@@ -487,6 +510,8 @@ class RemoteSimBackend:
             },
             read_timeout_s=float(timeout_s) + 5.0,
         )
+        if resp.get("async"):
+            self._await_base_idle(timeout_s, "navigate_arc")
         return dict(resp["result"])
 
     # -- terrain / scoop
