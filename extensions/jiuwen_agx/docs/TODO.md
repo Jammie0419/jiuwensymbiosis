@@ -36,11 +36,13 @@
 
 ## B. 缺失能力（按影响排序）
 
-- [ ] **B1. 机器位置感知（影响：高）**
-  `navigate_relative` 是开环（速度×时间），底盘走完后的实际位置框架不知道，
-  远距离作业后坐标系会漂。做法：桥接加 `read_pose()`（AGX 根刚体世界位姿减去
-  初始位姿）塞进 `get_observation().extra`，`navigate_relative` 改为轮询位移闭环。
-  **验收**：走 2 m 后报告的位移与画面一致（误差 <5 cm）。
+- [ ] **B1. 机器位置感知（部分完成）**
+  桥接侧已闭环：`base_pose`（底盘 x/y/yaw）+ `base_track_command` 按真实位姿驱动，
+  `navigate_relative`/`rotate_base` 到位才停（实测 9×0.7 rad = 353°）。
+  **仍缺 framework 侧**：位姿没有进 `get_observation().extra`，上层不知道机器在哪、
+  朝向如何（远距离作业后坐标系会漂）；`navigate_relative` 的到达判据也还在桥接里。
+  做法：把 `base_pose` 接进 observation，走完读一次即可。
+  **验收**：走 2 m 后框架报告的位移与画面一致（误差 <5 cm）。
 - [ ] **B2. 地形体积真更新（影响：中）**
   `read_terrain` 的 volume 仍是常量，LLM"复查地形"看不到变化（铲斗质量已有真值，
   见 `inventory.bucket_mass_kg`）。做法：从 agxTerrain 读已挖除体积。

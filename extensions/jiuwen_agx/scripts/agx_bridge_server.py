@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import math
 import json
 import os
 import socket
@@ -70,6 +71,79 @@ def pump_stall_state(
     if gap_s <= threshold and warned:
         return ("[agx_bridge] 仿真已恢复步进，桥接恢复应答。", False)
     return (None, warned)
+
+
+# ── 底盘闭环参数（实测标定，2026-09-21，365 挖掘机 + 沙地）──────────────
+# 驱动轮 1.0 rad/s 时的真实偏航角速度（原来代码假设 0.5 rad/s，注释写着"近似"）：
+#   左=+v, 右=-v → yaw **减小** 0.22 rad/s   ← 旧代码用的就是这个配对（方向反了）
+#   左=-v, 右=+v → yaw **增大** 0.15 rad/s
+# 两个方向连速率都不对称，还有一个约 1 s 的启动爬升（沙地摩擦），所以固定时长
+# 估算必然偏——改成按实际 yaw 误差闭环：什么时候到、什么时候停。
+BASE_YAW_TOL_RAD = 0.01  # ≈0.57°。实测每条命令的残差 ≈ 容差 + 停车惯性：
+# 0.02 时 9 条累计比目标少约 8°（-2.2%），收到 0.01 后少约 3~5°
+BASE_XY_TOL_M = 0.05
+BASE_MIN_TRACK_SPEED = 0.25  # 驱动轮 rad/s：再低推不动，容易被土顶住
+BASE_MAX_TRACK_SPEED = 1.0
+BASE_YAW_RATE_EST = 0.2  # rad/s，仅用于给客户端估 eta（闭环不依赖它）
+BASE_SPEED_EST_MPS = 0.3  # m/s，同上
+BASE_TRACK_WIDTH_M = 2.0  # 两履带间距（弧线内外速度差用，近似值）
+
+
+def _wrap_pi(angle: float) -> float:
+    """把角度归一化到 (-pi, pi]。"""
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def base_track_command(
+    pose: dict[str, float],
+    goal: dict[str, Any],
+    *,
+    yaw_tol: float = BASE_YAW_TOL_RAD,
+    xy_tol: float = BASE_XY_TOL_M,
+) -> tuple[bool, float, float]:
+    """底盘闭环的一步：``(是否到位, 左履带速度, 右履带速度)``。
+
+    ``goal`` = ``{"yaw_target": float|None, "xy_target": (x,y)|None}``，
+    先转后走（与 headless 的行为一致）。纯函数，便于单测。
+    """
+    pair = goal.get("track_pair")
+    if pair is not None:
+        # 弧线：内外履带同号（不是原地转），停不停由 deadline 决定
+        return (False, float(pair[0]), float(pair[1]))
+    if goal.get("yaw_target") is not None:
+        err = _wrap_pi(float(goal["yaw_target"]) - float(pose["yaw_rad"]))
+        if abs(err) > yaw_tol:
+            speed = min(BASE_MAX_TRACK_SPEED, max(BASE_MIN_TRACK_SPEED, 2.0 * abs(err)))
+            # 增大 yaw 用 (左=-v, 右=+v) —— 实测符号
+            return (
+                False,
+                -speed if err > 0 else speed,
+                speed if err > 0 else -speed,
+            )
+    if goal.get("xy_target") is not None:
+        tx, ty = (float(v) for v in goal["xy_target"])
+        dx, dy = tx - float(pose["x_m"]), ty - float(pose["y_m"])
+        if math.hypot(dx, dy) > xy_tol:
+            heading = float(pose["yaw_rad"])
+            along = dx * math.cos(heading) + dy * math.sin(heading)
+            v = min(BASE_MAX_TRACK_SPEED, max(BASE_MIN_TRACK_SPEED, 1.5 * math.hypot(dx, dy)))
+            return (False, v if along >= 0 else -v, v if along >= 0 else -v)
+    return (True, 0.0, 0.0)
+
+
+def base_goal_eta(pose: dict[str, float], goal: dict[str, Any]) -> float:
+    """到位的粗略剩余时间（只用于 eta 报告，控制不依赖它）。"""
+    remaining = 0.0
+    if goal.get("yaw_target") is not None:
+        err = abs(_wrap_pi(float(goal["yaw_target"]) - float(pose["yaw_rad"])))
+        if err > BASE_YAW_TOL_RAD:
+            remaining += err / BASE_YAW_RATE_EST
+    if goal.get("xy_target") is not None:
+        tx, ty = (float(v) for v in goal["xy_target"])
+        dist = math.hypot(tx - float(pose["x_m"]), ty - float(pose["y_m"]))
+        if dist > BASE_XY_TOL_M:
+            remaining += dist / BASE_SPEED_EST_MPS
+    return remaining
 
 
 def port_busy(host: str, port: int, timeout_s: float = 1.5) -> bool:
@@ -161,7 +235,7 @@ class AgxSceneAdapter:
         self._read_buffer = b""
         self._write_buffer = b""  # 非阻塞 send 的未竟字节，pump 每步排空
         self._bridge_session: BridgeSession | None = None
-        self._drive_plan: tuple[list, float] | None = None  # (hinges, 停车仿真时刻)
+        self._drive_goal: dict[str, Any] | None = None  # 底盘闭环目标（见 base_track_command）
         # 看门狗只读这个时间戳（主线程每步刷新），不碰任何 AGX 对象
         self._last_pump_ts = time.monotonic()
         self._watchdog_started = False
@@ -422,109 +496,152 @@ class AgxSceneAdapter:
             self._step(dt)
         return self.read_joints()
 
-    # -- 履带底盘
+    # -- 履带底盘（闭环：按真实位姿驱动，到位才停）
+    def _apply_tracks(self, left: float, right: float) -> None:
+        """给两条履带的驱动轮设速度（rad/s）。"""
+        exc = self._excavator
+        if exc is None:
+            return
+        for h, s in zip(list(exc.sprocket_hinges), (left, right), strict=False):
+            h.getLock1D().setEnable(False)
+            h.getMotor1D().setEnable(True)
+            h.getMotor1D().setSpeed(s)
+
+    def base_pose(self) -> dict[str, float]:
+        """底盘世界位姿 ``{x_m, y_m, yaw_rad}``（履带总成 = 场景根刚体）。
+
+        yaw 取欧拉角的 Z 分量 —— 实测约定：``Quat.getAsEulerAngles()`` 的分量就是
+        (x, y, z)（rad），用已知旋转验证过。
+        """
+        exc = self._excavator
+        if exc is None or self._sim is None:
+            return {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0}
+        body = exc.under_carriage_body
+        pos = body.getPosition()
+        return {
+            "x_m": float(pos.x()),
+            "y_m": float(pos.y()),
+            "yaw_rad": float(body.getRotation().getAsEulerAngles().z()),
+        }
+
+    def _drive_steps(self, goal: dict[str, Any], timeout_s: float) -> None:
+        """headless：自己步进，直到到位或超时（与 pump 用同一个闭环判据）。"""
+        import time as _time
+
+        deadline = _time.monotonic() + max(float(timeout_s), 1.0)
+        while _time.monotonic() < deadline:
+            reached, left, right = base_track_command(self.base_pose(), goal)
+            self._apply_tracks(left, right)
+            if reached:
+                break
+            self._step(1 / 60)
+        self._apply_tracks(0.0, 0.0)
+        self._drive_goal = None
+
+    def _set_drive_goal(self, goal: dict[str, Any] | None, timeout_s: float) -> None:
+        """挂上/清掉底盘闭环目标；由 pump（或 headless 的 _drive_steps）每步驱动。"""
+        if self._drive_goal is not None and goal is not None:
+            print(
+                "[agx_bridge] WARNING: 上一条底盘命令还没走完就被新命令覆盖 —— "
+                "客户端应当轮询 base_state 等到位（否则相对位移会丢失）",
+                flush=True,
+            )
+        if goal is None:
+            self._apply_tracks(0.0, 0.0)
+            self._drive_goal = None
+            return
+        goal["deadline"] = float(self._sim.getTimeStamp()) + max(float(timeout_s), 5.0)
+        self._drive_goal = goal
+        _reached, left, right = base_track_command(self.base_pose(), goal)
+        self._apply_tracks(left, right)
+
     def navigate_relative(
         self, dx_m: float, dyaw_rad: float, timeout_s: float
     ) -> dict[str, float]:
-        """履带差速开环控制：Motor1D.setSpeed 驱动驱动轮（官方 set_speed 模式）。
+        """履带差速相对运动：**先转到位，再走到位**。
 
-        headless：阻塞走完两段（先转后走）。viewer（pump）：设速度后由 pump()
-        按仿真时间自动停车（不能阻塞渲染主线程）。
+        两种模式跑的是同一个闭环（``base_track_command``）：比对**真实底盘位姿**
+        与目标，每步给履带速度，到位或超时才停。为什么不用"速度×时间"估算：
+        实测驱动轮 1.0 rad/s 时真实偏航只有 0.15~0.22 rad/s（且两个方向不对称、
+        还有约 1 s 启动爬升），估算必然短——"让它转一圈只转了一点点"就是这么来的。
         """
         exc = self._excavator
         if exc is None:
             raise RuntimeError("navigate_relative 需要 --excavator 场景（履带驱动轮）")
-        speed = 1.0  # rad/s（驱动轮角速度）
-        hinges = list(exc.sprocket_hinges)
 
-        def _apply(left: float, right: float) -> None:
-            for h, s in zip(hinges, (left, right), strict=False):
-                h.getLock1D().setEnable(False)
-                h.getMotor1D().setEnable(True)
-                h.getMotor1D().setSpeed(s)
-
-        def _duration(left: float, right: float, seconds: float) -> None:
-            if self.pump_mode:
-                # 记录停车计划，pump() 里按仿真时间执行
-                if self._drive_plan is not None:
-                    print(
-                        "[agx_bridge] WARNING: 上一条底盘命令还没走完就被新命令覆盖 —— "
-                        "客户端应当轮询 base_state 等到位（否则相对位移会丢失）",
-                        flush=True,
-                    )
-                self._drive_plan = (list(hinges), self._sim.getTimeStamp() + seconds)
+        if abs(dyaw_rad) <= 1e-4 and abs(dx_m) <= 1e-4:
+            if not self.pump_mode:
+                self._apply_tracks(0.0, 0.0)
             else:
-                _apply(left, right)
-                self._step(seconds)
-                for h in hinges:
-                    h.getMotor1D().setSpeed(0.0)
+                self._set_drive_goal(None, timeout_s)
+            return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
 
-        turn_rate = 0.5  # rad/s 近似原地转速
-        if abs(dyaw_rad) > 1e-4:
-            sign = 1.0 if dyaw_rad > 0 else -1.0
-            _apply(sign * speed, -sign * speed)
-            _duration(sign * speed, -sign * speed, abs(dyaw_rad) / turn_rate)
-        wheel_radius = 0.3  # 驱动轮半径近似（米）
-        if abs(dx_m) > 1e-4:
-            direction = 1.0 if dx_m > 0 else -1.0
-            _apply(direction * speed, direction * speed)
-            _duration(
-                direction * speed, direction * speed, abs(dx_m) / (speed * wheel_radius)
+        pose = self.base_pose()
+        goal: dict[str, Any] = {
+            "yaw_target": _wrap_pi(pose["yaw_rad"] + float(dyaw_rad))
+            if abs(dyaw_rad) > 1e-4
+            else None,
+            "xy_target": (
+                pose["x_m"] + float(dx_m) * math.cos(pose["yaw_rad"]),
+                pose["y_m"] + float(dx_m) * math.sin(pose["yaw_rad"]),
             )
-        if self.pump_mode and abs(dx_m) <= 1e-4 and abs(dyaw_rad) <= 1e-4:
-            _apply(0.0, 0.0)
+            if abs(dx_m) > 1e-4
+            else None,
+        }
+        if self.pump_mode:
+            self._set_drive_goal(goal, timeout_s)
+        else:
+            self._set_drive_goal(goal, timeout_s)
+            self._drive_steps(goal, timeout_s)
         return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
 
     def base_state(self) -> dict[str, Any]:
         """底盘还在动吗？—— pump 模式的底盘命令"发了就走"，客户端靠这个等到位。
 
-        没有它，连发的多条相对命令会互相**覆盖**停车时刻（实测：9 条
-        ``rotate_base(0.7)`` 在 0.13 s 内发完，只剩一次 1.4 s 行驶 ≈ 转了 0.7 rad
-        而不是 2π）。SimBackend 承诺这些调用是阻塞的，这里补上可观测的到达信号。
+        判据是**真实位姿与目标的差距**（不是计时器）：没有它，连发的多条相对命令
+        会互相覆盖（实测 9 条 ``rotate_base(0.7)`` 只走出 0.7 rad ≈ 40°）。
         """
-        if self._drive_plan is None or self._sim is None:
+        if self._drive_goal is None or self._sim is None:
             return {"busy": False, "remaining_s": 0.0}
-        _hinges, stop_at = self._drive_plan
-        remaining = max(0.0, float(stop_at) - float(self._sim.getTimeStamp()))
-        # 预计时间已走完就不算忙：泵通常下一步就清标志，但万一仿真卡在边界
-        # （或被暂停），客户端不该为此白等到自己的超时。
-        return {"busy": remaining > 0.0, "remaining_s": remaining}
+        pose = self.base_pose()
+        now = float(self._sim.getTimeStamp())
+        deadline = float(self._drive_goal.get("deadline", 0.0))
+        if self._drive_goal.get("track_pair") is not None:
+            remaining = max(0.0, deadline - now)
+            return {"busy": remaining > 0.0, "remaining_s": remaining}
+        reached, _left, _right = base_track_command(pose, self._drive_goal)
+        return {
+            "busy": (not reached) and now < deadline,
+            "remaining_s": base_goal_eta(pose, self._drive_goal),
+        }
 
     def navigate_arc(
-        self, radius_m: float, dyaw_rad: float, timeout_s: float
+        self, radius_m: float, dyaw_rad: float, *, timeout_s: float = 30.0
     ) -> dict[str, float]:
-        """常曲率弧线：内外履带速度差（v1 简化为差速时间近似）。"""
+        """常曲率弧线：内外履带速度差（半径近似，转角闭环）。"""
         exc = self._excavator
         if exc is None:
             raise RuntimeError("navigate_arc 需要 --excavator 场景")
-        speed = 1.0
-        wheel_radius = 0.3
-        track_width = 2.0  # 两履带间距近似（米）
+        speed = BASE_MAX_TRACK_SPEED
         arc_len = abs(radius_m * dyaw_rad)
-        duration = arc_len / max(speed * wheel_radius, 1e-6)
+        duration = arc_len / max(BASE_SPEED_EST_MPS, 1e-6)
         v_out = speed if radius_m >= 0 else -speed
         v_in = (
             v_out
-            * (abs(radius_m) - track_width / 2)
-            / max(abs(radius_m) + track_width / 2, 1e-6)
+            * (abs(radius_m) - BASE_TRACK_WIDTH_M / 2)
+            / max(abs(radius_m) + BASE_TRACK_WIDTH_M / 2, 1e-6)
         )
-        hinges = list(exc.sprocket_hinges)
-        for h, s in zip(hinges, (v_out, v_in), strict=False):
-            h.getLock1D().setEnable(False)
-            h.getMotor1D().setEnable(True)
-            h.getMotor1D().setSpeed(s)
+        pose = self.base_pose()
+        goal: dict[str, Any] = {
+            "yaw_target": _wrap_pi(pose["yaw_rad"] + float(dyaw_rad)),
+            "xy_target": None,
+            "track_pair": (v_out, v_in),  # 弧线不是原地转：内外履带同号
+        }
         if self.pump_mode:
-            if self._drive_plan is not None:
-                print(
-                    "[agx_bridge] WARNING: 上一条底盘命令还没走完就被新命令覆盖 —— "
-                    "客户端应当轮询 base_state 等到位（否则相对位移会丢失）",
-                    flush=True,
-                )
-            self._drive_plan = (hinges, self._sim.getTimeStamp() + duration)
+            self._set_drive_goal(goal, max(duration, timeout_s))
         else:
-            self._step(duration)
-            for h in hinges:
-                h.getMotor1D().setSpeed(0.0)
+            self._set_drive_goal(goal, max(duration, timeout_s))
+            self._drive_steps(goal, max(duration, timeout_s))
         return {"radius_m": float(radius_m), "dyaw_rad": float(dyaw_rad)}
 
     # -- 地形 / 铲斗
@@ -658,13 +775,21 @@ class AgxSceneAdapter:
         self._last_pump_ts = time.monotonic()  # 看门狗心跳
         if self._listener is None:
             return
-        if self._drive_plan is not None:
-            hinges, stop_at = self._drive_plan
-            if self._sim.getTimeStamp() >= stop_at:
-                for h in hinges:
-                    h.getMotor1D().setSpeed(0.0)
-                self._drive_plan = None
-                print("[agx_bridge] drive plan finished (speeds zeroed)", flush=True)
+        if self._drive_goal is not None:
+            reached, left, right = base_track_command(self.base_pose(), self._drive_goal)
+            past_deadline = self._sim.getTimeStamp() >= float(
+                self._drive_goal.get("deadline", 0.0)
+            )
+            if reached or past_deadline:
+                self._apply_tracks(0.0, 0.0)
+                self._drive_goal = None
+                print(
+                    f"[agx_bridge] base motion {'reached' if reached else 'TIMEOUT'}"
+                    " (speeds zeroed)",
+                    flush=True,
+                )
+            else:
+                self._apply_tracks(left, right)
         if self._conn is None:
             try:
                 conn, addr = self._listener.accept()
@@ -902,6 +1027,10 @@ class BridgeSession:
 
     def _cmd_base_state(self, _request: dict[str, Any]) -> dict[str, Any]:
         return dict(self._scene.base_state())
+
+    def _cmd_base_pose(self, _request: dict[str, Any]) -> dict[str, Any]:
+        """底盘世界位姿（x/y 米、yaw 弧度）—— 闭环的观测源，也便于外部核对转了多少。"""
+        return {"pose": dict(self._scene.base_pose())}
 
     def _cmd_terrain(self, _request: dict[str, Any]) -> dict[str, Any]:
         return {"piles": self._scene.read_terrain()}
