@@ -207,3 +207,24 @@ class TestApi:
         with session:
             piles = session.api.get_terrain()["piles"]
             assert piles and {"name", "x_m", "y_m", "volume_m3"} <= set(piles[0])
+
+
+class TestJointNamesReachThePlanner:
+    """世界状态要把关节名报出来，否则规划器只能自己编（实测编成了 joint_1..4）。"""
+
+    def test_env_exposes_joint_names_in_config_order(self):
+        from jiuwen_agx.agx_excavator.config import AgxExcavatorConfig
+        from jiuwen_agx.agx_excavator.env import AgxExcavatorEnv
+
+        env = AgxExcavatorEnv(AgxExcavatorConfig())
+        assert env.joint_names == ["swing", "boom", "arm", "bucket"]
+
+    def test_world_state_renders_names_not_just_values(self):
+        from jiuwensymbiosis.api.world_state import WorldState
+
+        state = WorldState(
+            joints=[0.0, -0.02, 0.0, 0.0],
+            joint_names=("swing", "boom", "arm", "bucket"),
+            joint_units="rad",
+        )
+        assert "swing=0.00" in state.as_prompt_block()

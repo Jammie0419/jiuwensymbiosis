@@ -349,6 +349,30 @@ class TestReachEnvelopeReachesThePlanner:
         assert "平移≤1m" in block and "转动≤0.7rad" in block
         assert "拆成多条" in block
 
+    def test_joint_names_are_rendered_next_to_the_values(self):
+        """关节名必须出现在世界状态里 —— MOVE_JOINT 的契约明确让规划器从这里读名字。
+
+        实测故障（AGX 挖掘机，2026-09-21）：世界状态只报了一串数值，
+        规划器于是自己编名字 ``move_joint({'joint_1': 0, ...})``，
+        第一步就死在 ``unknown joint 'joint_1'``，整条序列一步没动。
+        """
+        state = WorldState(
+            joints=[0.0, -0.02, 0.0, 0.0],
+            joint_names=("swing", "boom", "arm", "bucket"),
+            joint_units="rad",
+        )
+        block = state.as_prompt_block()
+        assert "swing=0.00" in block and "boom=-0.02" in block and "bucket=0.00" in block
+
+    def test_without_names_the_vector_still_renders(self):
+        """没声明名字的机体退回原来的纯数值形式（不编造名字）。"""
+        block = WorldState(joints=[1.5], joint_units="rad").as_prompt_block()
+        assert "关节(rad)：1.50" in block
+
+    def test_describe_carries_joint_names(self):
+        d = WorldState(joint_names=("a", "b")).describe()
+        assert d["joint_names"] == ["a", "b"]
+
     def test_describe_carries_base_step_limits(self):
         d = WorldState(base_step_limits=(1.0, 0.7)).describe()
         assert d["base_step_limits"] == [1.0, 0.7]

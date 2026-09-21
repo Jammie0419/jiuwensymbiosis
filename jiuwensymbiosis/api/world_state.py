@@ -33,6 +33,16 @@ from jiuwensymbiosis.api.state import ruled_out_by
 logger = logging.getLogger(__name__)
 
 
+def _joint_names(env: Any) -> tuple[str, ...] | None:
+    """The body's joint names (chain order), or None when it has not stated them."""
+    try:
+        names = getattr(env, "joint_names", None)
+    except Exception as exc:  # noqa: BLE001 - a broken property must not sink the snapshot
+        logger.debug("[world_state] joint_names unreadable: %s", exc)
+        return None
+    return tuple(str(n) for n in names) if names else None
+
+
 def _observed_payload(env: Any) -> frozenset[str]:
     """``payload.held`` / ``payload.clear`` from the env, or empty when unreported."""
     try:
@@ -140,6 +150,10 @@ class WorldState:
     # envelope. Stated at plan time for the same reason as workspace_bounds: "转一圈"
     # must be split into several rotate_base calls instead of being rejected mid-run.
     base_step_limits: tuple[float, float] | None = None
+    # Joint names in the same order as ``joints`` above. The MOVE_JOINT contract tells
+    # the planner to read them here ("never invent one") — without them a plan that
+    # wants "zero the arm" emits move_joint({joint_1: 0, ...}) and dies on step one.
+    joint_names: tuple[str, ...] | None = None
     reach_prior: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     capabilities: tuple[str, ...] = ()
@@ -177,6 +191,7 @@ class WorldState:
             workspace_bounds=_safe_attr(env, "workspace_bounds"),
             z_min_safe=_safe_attr(env, "z_min_safe"),
             base_step_limits=_safe_attr(env, "base_step_limits"),
+            joint_names=_joint_names(env),
             reach_prior=_reach_prior(api),
             extra=extra,
             capabilities=caps,
@@ -194,6 +209,7 @@ class WorldState:
             "workspace_bounds": list(self.workspace_bounds) if self.workspace_bounds else None,
             "z_min_safe": self.z_min_safe,
             "base_step_limits": list(self.base_step_limits) if self.base_step_limits else None,
+            "joint_names": list(self.joint_names) if self.joint_names else None,
             "reach_prior": self.reach_prior,
             "extra": self.extra,
             "capabilities": list(self.capabilities),
@@ -222,8 +238,7 @@ class WorldState:
             max_step, max_turn = self.base_step_limits
             envelope.append(
                 f"底盘单命令上限 平移≤{max_step:g}m/转动≤{max_turn:g}rad"
-                "（更远或更大的动作要拆成多条 navigate_relative / rotate_base，"
-                "一次超限会被护栏拒绝）"
+                "（更远或更大的动作要拆成多条 navigate_relative / rotate_base）"
             )
         if envelope:
             # Stated at plan time so a target outside it is never planned, instead of being
@@ -238,7 +253,14 @@ class WorldState:
         if self.joints:
             # Name the unit, or say it is unknown — never let a bare number imply one.
             unit = self.joint_units or "单位未声明"
-            lines.append(f"关节({unit})：" + ", ".join(f"{float(j):.2f}" for j in self.joints))
+            names = self.joint_names
+            if names and len(names) == len(self.joints):
+                # Names belong here: MOVE_JOINT's contract says to read them from the world
+                # state, and a bare vector leaves the planner inventing 'joint_1'.
+                body = ", ".join(f"{n}={float(j):.2f}" for n, j in zip(names, self.joints, strict=True))
+            else:
+                body = ", ".join(f"{float(j):.2f}" for j in self.joints)
+            lines.append(f"关节({unit})：{body}")
         for loc in self.locations:
             pos = loc.get("position_mm")
             pos_s = f"[{', '.join(f'{float(c):.0f}' for c in pos)}]mm" if isinstance(pos, (list, tuple)) else "?"

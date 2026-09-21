@@ -53,6 +53,9 @@ class SimMachineEnv(BaseRobotEnv):
         self.cfg = cfg
         self._driver: SimMachineDriver | None = None
         self.joint_units = cfg.joint_units or None  # base setter validates deg/rad
+        # 权威关节名与顺序 = get_observation() 组装 joints 时用的顺序，世界状态据此
+        # 把"关节数值"渲染成 "swing=0.00, boom=-0.02, ..."（否则 LLM 只能编名字）
+        self.joint_names = list(cfg.joint_names)
         self.capabilities = self._capabilities_for_config()
 
     # ------------------------------------------------------------------ capabilities
