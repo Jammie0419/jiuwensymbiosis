@@ -50,35 +50,55 @@ class _Api(BaseRobotApi):
         super().__init__(env)
         self.detection_ok = True
 
-    @implements(ActionSpec(name="detect", description="sense", produces_location=True,
-                           capability="vision.detection"))
+    @implements(ActionSpec(name="detect", description="sense", produces_location=True, capability="vision.detection"))
     def detect(self, object_name: str) -> dict:
         if not self.detection_ok:
             return {"ok": False, "reason": "not_in_view", "object": object_name}
         return {"ok": True, "object": object_name, "position": [100.0, 0.0, 50.0]}
 
-    @implements(ActionSpec(name="drive", description="drive", invalidates_locations=True,
-                           capability="motion.base", tags=("motion",)))
+    @implements(
+        ActionSpec(
+            name="drive", description="drive", invalidates_locations=True, capability="motion.base", tags=("motion",)
+        )
+    )
     def drive(self, dx_m: float) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(
-        name="grip", description="grip", requires=("payload.clear",), provides=("payload.held",),
-        capability="grasp.parallel", tags=("grasp",),
-    ))
+    @implements(
+        ActionSpec(
+            name="grip",
+            description="grip",
+            requires=("payload.clear",),
+            provides=("payload.held",),
+            capability="grasp.parallel",
+            tags=("grasp",),
+        )
+    )
     def grip(self) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(
-        name="stow", description="raise the held payload to travel height",
-        requires=("payload.held",), provides=("payload.stowed",),
-        capability="motion.base", tags=("motion",),
-    ))
+    @implements(
+        ActionSpec(
+            name="stow",
+            description="raise the held payload to travel height",
+            requires=("payload.held",),
+            provides=("payload.stowed",),
+            capability="motion.base",
+            tags=("motion",),
+        )
+    )
     def stow(self) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(name="release", description="release", provides=("payload.clear",),
-                           capability="grasp.parallel", tags=("grasp",)))
+    @implements(
+        ActionSpec(
+            name="release",
+            description="release",
+            provides=("payload.clear",),
+            capability="grasp.parallel",
+            tags=("grasp",),
+        )
+    )
     def release(self) -> dict:
         return {"ok": True}
 
@@ -316,6 +336,23 @@ class TestReachEnvelopeReachesThePlanner:
         """A mobile body has no fixed Cartesian box; inventing one would be worse than silence."""
         assert WorldState().as_prompt_block() == ""
 
+    def test_base_step_caps_are_stated_with_the_splitting_advice(self):
+        """Per-command base caps must be stated at plan time too.
+
+        Measured failure (AGX excavator, "先转一圈然后挖一斗土"): with the cap absent from
+        the prompt the planner emitted ``rotate_base(6.283)`` — a full circle in one call —
+        and the sequence died at the rail. Cap + "split it" is what lets the planner emit
+        several rotate_base calls instead.
+        """
+        block = WorldState(base_step_limits=(1.0, 0.7)).as_prompt_block()
+        assert "底盘单命令上限" in block
+        assert "平移≤1m" in block and "转动≤0.7rad" in block
+        assert "拆成多条" in block
+
+    def test_describe_carries_base_step_limits(self):
+        d = WorldState(base_step_limits=(1.0, 0.7)).describe()
+        assert d["base_step_limits"] == [1.0, 0.7]
+
     def test_describe_carries_the_envelope_for_the_state_cli(self):
         d = WorldState(workspace_bounds=(0.0, -1.0, 2.0, 3.0), z_min_safe=5.0, reach_prior={"r_mm": 700}).describe()
         assert d["workspace_bounds"] == [0.0, -1.0, 2.0, 3.0]
@@ -342,14 +379,22 @@ class TestSensedLocationsCarryReachability:
 
     def test_unknown_reach_is_omitted_not_rendered_as_out_of_reach(self):
         block = WorldState(
-            locations=[{"referent": "box", "sensed_by": "locate_for_grasp", "age_s": 1.0,
-                        "position_mm": [100.0, 0.0, 50.0]}]
+            locations=[
+                {"referent": "box", "sensed_by": "locate_for_grasp", "age_s": 1.0, "position_mm": [100.0, 0.0, 50.0]}
+            ]
         ).as_prompt_block()
         assert "够不着" not in block and "够得着" not in block
 
     def test_out_of_reach_says_what_to_do(self):
         block = WorldState(
-            locations=[{"referent": "box", "sensed_by": "locate_for_grasp", "age_s": 1.0,
-                        "position_mm": [100.0, 0.0, 50.0], "reachable": False}]
+            locations=[
+                {
+                    "referent": "box",
+                    "sensed_by": "locate_for_grasp",
+                    "age_s": 1.0,
+                    "position_mm": [100.0, 0.0, 50.0],
+                    "reachable": False,
+                }
+            ]
         ).as_prompt_block()
         assert "够不着，需先移动过去" in block

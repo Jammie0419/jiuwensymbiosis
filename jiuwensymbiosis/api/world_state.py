@@ -136,6 +136,10 @@ class WorldState:
     # URDF-derived reach model, for bodies that ship a URDF. Either may be absent.
     workspace_bounds: tuple[float, float, float, float] | None = None
     z_min_safe: float | None = None
+    # Per-command base caps (max_step_m, max_turn_rad) — a mobile body's SafetyRail
+    # envelope. Stated at plan time for the same reason as workspace_bounds: "转一圈"
+    # must be split into several rotate_base calls instead of being rejected mid-run.
+    base_step_limits: tuple[float, float] | None = None
     reach_prior: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     capabilities: tuple[str, ...] = ()
@@ -172,6 +176,7 @@ class WorldState:
             default_orientation_policy=getattr(env, "default_orientation_policy", None),
             workspace_bounds=_safe_attr(env, "workspace_bounds"),
             z_min_safe=_safe_attr(env, "z_min_safe"),
+            base_step_limits=_safe_attr(env, "base_step_limits"),
             reach_prior=_reach_prior(api),
             extra=extra,
             capabilities=caps,
@@ -188,6 +193,7 @@ class WorldState:
             "default_orientation_policy": self.default_orientation_policy,
             "workspace_bounds": list(self.workspace_bounds) if self.workspace_bounds else None,
             "z_min_safe": self.z_min_safe,
+            "base_step_limits": list(self.base_step_limits) if self.base_step_limits else None,
             "reach_prior": self.reach_prior,
             "extra": self.extra,
             "capabilities": list(self.capabilities),
@@ -212,6 +218,13 @@ class WorldState:
             envelope.append(f"XY 可达框 x∈[{xmin:.0f},{xmax:.0f}] y∈[{ymin:.0f},{ymax:.0f}]mm")
         if self.z_min_safe is not None:
             envelope.append(f"Z 下限 {self.z_min_safe:.0f}mm")
+        if self.base_step_limits:
+            max_step, max_turn = self.base_step_limits
+            envelope.append(
+                f"底盘单命令上限 平移≤{max_step:g}m/转动≤{max_turn:g}rad"
+                "（更远或更大的动作要拆成多条 navigate_relative / rotate_base，"
+                "一次超限会被护栏拒绝）"
+            )
         if envelope:
             # Stated at plan time so a target outside it is never planned, instead of being
             # rejected by SafetyRail one step into the run.

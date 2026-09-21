@@ -21,7 +21,7 @@ from jiuwensymbiosis.adapters.so101.env import So101Env
 from jiuwensymbiosis.adapters.so101.lowlevel import ARM_JOINT_ORDER
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.rails.safety import SafetyRail
-from tests.helpers import FakeCtx
+from tests.helpers import FakeCtx, assert_rejected
 
 _ARM_LIMITS = {
     "shoulder_pan": (-90.0, 90.0),
@@ -68,8 +68,8 @@ class TestSafetyRailGotoPoseNested:
             tool_name="goto_pose",
             tool_args={"pose": {"x": 100, "y": 0, "z": 30, "rx": 180, "ry": 0, "rz": 0}},
         )
-        with pytest.raises(ValueError, match="below z_floor"):
-            await rail.before_tool_call(ctx)
+        await rail.before_tool_call(ctx)
+        assert_rejected(ctx, "below z_floor")
 
     @pytest.mark.asyncio
     async def test_out_of_xy_bounds_raises(self):
@@ -82,8 +82,8 @@ class TestSafetyRailGotoPoseNested:
             tool_name="goto_pose",
             tool_args={"pose": {"x": 600, "y": 0, "z": 200, "rx": 180, "ry": 0, "rz": 0}},
         )
-        with pytest.raises(ValueError, match="out of bounds"):
-            await rail.before_tool_call(ctx)
+        await rail.before_tool_call(ctx)
+        assert_rejected(ctx, "out of bounds")
 
     @pytest.mark.asyncio
     async def test_goto_xyzr_flat_still_covered(self):
@@ -96,8 +96,8 @@ class TestSafetyRailGotoPoseNested:
             tool_name="goto_xyzr",
             tool_args={"x": 100, "y": 0, "z": 30, "r": 0},
         )
-        with pytest.raises(ValueError, match="below z_floor"):
-            await rail.before_tool_call(ctx)
+        await rail.before_tool_call(ctx)
+        assert_rejected(ctx, "below z_floor")
 
     @pytest.mark.asyncio
     async def test_goto_pose_is_in_watch_tools(self):
@@ -129,8 +129,8 @@ class TestSafetyRailMoveJointSoftLimits:
             tool_name="move_joint",
             tool_args={"q": [95.0, 0.0, 0.0, 0.0, 0.0]},
         )
-        with pytest.raises(ValueError, match="soft limit|out of range|joint"):
-            await rail.before_tool_call(ctx)
+        await rail.before_tool_call(ctx)
+        assert_rejected(ctx, "soft limit|out of range|joint")
 
     @pytest.mark.asyncio
     async def test_wrong_joint_count_rejected(self):
@@ -141,8 +141,8 @@ class TestSafetyRailMoveJointSoftLimits:
             tool_name="move_joint",
             tool_args={"q": [0.0, 0.0, 0.0]},  # only 3
         )
-        with pytest.raises((ValueError, TypeError)):
-            await rail.before_tool_call(ctx)
+        await rail.before_tool_call(ctx)
+        assert_rejected(ctx)  # 参数形状不对：同样走"跳过"，不执行工具
 
 
 class TestJointLimitsOrderStable:

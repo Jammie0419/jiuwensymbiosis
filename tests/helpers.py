@@ -32,6 +32,28 @@ class FakeInputs:
         self.query = query
 
 
+def assert_rejected(ctx: FakeCtx, match: str | None = None) -> None:
+    """断言这次工具调用被护栏**跳过**（而不是"抛了异常"就算了）。
+
+    踩过的坑：靠 ``before_tool_call`` 抛 ValueError 拦不住任何东西 ——
+    ``callback.framework.trigger`` 吞掉回调异常后照常执行工具（实测
+    ``rotate_base 6.283 rad`` 依然执行，步骤还被记成 ok）。框架的正规机制是
+    ``ctx.extra["_skip_tool"]`` + 失败的 ``tool_result`` / ``tool_msg``。
+    """
+    import re
+
+    from jiuwensymbiosis.errors import SAFETY_REJECTED
+
+    assert ctx.extra.get("_skip_tool") is True, "拒绝必须置 _skip_tool，否则工具照跑"
+    result = ctx.inputs.tool_result
+    assert result is not None and result.success is False
+    assert result.data and result.data.get("error_code") == SAFETY_REJECTED
+    assert ctx.inputs.tool_msg is not None
+    assert ctx.inputs.tool_msg.content == result.error
+    if match:
+        assert re.search(match, result.error or ""), (match, result.error)
+
+
 class FakeCtx:
     """Minimal AgentCallbackContext shape used by rails."""
 

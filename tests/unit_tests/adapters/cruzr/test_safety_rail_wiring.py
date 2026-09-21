@@ -17,7 +17,7 @@ from jiuwensymbiosis.adapters.cruzr.config import CruzrConfig
 from jiuwensymbiosis.adapters.cruzr.env import CruzrEnv
 from jiuwensymbiosis.adapters.cruzr.geometry import LIFTER_LIMITS
 from jiuwensymbiosis.rails.safety import SafetyRail
-from tests.helpers import FakeCtx
+from tests.helpers import FakeCtx, assert_rejected
 from tests.unit_tests.adapters.cruzr import description
 
 
@@ -72,8 +72,8 @@ class TestLiftPolicy:
     async def test_out_of_urdf_range_is_rejected(self, rail):
         joint, (_, hi) = next(iter(LIFTER_LIMITS.items()))
         ctx = FakeCtx(tool_name="set_lift_pose", tool_args={"q_lifter": {joint: hi + 1.0}})
-        with pytest.raises(ValueError, match="out of limits"):
-            await rail.before_tool_call(ctx)
+        await rail.before_tool_call(ctx)
+        assert_rejected(ctx, "out of limits")
 
 
 class TestNamedJointRangeIsEnforced:
@@ -101,8 +101,9 @@ class TestNamedJointRangeIsEnforced:
 
     async def test_out_of_range_is_rejected(self, rail_with_range):
         args = {"joint_name": "waist_yaw_joint", "position_rad": 2.5}
-        with pytest.raises(ValueError, match="out of limits"):
-            await rail_with_range.before_tool_call(FakeCtx(tool_name="move_named_joint", tool_args=args))
+        ctx = FakeCtx(tool_name="move_named_joint", tool_args=args)
+        await rail_with_range.before_tool_call(ctx)
+        assert_rejected(ctx, "out of limits")
 
     async def test_joint_the_body_states_no_limit_for_passes(self, rail_with_range):
         """Same "no range stated → no range check" rule the rest of the rail follows."""

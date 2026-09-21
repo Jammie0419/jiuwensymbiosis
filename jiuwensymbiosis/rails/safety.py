@@ -28,11 +28,14 @@ Currently checks:
 Absent limits mean "no range check" (the type / finite checks still run) —
 same contract as ``joint_limits``, so a body opts in by declaring an envelope.
 
-Reject mechanism: forces a tool error result instead of executing the tool,
-by raising via ``ctx.request_force_finish`` is not appropriate here (we
-only want to skip the one tool, not the whole loop). Instead we raise a
-``ValueError`` from ``before_tool_call``; openjiuwen turns this into a
-tool-exception event the LLM sees and reasons about.
+Reject mechanism: ``ctx.extra["_skip_tool"]`` plus a failure ``tool_result`` /
+``tool_msg`` pair — ``ability_manager._railed_execute_single_tool_call`` returns
+those **instead of executing the tool**, so exactly one call is skipped, the LLM
+sees a tool error, and the loop continues. Note that *raising* from
+``before_tool_call`` does NOT stop the tool: ``callback.framework.trigger``
+catches every callback exception, records metrics, fires the ERROR hooks and
+logs — then lets execution proceed anyway (measured: a rejected
+``rotate_base 6.283 rad`` still ran, and the step was even recorded as ok).
 """
 
 from __future__ import annotations
@@ -171,6 +174,9 @@ class SafetyRail(AgentRail):
         tool's ``invoke`` *after* rails run. So we parse the string here;
         unparseable / non-dict args fall back to ``{}`` (→ no motion params →
         no rejection, same as before, never a false positive).
+
+        A rejected call is **skipped through the framework**, never by raising —
+        see :meth:`_reject_tool_call` for why raising cannot work.
         """
         inputs = getattr(ctx, "inputs", None)
         tool_name = getattr(inputs, "tool_name", "") or ""
@@ -184,7 +190,40 @@ class SafetyRail(AgentRail):
                 tool_name = str(action)
                 args = params
 
-        self.validate_motion(tool_name, args)
+        try:
+            self.validate_motion(tool_name, args)
+        except ValueError as exc:
+            # 本护栏的全部拒绝都是 ValueError（见 errors.SafetyViolationError 的注释：
+            # 类型保持 ValueError，motion 侧的 except ValueError 依赖它）。
+            self._reject_tool_call(ctx, tool_name, str(exc))
+
+    def _reject_tool_call(self, ctx: Any, tool_name: str, message: str) -> None:
+        """让框架**跳过**这次工具调用 —— openjiuwen 的正规拒绝机制。
+
+        不能靠抛异常：``callback.framework.trigger`` 捕获回调异常后只记指标、
+        发 ERROR 钩子、打日志，然后照常执行工具（实测：本护栏抛
+        ``SafetyViolationError``，``rotate_base 6.283 rad`` 依然执行到底，步骤还被
+        记成 ok）。正规做法见 ``ability_manager._railed_execute_single_tool_call``：
+        置 ``ctx.extra["_skip_tool"]`` 并填好 ``ctx.inputs.tool_result`` /
+        ``ctx.inputs.tool_msg``，框架直接返回这对结果、不执行工具。
+
+        只有拿不到框架上下文时（脱离 agent 直接调用本钩子）才退回抛异常。
+        """
+        self._notify_reject(tool_name, message)
+        inputs = getattr(ctx, "inputs", None)
+        extra = getattr(ctx, "extra", None)
+        if inputs is None or extra is None:
+            raise SafetyViolationError(message) from None
+
+        from openjiuwen.core.foundation.llm.schema.message import ToolMessage
+        from openjiuwen.harness.tools.base_tool import ToolOutput
+
+        tool_call = getattr(inputs, "tool_call", None)
+        tool_call_id = str(getattr(tool_call, "id", "") or "") or f"safety-{tool_name}"
+        extra["_skip_tool"] = True
+        inputs.tool_result = ToolOutput(success=False, error=message, data={"error_code": SafetyViolationError.code})
+        inputs.tool_msg = ToolMessage(content=message, tool_call_id=tool_call_id)
+        logger.warning("%s", message)
 
     def validate_motion(self, tool_name: str, args: dict[str, Any]) -> None:
         """Synchronously apply the rail's motion policy without callback overhead.
@@ -304,9 +343,15 @@ class SafetyRail(AgentRail):
         return value
 
     def _reject(self, tool_name: str, reason: str) -> ValueError:
-        """Notify the trace sink and build the rejection to raise."""
+        """Notify the trace sink and build the rejection to raise.
+
+        Returns ``SafetyViolationError`` (a ``ValueError``) so every rejection —
+        base/lift/waist included — carries the ``safety_rejected`` error code the
+        fast path reports to the runner. The return type stays ``ValueError``
+        because motion call sites catch that.
+        """
         self._notify_reject(tool_name, reason)
-        return ValueError(f"SafetyRail: refusing {tool_name}: {reason}.")
+        return SafetyViolationError(f"SafetyRail: refusing {tool_name}: {reason}.")
 
     def _check_base_step(self, tool_name: str, args: dict[str, Any]) -> None:
         """Cap one mobile-base command's translation and turn.
