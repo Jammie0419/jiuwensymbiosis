@@ -112,3 +112,7 @@ agent:
   log_dir: ./logs
   exec_mode: fastagent           # 默认快路径；单步调试 --stepagent
   enable_skill: true
+  # 快路径 LLM①（意图解析）的单次读超时，秒。推理型模型（glm-5 等）经常 20 s 以上
+  # 才回：日志里出现 `[planner] attempt N/3 failed: The read operation timed out`
+  # 就是这个太短，调大即可（默认 60；慢端点给 90~120）。
+  intent_timeout_s: 60.0

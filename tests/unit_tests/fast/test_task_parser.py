@@ -39,3 +39,33 @@ def test_parse_task_fills_missing_fields(monkeypatch):
     assert out["destination"] is None
     assert out["count"] is None
     assert out["mode"] == "single"
+
+
+def test_default_timeout_suits_a_reasoning_model(monkeypatch):
+    """默认读超时不能按快模型给。
+
+    实测（glm-5，2026-09-21）：默认 20 s 时连续两次 `attempt N/3 failed: The read
+    operation timed out`，第三次才回——白等 40 s 还只是意图解析。慢端点可以在
+    YAML 里调 agent.intent_timeout_s。
+    """
+    seen: dict = {}
+
+    def _fake_chat(*args, **kwargs):
+        seen.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(planner, "_chat", _fake_chat)
+    planner.parse_task("抓杯子", api_base="x", model_name="m")
+    assert seen["timeout_s"] >= 60.0
+
+
+def test_timeout_is_forwarded(monkeypatch):
+    seen: dict = {}
+
+    def _fake_chat(*args, **kwargs):
+        seen.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(planner, "_chat", _fake_chat)
+    planner.parse_task("抓杯子", api_base="x", model_name="m", timeout_s=123.0)
+    assert seen["timeout_s"] == 123.0

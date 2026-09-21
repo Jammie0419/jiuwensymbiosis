@@ -186,3 +186,36 @@ class TestFastTracePersistence:
         assert len(json_files) == 1
         # run_token = sanitized conversation_id + timestamp + pid — starts with cid.
         assert json_files[0].name.startswith(conv_id)
+
+
+class TestIntentTimeoutWiring:
+    """配置里的 intent_timeout_s 必须真的传到 LLM① —— 否则又是一个"改了不生效"的旋钮。"""
+
+    def test_config_value_reaches_parse_task(self, tmp_path, monkeypatch):
+        session = _make_session()
+        cfg = RobotAgentConfig()
+        cfg.model_spec = ModelSpec()
+        cfg.exec_mode = "fastagent"
+        cfg.enable_visual_feedback = False
+        cfg.enable_skill = True
+        cfg.workspace = str(tmp_path)
+        cfg.intent_timeout_s = 123.0
+
+        seen: dict = {}
+
+        def _fake_parse_task(query, **kwargs):
+            seen.update(kwargs)
+            return {"targets": []}
+
+        _install_fast_agent_doubles(monkeypatch, session)
+        # run.py 在函数内 `from ...planner import parse_task`，名字在调用时才绑定
+        # → 打桩要打在定义它的模块上
+        monkeypatch.setattr("jiuwensymbiosis.agent.fast.planner.parse_task", _fake_parse_task)
+        with mock.patch(
+            "jiuwensymbiosis.agent.fast.plan_task",
+            return_value=PlanResult(sequence=_FIXED_SEQUENCE, tier="skill", skills=("visual_pick",)),
+        ):
+            with session:
+                run_fast_task(session, "pick the box", cfg, conversation_id="intent-timeout")
+
+        assert seen.get("timeout_s") == 123.0

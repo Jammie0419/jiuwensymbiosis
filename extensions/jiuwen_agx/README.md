@@ -42,6 +42,7 @@ rem ③ 另开一个终端发任务（任务不进 config，一律用 --query �
 | 症状 | 原因与处理 |
 | --- | --- |
 | 命令显示成功、画面纹丝不动 | 连到了内存演示机。控制端连上时会打印对端机器名：`demo_excavator` 就是连错了，真机报 `excavator365` |
+| 日志刷 `[planner] attempt N/3 failed: The read operation timed out` | 意图解析那次 LLM 调用超时（推理型模型常见）。调大 YAML 里的 `agent.intent_timeout_s`（默认 60 s），慢端点给 90~120 |
 | 探针/任务超时，桥接像死了一样 | **AGX 窗口里的仿真被暂停了**（按了空格/暂停键）：泵挂在每仿真步回调上，不步进就不收发网络。桥接控制台会打印 `WARNING: 仿真已暂停 …`，在窗口里按空格/播放键恢复即可 |
 | 起桥接时提示「端口 9700 已被占用」 | 已有实例在监听（多半是没关掉的旧 AGX 窗口）。**关掉旧窗口**，或改 `JIUWEN_BRIDGE_PORT` 再启动——两个桥接同时监听同一端口时，客户端连到哪一个是**不确定的**（Windows 允许重复绑定），所以启动前会拒绝 |
 | 桥接跑着跑着自己没了 | AGX 窗口被关掉或按了 ESC（`ExampleApplication` 的默认行为：关窗/ESC 即退出 run loop）。重启 `start_agx_bridge.bat` 即可 |

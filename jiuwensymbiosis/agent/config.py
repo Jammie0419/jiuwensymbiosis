@@ -201,6 +201,10 @@ class RobotAgentConfig:
     mode: Mode = "hybrid"
     model: Any = None
     model_spec: ModelSpec | None = None
+    # 快路径 LLM①（意图解析 parse_task）的单次读超时，秒。推理型模型（glm-5 等）
+    # 经常 20 s 以上才回，实测见过连续两次读超时；慢端点/长思考就往上调。
+    # 注意这是"每次尝试"的超时，失败会按 attempts 重试。
+    intent_timeout_s: float = 60.0
     system_prompt: str | None = None
     enable_visual_feedback: bool = True
     enable_safety: bool = True
