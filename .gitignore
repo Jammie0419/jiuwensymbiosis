@@ -17,3 +17,6 @@ tmp/
 configs/*/calibration/
 *.yaml.bak
 agx_scene_report.json
+
+# ZCode 工具本地文件(会话启动时自动生成,非项目内容)
+.zcodeignore

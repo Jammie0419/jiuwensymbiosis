@@ -3,6 +3,8 @@
 > 类别：How-to。适用于把 AGX（或任何提供"关节 + 地形真值"的）仿真模型接进
 > jiuwensymbiosis。共享仿真底座已就位（`adapters/_common/sim/`），**新机器是
 > 一个薄包，不是从零开始的适配器**。
+>
+> 三层分工、注册链与端到端流程图见 [architecture-flows.md](architecture-flows.md)。
 
 ## 本机联调（Windows，AGX 2.42.2.1）
 

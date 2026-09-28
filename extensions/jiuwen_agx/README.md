@@ -164,6 +164,9 @@ netsh advfirewall firewall add rule name="AGX Bridge" dir=in action=allow protoc
 见 `docs/add-sim-machine.md`（四步配方 + 每步通过标准）。共享底座全部复用，
 每台机器约 150~250 行。
 
+架构与流程图详解（三层分工 / 注册链 / 端到端流程 / 小脑模型接入方案）见
+`docs/architecture-flows.md`。
+
 ## license
 
 AGX 是商业软件，需要本机许可证：`C:\Users\<你>\AppData\Local\Algoryx\agx\agx.lfx`
