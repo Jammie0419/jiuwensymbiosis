@@ -148,9 +148,24 @@ def _adapter_from_data(data: Mapping[str, Any]) -> str:
 
 
 def _discover_adapter(adapter: str) -> tuple[Any, Callable[..., RobotSession], Callable[[Any], Any]]:
-    """Resolve an adapter by the existing package/session naming convention."""
-    module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
-    builder = getattr(module, f"build_{adapter}_session", None)
+    """Resolve an adapter by the existing package/session naming convention.
+
+    Out-of-tree extension packages are the fallback: an entry point in group
+    ``jiuwensymbiosis.adapters`` (see ``jiuwensymbiosis/_extensions.py``) may
+    provide the builder when no in-package module matches.
+    """
+    try:
+        module = importlib.import_module(f"jiuwensymbiosis.adapters.{adapter}")
+        builder = getattr(module, f"build_{adapter}_session", None)
+    except (ModuleNotFoundError, AttributeError):
+        from jiuwensymbiosis._extensions import discover_adapter_builders
+
+        builder = discover_adapter_builders().get(adapter)
+    if builder is None:
+        raise ModuleNotFoundError(
+            f"adapter {adapter!r} not found: neither jiuwensymbiosis.adapters.{adapter} "
+            f"nor an entry-point-declared extension provides build_{adapter}_session"
+        )
     if not callable(builder):
         raise ValueError(f"adapter {adapter!r} must export build_{adapter}_session")
     config_factory = getattr(builder, "config_factory", None)
