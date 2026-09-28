@@ -45,12 +45,18 @@ default browser; `--text` outputs a terminal timeline.
 ## jiuwensymbiosis-gui
 
 ```bash
-jiuwensymbiosis-gui
-# equivalent to
-python -m jiuwensymbiosis.gui
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench --config configs/piper/piper.yaml
+python -m jiuwensymbiosis_gui --gui workbench
 ```
 
-Starts the NiceGUI browser UI listening on `127.0.0.1:8770`. When a dependency is missing, the preflight check prompts the user to install `.[gui]`.
+`--gui` selects an installed GUI plugin and defaults to `workbench`; `--list-guis` lists available plugins. `--config`,
+`--workspace`, `--host`, `--port`, and `--no-browser` configure the selected app. `--gui-config` passes plugin-specific
+settings when that plugin supports them. The launcher loads only the selected plugin's application entry point. Install
+that plugin and its documented dependencies in the same Python environment; the `.[gui]` extra supplies the current
+workbench's NiceGUI dependencies.
+
+`python -m jiuwensymbiosis.gui` remains as a temporary compatibility shim and forwards to the unified launcher.
 
 ## Hand-eye calibration
 
@@ -77,4 +83,4 @@ jiuwensymbiosis-skills  [--json]                                    # skill libr
 jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # live world state (connects!)
 ```
 
-These three are the machine-readable views a planner / coding agent reads (see [Architecture: two-tier planning](../explanation/architecture.md#6-two-tier-autonomous-planning)): what an action is, what a skill's pre-conditions are, and where the current world stands.
+These three are the machine-readable views a planner / coding agent reads (see [Architecture: two-tier planning](../explanation/architecture.md#two-tier-planning)): what an action is, what a skill's pre-conditions are, and where the current world stands.

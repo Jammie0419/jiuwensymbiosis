@@ -44,12 +44,17 @@ jiuwensymbiosis-replay TRACE_JSON [--open] [--text]
 ## jiuwensymbiosis-gui
 
 ```bash
-jiuwensymbiosis-gui
-# 等价于
-python -m jiuwensymbiosis.gui
+jiuwensymbiosis-gui --list-guis
+jiuwensymbiosis-gui --gui workbench --config configs/piper/piper.yaml
+python -m jiuwensymbiosis_gui --gui workbench
 ```
 
-启动监听 `127.0.0.1:8770` 的 NiceGUI 浏览器界面。依赖缺失时，启动前检查会提示安装 `.[gui]`。
+`--gui` 选择已安装的 GUI 插件，默认值为 `workbench`；`--list-guis` 列出可用插件。`--config`、
+`--workspace`、`--host`、`--port` 和 `--no-browser` 用于配置所选界面；`--gui-config` 用于传入插件专属配置，
+是否支持取决于所选插件。启动器只加载所选插件的应用入口。插件及其依赖需安装在同一 Python 环境；
+`.[gui]` 提供当前工作台使用的 NiceGUI 依赖。
+
+`python -m jiuwensymbiosis.gui` 暂时作为兼容转发入口保留，转发到统一启动器。
 
 ## 手眼标定
 
@@ -76,4 +81,4 @@ jiuwensymbiosis-skills  [--json]                                    # 技能库 
 jiuwensymbiosis-state   --config configs/cruzr/cruzr.yaml [--json]  # 实时世界状态（可连接）
 ```
 
-这三者是规划器 / 编码智能体读取的机器可读视图（见[架构指南：两级自主规划](../explanation/architecture.md#六-两级自主规划)）：一个动作是什么、一条技能有什么前置条件、当前世界都在哪个位置。
+这三者是规划器 / 编码智能体读取的机器可读视图（见[架构指南：两级自主规划](../explanation/architecture.md#two-tier-planning)）：一个动作是什么、一条技能有什么前置条件、当前世界都在哪个位置。
