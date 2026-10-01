@@ -13,10 +13,12 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 __all__ = [
+    "ActFailure",
+    "ActResult",
+    "DigFailure",
+    "DigResult",
     "PileInfo",
     "TerrainScan",
-    "DigResult",
-    "DigFailure",
 ]
 
 
@@ -63,4 +65,32 @@ class DigResult(TypedDict, total=False):
 
     ok: Literal[True]
     volume_m3: float
+    cycle_s: float
+
+
+class ActFailure(TypedDict):
+    """Failure shape returned by ``act_exec``.
+
+    Same convention as ``DigFailure``: the fast runner reads ``ok`` and the
+    planner reads ``error`` to self-correct. Policy-output rejections carry the
+    offending beat number and the driver's own reason in ``error``.
+    """
+
+    ok: Literal[False]
+    error: str
+
+
+class ActResult(TypedDict, total=False):
+    """Success shape returned by ``act_exec`` — one policy-driven work cycle.
+
+    ``beats`` is how many absolute joint targets the policy executed; the
+    termination criterion is the scoop truth going loaded→unloaded (the same
+    measured mass threshold ``dig`` relies on). ``volume_m3`` is deliberately
+    NOT promised: the client-side backend reports no measured volume (the
+    float lives only in the bridge server's ``inventory``), so claiming the
+    field would let plans bind a value that does not exist.
+    """
+
+    ok: Literal[True]
+    beats: int
     cycle_s: float

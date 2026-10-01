@@ -18,8 +18,13 @@ __all__ = ["AgxExcavatorEnv"]
 class AgxExcavatorEnv(SimMachineEnv):
     """Simulated tracked excavator (swing / boom / arm / bucket + undercarriage)."""
 
-    capabilities = SimMachineEnv.capabilities | {"motion.excavator"}
+    capabilities = SimMachineEnv.capabilities | {"motion.excavator", "policy.act"}
     name = "agx_excavator"
 
     def _capabilities_for_config(self) -> frozenset[str]:
-        return super()._capabilities_for_config() | {"motion.excavator"}
+        caps = set(super()._capabilities_for_config()) | {"motion.excavator"}
+        # policy.act only when a policy is configured — an unconfigured body
+        # never sees act_exec in its vocabulary (the tool gate is api ∩ env).
+        if self.cfg.policy:
+            caps.add("policy.act")
+        return frozenset(caps)

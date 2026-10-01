@@ -12,6 +12,7 @@ limits, undercarriage, terrain, camera) comes from
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from jiuwen_agx.sim.config import SimMachineConfig
 
@@ -59,6 +60,17 @@ class AgxExcavatorConfig(SimMachineConfig):
     # AGX 液压缸机体是米——local.yaml 里按探针实测填米值）。
     dig_cycle_tuning: dict[str, float] | None = None
 
+    # ==================== 学习策略（policy.act 能力） ====================
+    # 配置了才声明 policy.act 并暴露 act_exec；未配置 = 词表里没有这个动作。
+    # name 对应 jiuwen_agx.policy.POLICIES 的注册名（"act"=lerobot ACT checkpoint，
+    # "fake"=无依赖假策略，测试/演示用）；其余键由各策略类自取（act 要 ckpt/device）。
+    # 注意：from_dict 会静默丢弃未知键——这个字段必须存在，YAML 的 policy 节才生效。
+    policy: dict[str, Any] | None = None
+    # act_exec 执行参数：单拍下发超时（数据采集与执行用同一常数，见接入计划 §4.5）。
+    policy_beat_timeout_s: float = 1.0
+    # act_exec 兜底拍数上限：超过即判失败（取"实测教师拍数 × 2"，先给占位值）。
+    policy_max_beats: int = 300
+
     @classmethod
     def from_dict(cls, data):  # type: ignore[override]
         cfg = super().from_dict(data)
@@ -70,4 +82,16 @@ class AgxExcavatorConfig(SimMachineConfig):
             cfg.dig_cycle_tuning = {
                 str(k): float(v) for k, v in cfg.dig_cycle_tuning.items()
             }
+        if cfg.policy is not None:
+            if (
+                not isinstance(cfg.policy, dict)
+                or not str(cfg.policy.get("name", "")).strip()
+            ):
+                raise ValueError(
+                    f"{cls.__name__}: policy must be a mapping with a non-empty "
+                    f"'name' (a jiuwen_agx.policy.POLICIES registration), got {cfg.policy!r}"
+                )
+            cfg.policy = {str(k): v for k, v in cfg.policy.items()}
+        cfg.policy_beat_timeout_s = float(cfg.policy_beat_timeout_s)
+        cfg.policy_max_beats = int(cfg.policy_max_beats)
         return cfg

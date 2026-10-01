@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 
 import pytest
+from jiuwensymbiosis.tools.builder import list_tool_meta
+
 from jiuwen_agx.sim.api import SimMachineApi
 from jiuwen_agx.sim.backend import (
     MockSimBackend,
@@ -16,8 +18,6 @@ from jiuwen_agx.sim.backend import (
 from jiuwen_agx.sim.config import SimMachineConfig
 from jiuwen_agx.sim.driver import SimMachineDriver
 from jiuwen_agx.sim.env import SimMachineEnv
-
-from jiuwensymbiosis.tools.builder import list_tool_meta
 
 JOINTS = ("swing", "boom", "arm", "bucket")
 

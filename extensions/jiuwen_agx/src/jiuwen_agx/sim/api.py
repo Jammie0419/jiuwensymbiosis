@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwen_agx.actions import GET_TERRAIN
 from jiuwensymbiosis.api import defaults
 from jiuwensymbiosis.api.actions import (
     DRIVE_ARC,
@@ -24,6 +23,8 @@ from jiuwensymbiosis.api.actions import (
     implements,
 )
 from jiuwensymbiosis.api.base import BaseRobotApi
+
+from jiuwen_agx.actions import GET_TERRAIN
 
 __all__ = ["SimMachineApi"]
 

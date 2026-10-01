@@ -14,6 +14,11 @@ dependencies = [
     "jiuwensymbiosis",
 ]
 
+[project.optional-dependencies]
+# 学习策略栈（policy.act / act_exec）。锁版本：lerobot 0.6.x 的 processor 化
+# API 与旧版不兼容（接入计划 §9）；录制与日常开发不需要装这个 extra。
+policy = ["lerobot==0.6.1"]
+
 [project.entry-points."jiuwensymbiosis.adapters"]
 agx_excavator = "jiuwen_agx.agx_excavator:build_agx_excavator_session"
 
@@ -24,6 +29,31 @@ include = ["jiuwen_agx*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.ruff.lint]
+# Mirror the root pyproject selection. This file's [tool.ruff.*] section makes
+# ruff resolve the EXTENSION as its nearest config root, so without this mirror
+# the root ignores (UP009/BLE001/E501) never apply to extension files and every
+# `# coding: utf-8` house header gets flagged.
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "B",     # flake8-builtins
+    "C4",    # flake8-comprehensions
+    "UP",    # pyupgrade
+    "ASYNC", # flake8-async
+    "SLF",   # flake8-self
+]
+ignore = [
+    "E501",   # line too long (handled by ruff format)
+    "UP009",  # keep `# coding: utf-8` declarations (aligns with code template)
+    "BLE001", # allow `except Exception as exc`; suppression is forbidden, not the catch
+]
+
 [tool.ruff.lint.per-file-ignores]
 # 白盒测试：直接断言驱动/后端内部状态
 "tests/**" = ["SLF001"]
+# 包 __init__ 是注册链：能力必须先于动作/Env 模块导入注册，import 因此有意
+# 落在代码之后（与 core 包 __init__ 的 E402 豁免同理）。
+"src/jiuwen_agx/__init__.py" = ["E402"]

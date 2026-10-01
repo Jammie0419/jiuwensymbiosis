@@ -24,6 +24,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from jiuwen_agx.agx_excavator import build_agx_excavator_session
 from jiuwen_agx.sim.backend import RemoteSimBackend
 

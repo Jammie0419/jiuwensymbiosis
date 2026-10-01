@@ -19,9 +19,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
+
 from jiuwen_agx.sim.config import SimMachineConfig
 from jiuwen_agx.sim.driver import SimMachineDriver
-from jiuwensymbiosis.env.base import BaseRobotEnv, RobotObservation
 
 logger = logging.getLogger(__name__)
 

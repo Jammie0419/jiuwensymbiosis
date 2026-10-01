@@ -20,7 +20,12 @@ import math
 import time
 from typing import Any
 
-__all__ = ["DEFAULT_DIG_TUNING", "REQUIRED_JOINTS", "execute_dig_cycle"]
+__all__ = [
+    "DEFAULT_DIG_TUNING",
+    "REQUIRED_JOINTS",
+    "check_cycle_preconditions",
+    "execute_dig_cycle",
+]
 
 # The four joints a dig cycle needs, by conventional name (config joint_names).
 REQUIRED_JOINTS: tuple[str, ...] = ("swing", "boom", "arm", "bucket")
@@ -64,28 +69,22 @@ def _normalise_swing_rad(angle_rad: float) -> float:
     return (angle_rad + math.pi) % (2.0 * math.pi) - math.pi
 
 
-def execute_dig_cycle(
+def check_cycle_preconditions(
     driver: Any,
     *,
     dig_x_m: float,
     dig_y_m: float,
     dump_x_m: float,
     dump_y_m: float,
-    tuning: dict[str, float] | None = None,
     reach_min_m: float = 1.0,
     reach_max_m: float = 6.0,
-    swing_unit: str = "deg",
-) -> dict[str, float]:
-    """Run one dig-and-dump cycle on ``driver``; return {volume_m3, cycle_s}.
+) -> None:
+    """Shared goal/estate validation for every digging-family work cycle.
 
-    ``swing_unit`` — the swing joint's angle unit ("deg" or "rad"); keyframes
-    for boom/arm/bucket are always in that joint's NATIVE unit (a hydraulic
-    cylinder body speaks metres, not degrees — the tuning keys keep their
-    historical *_deg names but carry native values via config).
-
-    Raises ValueError (surfaced by the api as a DigFailure dict) when a ground
-    point lies outside the reachable annulus, a required joint is missing, or
-    the bucket is still loaded from a previous cycle.
+    Raises ValueError (surfaced by the api as a failure dict) when a ground
+    point is non-finite or outside the reachable annulus, a required joint is
+    missing, or the bucket is still loaded from a previous cycle. ``dig`` and
+    ``act_exec`` both run this before any motion so their refusals read alike.
     """
     points = (
         ("dig", float(dig_x_m), float(dig_y_m)),
@@ -113,6 +112,39 @@ def execute_dig_cycle(
         raise ValueError(
             "bucket is still loaded — dump it (or home) before digging again"
         )
+
+
+def execute_dig_cycle(
+    driver: Any,
+    *,
+    dig_x_m: float,
+    dig_y_m: float,
+    dump_x_m: float,
+    dump_y_m: float,
+    tuning: dict[str, float] | None = None,
+    reach_min_m: float = 1.0,
+    reach_max_m: float = 6.0,
+    swing_unit: str = "deg",
+) -> dict[str, float]:
+    """Run one dig-and-dump cycle on ``driver``; return {volume_m3, cycle_s}.
+
+    ``swing_unit`` — the swing joint's angle unit ("deg" or "rad"); keyframes
+    for boom/arm/bucket are always in that joint's NATIVE unit (a hydraulic
+    cylinder body speaks metres, not degrees — the tuning keys keep their
+    historical *_deg names but carry native values via config).
+
+    Raises ValueError (surfaced by the api as a DigFailure dict) through
+    :func:`check_cycle_preconditions`.
+    """
+    check_cycle_preconditions(
+        driver,
+        dig_x_m=dig_x_m,
+        dig_y_m=dig_y_m,
+        dump_x_m=dump_x_m,
+        dump_y_m=dump_y_m,
+        reach_min_m=reach_min_m,
+        reach_max_m=reach_max_m,
+    )
 
     t = {**DEFAULT_DIG_TUNING, **(tuning or {})}
     # swing 目标单位跟随 swing_unit；偏移键兼容旧名 swing_offset_deg（deg）
