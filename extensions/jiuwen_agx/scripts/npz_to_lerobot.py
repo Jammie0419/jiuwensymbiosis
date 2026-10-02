@@ -9,6 +9,11 @@ docs/act-data-collection-design.md §5) and writes the exact feature contract
 the ACT training expects: observation.state [4] + observation.environment_state
 [4] (the goal) + action [4], pure Parquet (use_videos=False, Windows-friendly).
 
+The training machine does NOT need the jiuwensymbiosis core installed: the
+recording logic is loaded from the extension's own source tree (record.py
+depends on numpy only), so a bare venv with lerobot plus a copy of the
+extensions/jiuwen_agx directory is enough (see docs/act-runbook.md).
+
     python scripts/npz_to_lerobot.py --raw data/raw/run001 \
         --root data/lerobot --repo-id local/agx_dig_demos --fps 10
 """
@@ -16,19 +21,61 @@ the ACT training expects: observation.state [4] + observation.environment_state
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from collections import Counter
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 
-from jiuwen_agx.agx_excavator.record import (
-    GOAL_KEYS,
-    Episode,
-    admission_reason,
-    segment_keyboard,
-    unit_conflict,
-)
+_TASK = "excavate"
+
+
+def _load_record_module() -> ModuleType:
+    """Load the recording logic with or without the core package installed.
+
+    Preferred path is the normal package import (recording machine, core
+    installed). On a bare training machine the import would drag in
+    jiuwensymbiosis — fall back to loading ``record.py`` directly from the
+    extension source tree; that module depends on numpy only.
+    """
+    try:
+        from jiuwen_agx.agx_excavator import record
+
+        return record
+    except Exception:
+        record_path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "jiuwen_agx"
+            / "agx_excavator"
+            / "record.py"
+        )
+        if not record_path.exists():
+            sys.exit(
+                "cannot import jiuwen_agx and no local record.py found — run this "
+                "script from a copy of the extensions/jiuwen_agx directory (see "
+                "docs/act-runbook.md)"
+            )
+        spec = importlib.util.spec_from_file_location(
+            "jiuwen_agx_record_standalone", record_path
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        # register BEFORE exec: the @dataclass decorator resolves its owning
+        # module through sys.modules during class creation
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+record = _load_record_module()
+GOAL_KEYS = record.GOAL_KEYS
+Episode = record.Episode
+admission_reason = record.admission_reason
+segment_keyboard = record.segment_keyboard
+unit_conflict = record.unit_conflict
 
 _TASK = "excavate"
 

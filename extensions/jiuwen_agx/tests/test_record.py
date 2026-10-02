@@ -8,6 +8,7 @@ the collection logic must be testable on the AGX machine (design doc §1)."""
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -280,6 +281,32 @@ class TestUnitConflict:
             _episode(), _episode(joint_names=("j1", "j2", "j3", "j4"))
         )
         assert conflict is not None and "joint_names" in conflict
+
+
+# ============================================================================ standalone converter
+class TestStandaloneConverter:
+    """The training machine has no jiuwensymbiosis core — the converter must
+    still run from a bare copy of the extension (act-runbook.md 阶段三)."""
+
+    def test_converter_loads_record_logic_without_the_core_package(self, monkeypatch):
+        import importlib.util
+        import sys
+
+        script = Path(__file__).resolve().parents[1] / "scripts" / "npz_to_lerobot.py"
+        # None in sys.modules makes `import jiuwen_agx` raise ImportError —
+        # exactly what a bare machine without the core looks like.
+        monkeypatch.setitem(sys.modules, "jiuwen_agx", None)
+        monkeypatch.setitem(sys.modules, "jiuwen_agx.agx_excavator", None)
+        monkeypatch.setitem(sys.modules, "jiuwen_agx.agx_excavator.record", None)
+        spec = importlib.util.spec_from_file_location(
+            "npz_converter_standalone", script
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module.GOAL_KEYS[0] == "dig_x_m"
+        episode = module.Episode.read_npz  # the standalone record module is wired up
+        assert callable(episode)
 
 
 # ============================================================================ keyboard segmentation
