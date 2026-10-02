@@ -194,6 +194,13 @@ class TestCapabilityGating:
                 {"env": {"cfg": {"low_level": {"policy": {"ckpt": "x"}}}}}
             )
 
+    def test_api_advertises_policy_act_only_when_configured(self):
+        # Without a configured policy the api withholds the claim, so session
+        # builds do not trip the capability-mismatch alarm (the env side never
+        # declares it either; the tool gate outcome is identical).
+        assert "policy.act" not in _api(AgxExcavatorConfig()).capabilities
+        assert "policy.act" in _api(AgxExcavatorConfig(policy={"name": "fake"})).capabilities
+
     def test_session_builder_respects_the_gate(self):
         gated = build_agx_excavator_session.from_dict({})
         open = build_agx_excavator_session.from_dict(

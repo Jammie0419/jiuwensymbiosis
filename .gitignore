@@ -20,3 +20,6 @@ agx_scene_report.json
 
 # ZCode 工具本地文件(会话启动时自动生成,非项目内容)
 .zcodeignore
+
+# AGX extension: recorded demonstrations & datasets (never commit training data)
+extensions/jiuwen_agx/data/

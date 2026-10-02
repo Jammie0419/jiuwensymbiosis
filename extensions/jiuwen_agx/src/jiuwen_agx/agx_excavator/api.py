@@ -38,6 +38,22 @@ class AgxExcavatorApi(SimMachineApi):
         # used (and an unconfigured policy never constructs one at all).
         self._policy_obj: Any = None
 
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """Advertise ``policy.act`` only when a policy is configured.
+
+        ``act_exec`` is always implemented, so the MRO derivation would claim
+        the capability unconditionally and trip the session capability-mismatch
+        alarm on every unconfigured build — even though the tool gate (api ∩
+        env) already hides the action. Withholding the claim on the api side
+        too keeps the vocabulary AND the alarm consistent with the config.
+        """
+        caps = super().capabilities
+        env_cfg = getattr(self.env, "cfg", None)
+        if not getattr(env_cfg, "policy", None):
+            caps = caps - {"policy.act"}
+        return caps
+
     # ------------------------------------------------------------------ scripted cycle
     @implements(DIG)
     def dig(
