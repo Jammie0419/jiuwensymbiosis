@@ -4,6 +4,9 @@
 > （同日：`agx_excavator/record.py` + `scripts/record_demos.py` + `scripts/npz_to_lerobot.py` +
 > `tests/test_record.py`，设计论证见 `act-data-collection-design.md`；真数据待 AGX 桥接实采）；
 > M3–M5 待做 · 基于 lerobot 0.6.1 源码审计 · 是
+>
+> **三组对接**：面向小脑组/仿真组的接口文档见 `cerebellum-interface-draft.md`
+>（分工与交接面、给小脑组的 6 个对齐问题、三种对接情形与改动范围、VLA 升级路径）。
 > `architecture-flows.md` 第 10 章「小脑接缝」的细化实施版。
 >
 > **M1 落地记录**（与本文的对应）：`policy.py`（注册表+协议+FakePolicy，§4.2）、
