@@ -1,33 +1,81 @@
-# ACT 流水线操作手册（跨机：采集 → 训练 → 部署）
+# ACT 流水线操作手册（采集 → 训练 → 部署；支持单机或跨机）
 
-> 手把手执行手册，命令级细节。适用场景：**训练不在采集机上进行**——
-> 在另一台机器（Windows/Linux 均可）训练，训完把模型搬回来部署。
+> 手把手执行手册，命令级细节。**前置环境依赖见「阶段〇」，先读那一节再动手。**
 > 配套文档：`act-data-collection-design.md`（数据格式与质量论证）、
 > `act-integration-plan.md`（总体计划）、`cerebellum-interface-draft.md`（三组对接）。
 >
-> 机器角色（2026-10-04 修订：大脑组本机无 AGX license，跑不了 AGX 仿真）：
-> **A 机（采集/部署机）**——**有 AGX license 的机器（仿真组环境）**：AGX 仿真 + 桥接 +
-> jiuwensymbiosis + jiuwen_agx；采集（阶段一）与部署验收（阶段八）在此执行，
-> `scripts/record_demos.py` 零 lerobot 依赖，可整目录移交仿真组运行；
-> **大脑组本机（无 AGX）**：开发、连接验证（`make_smoke_checkpoint.py` + mock 后端
-> 冒烟，无需 AGX）、数据打包与配置——不承担采集与部署；
-> **B 机（训练机）**——另一台：只需 Python ≥ 3.12 + lerobot + 一份扩展包源码拷贝。
+> 机器角色（2026-10-04 修订：大脑组本机无 AGX license，跑不了 AGX 仿真）——两种模式：
+>
+> **单机模式（推荐）**：**一台有 AGX license 的机器（仿真组环境）承担采集、转换、
+> 训练、部署验收全部四段**——一个 venv 装 core + 扩展包 + lerobot[training] 即可
+> （core 与 lerobot 共存已实测无冲突，见阶段〇）；大脑组本机（无 AGX）只做开发、
+> 连接验证（`make_smoke_checkpoint.py` + mock 冒烟，无需 AGX）和交付扩展包目录。
+>
+> **分机模式（可选）**：采集机（有 AGX license）与训练机（另一台，只需
+> Python ≥ 3.12 + lerobot + 扩展包源码拷贝）分离，数据用 npz 文件搬运——
+> 适用于训练机有 GPU 而仿真机没有、或仿真组不愿在机器上装训练栈的情况。
 
 ```
-A 机：启动桥接 → 采 npz ──(拷贝 npz + 扩展包源码)──► B 机：转换 → 训练 → checkpoint
-A 机：YAML 填 checkpoint ◄──────────(拷贝 pretrained_model 目录)──────────┘
-A 机：内省验证 → mock 冒烟 → 真桥接验收
+单机模式：  [AGX 工作机] 启动桥接 → 采 npz → 转数据集 → 训练 → 内省验证 → mock 冒烟 → 真桥接验收
+分机模式：  [AGX 采集机] 采 npz ──(拷 npz + 扩展包源码)──► [训练机] 转换 → 训练 ──(拷 pretrained_model)──► [采集机] 部署验收
 ```
 
-数据流转的两个关键事实（决定了为什么这样分工）：
+数据流转的两个关键事实（决定了灵活性所在）：
 
-1. **采集不需要 lerobot**（npz 是自有格式）——A 机不用装 torch；
-2. **转换/训练需要 lerobot**——都放 B 机；A 机只在最后**部署**时才装推理侧的
-   `[policy]` extra（一次大下载）。
+1. **采集不需要 lerobot**（npz 是自有格式）——采集机可以不装 torch，采集脚本
+   零 lerobot 依赖、可整目录移交仿真组运行；
+2. **转换/训练需要 lerobot**——装在执行训练的那台机器上；采集与训练同机时
+   （单机模式）一个 venv 同时装 core + lerobot 即可，已实测无冲突。
 
 ---
 
-## 阶段一：采集（A 机）
+## 阶段〇：前置环境依赖（先读，所有机器适用）
+
+### 依赖速查表
+
+| 依赖 | 版本红线 | 谁需要 | 说明 |
+| --- | --- | --- | --- |
+| Python | **≥ 3.12** | 全部 | lerobot 0.6.1 硬性要求（core 本身 3.11 即可） |
+| jiuwensymbiosis core | 与本仓一致 | 采集+部署机 | `pip install -e .`（拉 openjiuwen 等核心依赖，较大） |
+| jiuwen_agx 扩展包 | 与本仓一致 | 采集+部署机 | `pip install -e extensions/jiuwen_agx --no-deps`（分机模式训练机不需要 core，见阶段四） |
+| AGX license + 桥接 | 仿真组环境 | 采集+部署机 | **无 license 跑不了仿真**（大脑组本机即如此）；桥接跑在 AGX 自带 Python 里，与本 venv 无关 |
+| torch | **< 2.12** | 训练机 / 部署机 | lerobot 0.6.1 钉死；**最新版会被拒（实测 2.14 不行）**——必须先装 torch 再装 lerobot |
+| torchvision | **< 0.27** | 同上 | 与 torch 配对，从同一个 index 一起装 |
+| lerobot | **== 0.6.1 锁版本** | 训练机 / 部署机 | checkpoint 的 config 与处理器格式跟库版本绑定，训练机与部署机必须同版本 |
+| numpy | 落在 ≥2.0, <2.3 | 同上 | 装 lerobot 会把 numpy 降到 2.2.x（core 只要求 ≥2，共存已实测 172 项测试绿） |
+| accelerate | `[training]` extra 自带 | 训练机 | `lerobot-train` 硬依赖 |
+| GPU | 可选 | 训练机 | 无 GPU 用 CPU wheel + `--policy.device=cpu`（慢数倍，能训完，见阶段五） |
+| ffmpeg / 视频栈 | **不需要** | 全部 | 数据集 `use_videos=False` 纯 Parquet，无视频编解码路径 |
+| 磁盘 | ≥ 5 GB | 训练机 | torch CPU 约 500 MB（CUDA 版 2–3 GB）+ 数据集（<10 MB）+ checkpoint（~160 MB） |
+
+### 安装命令（按模式二选一/组合）
+
+**工作机 = 采集+训练+部署（单机模式，推荐）**——一个 venv 装全部：
+
+```bash
+python3.12 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -e <本仓根>                                    # ① core（拉核心依赖）
+pip install -e <本仓根>/extensions/jiuwen_agx --no-deps    # ② 扩展包
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # ③ 无 GPU 用 CPU wheel（小）；有 N 卡换 .../whl/cu128
+pip install "lerobot[training]==0.6.1"                     # ④ 训练栈（accelerate 在内）
+python -c "import torch, lerobot, jiuwen_agx; print('env OK')"   # ⑤ 自检
+```
+
+**分机模式的训练机（只训练+转换）**：①② 不需要——转换脚本会退化为直接加载扩展包
+里的 `record.py`（只依赖 numpy）；只需 Python 3.12 venv + ③④ + 扩展包源码目录拷贝。
+
+**大脑组本机（开发/连接验证，2026-10-04 已装好）**：①② + CPU torch ③ +
+`pip install -e extensions/jiuwen_agx[policy]`（推理侧）——`tests/test_act_connection.py`
+即在本机通过（172 项测试绿）。
+
+### 两条铁律
+
+1. **先装 torch（钉对版本），再装 lerobot**——顺序反了 pip 会拉进不兼容的最新 torch
+   （实测 2.14 被 `torch<2.12` 约束拒绝、触发重装）；
+2. **全流水线锁 `lerobot==0.6.1`**——训练机与部署机（以及本机验证环境）同版本，
+   checkpoint 才能互相加载。
+
+## 阶段一：采集（工作机，即有 AGX license 的机器）
 
 **前置：**
 
@@ -39,8 +87,8 @@ A 机：内省验证 → mock 冒烟 → 真桥接验收
    探针实测的 `joint_limits` / `home_joints` / `dig_cycle_tuning`；
 3. 过闸门（必做，配置错会采出废数据）：
    `python scripts/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml`；
-4. 可选但建议：若要做"教师策略多样化"（远挖浅咬/近挖深咬，让 ACT 学到随目标
-   变化的策略），**必须在首次采集前**实施——先采后改教师，数据要重采。
+4. 教师策略多样化（远挖浅咬/近挖深咬）**已实现**（commit d73f0fc）：采集器对每个
+   目标按半径自动取咬深档位并记入 npz 元数据（每行打印 `depth=0.xx`），无需额外操作。
 
 **采集命令（100 条成功循环）：**
 
@@ -54,7 +102,7 @@ python scripts/record_demos.py --config configs/agx_excavator/agx_excavator.loca
   转换阶段还会再核一遍，不用手动删；
 - **成功判据**：铲斗质量 > 50 kg 的"铲起→卸掉"序列（与部署运行时同一判据）。
 
-## 阶段二：搬运（A 机 → B 机）
+## 阶段二：搬运（仅分机模式：采集机 → 训练机；单机模式跳过）
 
 拷两样东西（都已 gitignore，U 盘/网盘/scp 任意）：
 
@@ -65,12 +113,16 @@ python scripts/record_demos.py --config configs/agx_excavator/agx_excavator.loca
 
 ## 阶段三：B 机训练环境
 
+> 单机模式下本阶段不需要单独装机——阶段〇的安装已覆盖；以下仅分机模式适用。
+
 ```bash
 # Python ≥ 3.12（lerobot 硬性要求）
 python3.12 -m venv .venv-train && source .venv-train/bin/activate   # Linux
 # Windows: py -3.12 -m venv .venv-train && .venv-train\Scripts\activate
 
-pip install "lerobot[training]==0.6.1"        # 含 accelerate/datasets 栈 + torch
+# ★ 先装 torch（钉 <2.12），再装 lerobot —— 顺序与版本红线见阶段〇铁律 1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # 有 N 卡换 .../whl/cu128
+pip install "lerobot[training]==0.6.1"        # 含 accelerate/datasets 栈
 python -c "from lerobot.datasets.lerobot_dataset import LeRobotDataset; print('ok')"
 lerobot-train --help                           # CLI 可用即就绪
 ```
@@ -84,7 +136,7 @@ lerobot-train --help                           # CLI 可用即就绪
 - 版本**锁 0.6.1**：lerobot 的处理器 API 在版本间不兼容，checkpoint 与库版本
   绑定（部署侧 A 机装同版本）。
 
-## 阶段四：转换（B 机）
+## 阶段四：转换（训练机）
 
 ```bash
 cd <拷来的 jiuwen_agx 目录>
@@ -96,7 +148,7 @@ python scripts/npz_to_lerobot.py --raw <data/raw/run001 路径> --root data/lero
 `mock data must not enter` 说明混入了自测数据；`cycle incomplete` 说明采集
 时有循环没完成）。
 
-## 阶段五：训练（B 机）
+## 阶段五：训练（训练机）
 
 ```bash
 lerobot-train \
@@ -118,7 +170,7 @@ HuggingFace Hub，无 repo_id 会校验失败）；`--output_dir` 指向**不存
   部署必须用同一份目录**，不要只拷权重文件；
 - 训练中断可 `--resume` 续训（此时 `--output_dir` 允许已存在）。
 
-## 阶段六：训练质量三门槛（两道在 B 机，一道回 A 机）
+## 阶段六：训练质量三门槛（两道在训练机，一道回采集机）
 
 1. **loss 收敛**（B 机）：训练控制台的 `l1_loss` 应持续下降并走平；
 2. **统计量非退化**（B 机）：`meta/stats.json` 里 swing（弧度）与三个液压缸
@@ -127,15 +179,16 @@ HuggingFace Hub，无 repo_id 会校验失败）；`--output_dir` 指向**不存
    (挖点, 倒点) 组合，部署后（阶段八）手动调 `act_exec` 肉眼看完整循环——
    注意轨迹是否连贯、有没有中途卡死。
 
-## 阶段七：搬运回（B 机 → A 机）
+## 阶段七：搬运回（仅分机模式：训练机 → 采集机；单机模式跳过）
 
 拷**一个目录**：选定 checkpoint 的 `pretrained_model/`（约 160 MB，fp32）。
 放 A 机的 `extensions/jiuwen_agx/data/ckpt/act_v1/`（gitignored）。
 
-## 阶段八：部署与验收（A 机）
+## 阶段八：部署与验收（采集机，即有 AGX license 的工作机）
 
 1. 装推理侧依赖（一次性，下载较大）：
-   `uv pip install -e "extensions/jiuwen_agx[policy]"`（等价于装 lerobot，锁同版本）；
+   `pip install -e "extensions/jiuwen_agx[policy]"`——**先确认 torch 已按阶段〇铁律
+   装好（<2.12）**；lerobot 必须与训练机同版本（0.6.1），否则 checkpoint 加载不兼容；
 2. 配置：在 `agx_excavator.local.yaml` 的 `low_level` 节加：
 
    ```yaml
