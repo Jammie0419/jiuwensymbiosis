@@ -5,8 +5,12 @@
 > 配套文档：`act-data-collection-design.md`（数据格式与质量论证）、
 > `act-integration-plan.md`（总体计划）、`cerebellum-interface-draft.md`（三组对接）。
 >
-> 机器角色：
-> **A 机（采集/部署机）**——本机：装 AGX 仿真 + jiuwensymbiosis + jiuwen_agx；
+> 机器角色（2026-10-04 修订：大脑组本机无 AGX license，跑不了 AGX 仿真）：
+> **A 机（采集/部署机）**——**有 AGX license 的机器（仿真组环境）**：AGX 仿真 + 桥接 +
+> jiuwensymbiosis + jiuwen_agx；采集（阶段一）与部署验收（阶段八）在此执行，
+> `scripts/record_demos.py` 零 lerobot 依赖，可整目录移交仿真组运行；
+> **大脑组本机（无 AGX）**：开发、连接验证（`make_smoke_checkpoint.py` + mock 后端
+> 冒烟，无需 AGX）、数据打包与配置——不承担采集与部署；
 > **B 机（训练机）**——另一台：只需 Python ≥ 3.12 + lerobot + 一份扩展包源码拷贝。
 
 ```
