@@ -19,6 +19,7 @@ from jiuwen_agx.agx_excavator.record import (
     Episode,
     RecordingDriverProxy,
     admission_reason,
+    sample_depth_scale,
     sample_goal,
     segment_keyboard,
     unit_conflict,
@@ -156,6 +157,7 @@ def _episode(**overrides) -> Episode:
             [False, False, True, True, True, False, False, False, False, False]
         ),
         "beat_seconds": np.full(n, 0.5, dtype=np.float32),
+        "depth_scale": None,
     }
     fields.update(overrides)
     return Episode(**fields)
@@ -218,6 +220,12 @@ class TestEpisode:
         assert loaded.sub_beats == 20 and loaded.seed == 7
         np.testing.assert_array_equal(loaded.joints_before, _episode().joints_before)
         np.testing.assert_array_equal(loaded.scoop, _episode().scoop)
+
+    def test_depth_scale_round_trips_through_npz(self, tmp_path):
+        path = _episode(depth_scale=0.7).write_npz(tmp_path / "scaled.npz")
+        assert Episode.read_npz(path).depth_scale == pytest.approx(0.7)
+        default = Episode.read_npz(_episode().write_npz(tmp_path / "default.npz"))
+        assert default.depth_scale is None  # old files without the key stay None
 
     def test_version_gate_rejects_foreign_files(self, tmp_path):
         import json
@@ -307,6 +315,46 @@ class TestStandaloneConverter:
         assert module.GOAL_KEYS[0] == "dig_x_m"
         episode = module.Episode.read_npz  # the standalone record module is wired up
         assert callable(episode)
+
+
+# ============================================================================ depth scale
+class TestSampleDepthScale:
+    def test_near_goals_bite_deep_far_goals_shallow(self):
+        rng = np.random.default_rng(0)
+        near = [
+            sample_depth_scale(rng, dig_radius_m=1.0, reach_min_m=1.0, reach_max_m=6.0)
+            for _ in range(200)
+        ]
+        far = [
+            sample_depth_scale(rng, dig_radius_m=6.0, reach_min_m=1.0, reach_max_m=6.0)
+            for _ in range(200)
+        ]
+        assert min(near) >= 0.9  # inner edge: base 1.0, jitter clamped
+        assert max(far) <= 0.7  # outer edge: base 0.6 + jitter
+
+    def test_clamped_into_half_to_one(self):
+        rng = np.random.default_rng(1)
+        for radius in (1.0, 3.5, 6.0):
+            for _ in range(100):
+                value = sample_depth_scale(
+                    rng, dig_radius_m=radius, reach_min_m=1.0, reach_max_m=6.0
+                )
+                assert 0.5 <= value <= 1.0
+
+    def test_deterministic_under_a_seed(self):
+        kwargs = {"dig_radius_m": 3.0, "reach_min_m": 1.0, "reach_max_m": 6.0}
+        a = sample_depth_scale(np.random.default_rng(7), **kwargs)
+        b = sample_depth_scale(np.random.default_rng(7), **kwargs)
+        assert a == b
+
+    def test_empty_annulus_is_refused(self):
+        with pytest.raises(ValueError, match="annulus"):
+            sample_depth_scale(
+                np.random.default_rng(0),
+                dig_radius_m=1.0,
+                reach_min_m=2.0,
+                reach_max_m=2.0,
+            )
 
 
 # ============================================================================ keyboard segmentation

@@ -45,6 +45,7 @@ __all__ = [
     "Episode",
     "RecordingDriverProxy",
     "admission_reason",
+    "sample_depth_scale",
     "sample_goal",
     "segment_keyboard",
     "unit_conflict",
@@ -127,6 +128,32 @@ class RecordingDriverProxy:
 
 
 # ============================================================================ goal sampler
+def sample_depth_scale(
+    rng: np.random.Generator,
+    *,
+    dig_radius_m: float,
+    reach_min_m: float,
+    reach_max_m: float,
+    jitter: float = 0.1,
+) -> float:
+    """远挖浅咬、近挖深咬: bite depth shrinks as the dig point nears max reach.
+
+    Physical rationale: at maximum reach the machine has the least force
+    margin, so a real operator takes smaller bites — the policy should see
+    that correlation in the data instead of one fixed curve. Base scale is
+    1.0 at the inner annulus edge and 0.6 at the outer edge; seeded jitter
+    ±``jitter`` is added and the result clamped into [0.5, 1.0]. Feed the
+    value to :func:`jiuwen_agx.agx_excavator.work.execute_dig_cycle` as
+    ``depth_scale`` and record it in the episode metadata (auditability).
+    """
+    span = reach_max_m - reach_min_m
+    if span <= 0:
+        raise ValueError(f"reach annulus is empty: [{reach_min_m}, {reach_max_m}]")
+    r_norm = min(1.0, max(0.0, (dig_radius_m - reach_min_m) / span))
+    base = 1.0 - 0.4 * r_norm
+    return min(1.0, max(0.5, base + rng.uniform(-jitter, jitter)))
+
+
 def sample_goal(
     rng: np.random.Generator,
     *,
@@ -180,6 +207,7 @@ class Episode:
     beat_seconds: np.ndarray  # (N,) float32
     sub_beats: int | None = None  # teacher only
     seed: int | None = None  # teacher only
+    depth_scale: float | None = None  # teacher: the bite-depth scale used
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
 
     @property
@@ -203,6 +231,7 @@ class Episode:
             beat_seconds=self.beat_seconds[start:stop],
             sub_beats=self.sub_beats,
             seed=self.seed,
+            depth_scale=self.depth_scale,
             created_at=self.created_at,
         )
 
@@ -239,6 +268,7 @@ class Episode:
             "beat_timeout_s": self.beat_timeout_s,
             "sub_beats": self.sub_beats,
             "fps_nominal": self.fps_nominal,
+            "depth_scale": self.depth_scale,
             "created_at": self.created_at,
         }
         np.savez_compressed(
@@ -276,6 +306,7 @@ class Episode:
                 beat_seconds=np.asarray(data["beat_seconds"], dtype=np.float32),
                 sub_beats=meta.get("sub_beats"),
                 seed=meta.get("seed"),
+                depth_scale=meta.get("depth_scale"),
                 created_at=str(meta.get("created_at", "")),
             )
 
@@ -294,6 +325,7 @@ class Episode:
         sub_beats: int | None = None,
         seed: int | None = None,
         final_scoop: bool | None = None,
+        depth_scale: float | None = None,
     ) -> Episode:
         names = list(proxy.joint_names)
         before = np.asarray(
@@ -326,6 +358,7 @@ class Episode:
             beat_seconds=seconds,
             sub_beats=sub_beats,
             seed=seed,
+            depth_scale=depth_scale,
         )
 
 

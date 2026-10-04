@@ -26,6 +26,7 @@ mock joints must never enter a training dataset, design doc P6).
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -33,7 +34,12 @@ from pathlib import Path
 import numpy as np
 
 from jiuwen_agx.agx_excavator.config import AgxExcavatorConfig
-from jiuwen_agx.agx_excavator.record import Episode, RecordingDriverProxy, sample_goal
+from jiuwen_agx.agx_excavator.record import (
+    Episode,
+    RecordingDriverProxy,
+    sample_depth_scale,
+    sample_goal,
+)
 from jiuwen_agx.agx_excavator.work import execute_dig_cycle
 
 
@@ -112,6 +118,12 @@ def _collect_teacher(args: argparse.Namespace, cfg: AgxExcavatorConfig) -> None:
                 goal = sample_goal(
                     rng, reach_min_m=cfg.reach_min_m, reach_max_m=cfg.reach_max_m
                 )
+                depth_scale = sample_depth_scale(
+                    rng,
+                    dig_radius_m=math.hypot(goal["dig_x_m"], goal["dig_y_m"]),
+                    reach_min_m=cfg.reach_min_m,
+                    reach_max_m=cfg.reach_max_m,
+                )
                 proxy.clear_beats()
                 execute_dig_cycle(
                     proxy,
@@ -123,6 +135,7 @@ def _collect_teacher(args: argparse.Namespace, cfg: AgxExcavatorConfig) -> None:
                     reach_min_m=cfg.reach_min_m,
                     reach_max_m=cfg.reach_max_m,
                     swing_unit=cfg.swing_unit,
+                    depth_scale=depth_scale,
                 )
                 episode = Episode.from_proxy(
                     proxy,
@@ -138,12 +151,14 @@ def _collect_teacher(args: argparse.Namespace, cfg: AgxExcavatorConfig) -> None:
                     # Terminal scoop truth: the cycle clears its flag/measured
                     # mass after the last motion beat, so read once more now.
                     final_scoop=driver.scoop_state(),
+                    depth_scale=depth_scale,
                 )
                 path = episode.write_npz(out / f"ep_{total:04d}_teacher.npz")
                 mark = "ok " if episode.successful() else "BAD"
                 kept += bool(episode.successful())
                 print(
                     f"[record] {mark} ep_{total:04d} beats={episode.n_beats:4d} "
+                    f"depth={depth_scale:.2f} "
                     f"cycle_s={episode.beat_seconds.sum():6.1f} -> {path.name}"
                 )
                 total += 1

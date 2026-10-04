@@ -125,6 +125,7 @@ def execute_dig_cycle(
     reach_min_m: float = 1.0,
     reach_max_m: float = 6.0,
     swing_unit: str = "deg",
+    depth_scale: float = 1.0,
 ) -> dict[str, float]:
     """Run one dig-and-dump cycle on ``driver``; return {volume_m3, cycle_s}.
 
@@ -133,9 +134,18 @@ def execute_dig_cycle(
     cylinder body speaks metres, not degrees — the tuning keys keep their
     historical *_deg names but carry native values via config).
 
+    ``depth_scale`` — how deep the dig/curl keyframes bite, in [0, 1]: 1.0 is
+    the full tuned depth (default, identical to historical behaviour), 0.0
+    would stay at the ready pose. The dig and curl frames interpolate toward
+    the ready frame; swing targets and the dump frame are untouched. The demo
+    recorder uses this to vary bite depth with goal radius (远挖浅咬) so the
+    learned policy sees goal-dependent behaviour, not one fixed curve.
+
     Raises ValueError (surfaced by the api as a DigFailure dict) through
-    :func:`check_cycle_preconditions`.
+    :func:`check_cycle_preconditions`, or when ``depth_scale`` leaves [0, 1].
     """
+    if not (0.0 <= depth_scale <= 1.0):
+        raise ValueError(f"depth_scale must be within [0, 1], got {depth_scale!r}")
     check_cycle_preconditions(
         driver,
         dig_x_m=dig_x_m,
@@ -165,40 +175,37 @@ def execute_dig_cycle(
         swing_dig = _normalise_swing_rad(bearing_dig + offset)
         swing_dump = _normalise_swing_rad(bearing_dump + offset)
 
+    def _frame(prefix: str) -> dict[str, float]:
+        return {
+            "boom": t[f"{prefix}_boom_deg"],
+            "arm": t[f"{prefix}_arm_deg"],
+            "bucket": t[f"{prefix}_bucket_deg"],
+        }
+
+    ready = _frame("ready")
+    # 下铲/收斗向就位姿态插值：depth_scale=1 完全咬深，<1 浅咬（远挖浅咬）
+    dig = {
+        joint: ready[joint] + depth_scale * (value - ready[joint])
+        for joint, value in _frame("dig").items()
+    }
+    curl = {
+        joint: ready[joint] + depth_scale * (value - ready[joint])
+        for joint, value in _frame("curl").items()
+    }
+
     started = time.perf_counter()
     # 对准 → 就位 → 下铲 → 收斗(装满) → 摆转 → 卸料
     driver.move_joints_blocking({"swing": swing_dig})
-    driver.move_joints_blocking(
-        {
-            "boom": t["ready_boom_deg"],
-            "arm": t["ready_arm_deg"],
-            "bucket": t["ready_bucket_deg"],
-        }
-    )
-    driver.move_joints_blocking(
-        {
-            "boom": t["dig_boom_deg"],
-            "arm": t["dig_arm_deg"],
-            "bucket": t["dig_bucket_deg"],
-        }
-    )
-    driver.move_joints_blocking(
-        {
-            "boom": t["curl_boom_deg"],
-            "arm": t["curl_arm_deg"],
-            "bucket": t["curl_bucket_deg"],
-        }
-    )
+    driver.move_joints_blocking(dict(ready))
+    driver.move_joints_blocking(dig)
+    driver.move_joints_blocking(curl)
     driver.mark_scoop(True)
     driver.move_joints_blocking({"swing": swing_dump})
-    driver.move_joints_blocking(
-        {
-            "boom": t["dump_boom_deg"],
-            "arm": t["dump_arm_deg"],
-            "bucket": t["dump_bucket_deg"],
-        }
-    )
+    driver.move_joints_blocking(_frame("dump"))
     driver.mark_scoop(False)
     cycle_s = time.perf_counter() - started
 
-    return {"volume_m3": float(t["bucket_volume_m3"]), "cycle_s": float(cycle_s)}
+    return {
+        "volume_m3": float(t["bucket_volume_m3"]) * depth_scale,
+        "cycle_s": float(cycle_s),
+    }

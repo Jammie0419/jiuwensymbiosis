@@ -131,6 +131,63 @@ class TestDigCycle:
         assert result["volume_m3"] == 9.9
         assert driver.moves[2]["boom"] == pytest.approx(-50.0)
 
+    def test_depth_scale_one_is_identical_to_untuned(self):
+        # default and explicit 1.0 must produce byte-identical keyframe streams
+        driver_a, driver_b = _SpyDriver(), _SpyDriver()
+        kwargs = {"dig_x_m": -2.0, "dig_y_m": 1.0, "dump_x_m": 3.0, "dump_y_m": 0.5}
+        execute_dig_cycle(driver_a, **kwargs)
+        execute_dig_cycle(driver_b, **kwargs, depth_scale=1.0)
+        assert driver_b.moves == driver_a.moves
+
+    def test_depth_scale_zero_bites_nothing(self):
+        driver = _SpyDriver()
+        execute_dig_cycle(
+            driver,
+            dig_x_m=-2.0,
+            dig_y_m=1.0,
+            dump_x_m=3.0,
+            dump_y_m=0.5,
+            depth_scale=0.0,
+        )
+        # dig and curl frames collapse onto the ready pose
+        assert driver.moves[2] == driver.moves[1]
+        assert driver.moves[3] == driver.moves[1]
+
+    def test_depth_scale_half_interpolates_toward_ready(self):
+        driver = _SpyDriver()
+        execute_dig_cycle(
+            driver,
+            dig_x_m=-2.0,
+            dig_y_m=1.0,
+            dump_x_m=3.0,
+            dump_y_m=0.5,
+            depth_scale=0.5,
+        )
+        ready_boom = 10.0  # DEFAULT_DIG_TUNING ready_boom_deg
+        dig_boom = -35.0  # DEFAULT_DIG_TUNING dig_boom_deg
+        assert driver.moves[2]["boom"] == pytest.approx((ready_boom + dig_boom) / 2)
+
+    def test_depth_scale_out_of_range_is_refused(self):
+        driver = _SpyDriver()
+        with pytest.raises(ValueError, match="depth_scale"):
+            execute_dig_cycle(
+                driver,
+                dig_x_m=-2.0,
+                dig_y_m=1.0,
+                dump_x_m=3.0,
+                dump_y_m=0.5,
+                depth_scale=1.5,
+            )
+        with pytest.raises(ValueError, match="depth_scale"):
+            execute_dig_cycle(
+                driver,
+                dig_x_m=-2.0,
+                dig_y_m=1.0,
+                dump_x_m=3.0,
+                dump_y_m=0.5,
+                depth_scale=-0.1,
+            )
+
     def test_refuses_point_outside_reach_annulus(self):
         driver = _SpyDriver()
         with pytest.raises(ValueError, match="annulus"):
