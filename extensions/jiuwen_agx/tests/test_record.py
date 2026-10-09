@@ -71,28 +71,51 @@ class TestRecordingDriverProxy:
         # intermediate beats carry the beat timeout; the final keeps the caller's
         assert [t for _, t in driver.sent[:3]] == [0.5, 0.5, 0.5]
         assert driver.sent[-1][1] is None
-        # final beat targets the exact keyframe value
-        assert driver.sent[-1][0]["swing"] == pytest.approx(8.0)
-        # interpolation is monotone towards the target
-        swings = [s["swing"] for s, _ in driver.sent]
-        assert swings == sorted(swings)
-        assert swings[0] < 8.0
+        # the final beat reaches the keyframe's physical pose: same value mod 2π,
+        # canonicalised into the guard window (the driver admits [-3.14159,
+        # 3.14159]; a raw 8.0 would trip it on the real backend)
+        final = driver.sent[-1][0]["swing"]
+        assert (final - 8.0) % (2.0 * math.pi) == pytest.approx(0.0)
+        # every sent target stays inside the guard window — run001 died on
+        # ep_0054 when an interpolated target reached -3.944 outside it
+        assert all(-3.14159 <= s["swing"] <= 3.14159 for s, _ in driver.sent)
+        # interpolation still starts from the current pose towards the keyframe
+        assert driver.sent[0][0]["swing"] == pytest.approx(2.0)
 
     def test_beats_record_measured_before_and_after(self):
         driver = _FakeDriver()
         proxy = RecordingDriverProxy(driver, sub_beats=2, beat_timeout_s=0.5)
-        proxy.move_joints_blocking({"swing": 4.0})
+        proxy.move_joints_blocking({"swing": 1.5})
         (before1, after1, scoop1, seconds1) = proxy.beats[0]
         (before2, after2, scoop2, seconds2) = proxy.beats[1]
         assert before1 == dict.fromkeys(JOINTS, 0.0)
-        assert after1["swing"] == pytest.approx(2.0)
+        assert after1["swing"] == pytest.approx(0.75)
         assert before2["swing"] == pytest.approx(
-            2.0
+            0.75
         )  # chain: before of beat n = after of n-1
-        assert after2["swing"] == pytest.approx(4.0)
+        assert after2["swing"] == pytest.approx(1.5)
         assert scoop1 is scoop2 is False
         assert seconds1 >= 0.0 and seconds2 >= 0.0
-        assert proxy.get_joint_positions()["swing"] == pytest.approx(4.0)
+        assert proxy.get_joint_positions()["swing"] == pytest.approx(1.5)
+
+    def test_out_of_range_swing_is_canonicalised(self):
+        """Regression: run001/ep_0053's boundary sweep left measured swing at
+        -6.6588 rad (same pose as -0.3776); interpolating the next cycle from
+        that raw value produced target -3.944 and the driver's guard killed
+        the whole run. The proxy canonicalises targets, ``_last`` and recorded
+        beats into [-3.14159, 3.14159]."""
+        driver = _FakeDriver()
+        proxy = RecordingDriverProxy(driver, sub_beats=2, beat_timeout_s=0.5)
+        proxy.move_joints_blocking({"swing": -6.6588})
+        assert all(-3.14159 <= s["swing"] <= 3.14159 for s, _ in driver.sent)
+        expected = -6.6588 + 2.0 * math.pi  # ≡ -0.3776 rad
+        assert proxy.get_joint_positions()["swing"] == pytest.approx(expected)
+        (before1, after1, _, _), (before2, after2, _, _) = proxy.beats
+        assert before1["swing"] == 0.0
+        assert after2["swing"] == pytest.approx(expected)
+        # a follow-up move interpolates from the canonical pose, never the drift
+        proxy.move_joints_blocking({"swing": 1.0})
+        assert all(-3.14159 <= s["swing"] <= 3.14159 for s, _ in driver.sent[2:])
 
     def test_reads_and_scoop_writes_are_forwarded(self):
         driver = _FakeDriver()

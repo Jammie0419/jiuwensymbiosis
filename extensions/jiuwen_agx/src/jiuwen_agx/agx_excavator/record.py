@@ -59,6 +59,23 @@ _MIN_BEATS = 10
 
 
 # ============================================================================ proxy
+def _canonical_swing(value: float) -> float:
+    """Wrap a swing (revolute) joint value into the configured ±180° window.
+
+    value and value ± 2π are the same physical pose, but measured positions
+    drift past ±π after a long-way boundary sweep (sub-beat timeouts let the
+    hinge overshoot: recorded as low as -6.6588 rad in run001/ep_0053). The
+    next cycle would then interpolate from that out-of-range value and the
+    driver's limit guard killed the whole run (ep_0054: target -3.944 outside
+    [-3.14159, 3.14159]). Canonicalise every swing value at this boundary —
+    targets, ``_last`` and the recorded beats all stay inside the guard's
+    window, which is also what deployment observes (D1). The clamp after the
+    wrap keeps ±π out by 2.65e-6: the config states 3.14159, not math.pi.
+    """
+    wrapped = (float(value) + math.pi) % (2.0 * math.pi) - math.pi
+    return min(max(wrapped, -3.14159), 3.14159)
+
+
 class RecordingDriverProxy:
     """Driver wrapper that sub-steps keyframe transitions into beats.
 
@@ -75,6 +92,8 @@ class RecordingDriverProxy:
         self._beat_timeout_s = float(beat_timeout_s)
         self.joint_names = tuple(inner.joint_names)
         self._last: dict[str, float] = dict(inner.get_joint_positions())
+        if "swing" in self._last:
+            self._last["swing"] = _canonical_swing(self._last["swing"])
         # One entry per beat: (before, after, scoop, seconds) — plain dicts so
         # Episode can stack them without knowing the driver's vocabulary.
         self.beats: list[tuple[dict[str, float], dict[str, float], bool, float]] = []
@@ -92,6 +111,8 @@ class RecordingDriverProxy:
     def home(self) -> None:
         self._inner.home()
         self._last = dict(self._inner.get_joint_positions())
+        if "swing" in self._last:
+            self._last["swing"] = _canonical_swing(self._last["swing"])
 
     # -- intercepted motion
     def move_joints_blocking(
@@ -112,12 +133,17 @@ class RecordingDriverProxy:
                 + (value - self._last.get(name, 0.0)) * frac
                 for name, value in wanted.items()
             }
+            if "swing" in step:
+                step["swing"] = _canonical_swing(step["swing"])
             before = dict(self._last)
             started = time.perf_counter()
             after = self._inner.move_joints_blocking(
                 step, timeout_s=None if final else self._beat_timeout_s
             )
             seconds = time.perf_counter() - started
+            if "swing" in after:
+                after = dict(after)
+                after["swing"] = _canonical_swing(after["swing"])
             self._last.update(after)
             self.beats.append((before, dict(self._last), self.scoop_state(), seconds))
         return dict(self._last)
