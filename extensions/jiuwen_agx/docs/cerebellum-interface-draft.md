@@ -128,7 +128,7 @@ LLM 编排全部不动。** 这就是接缝先行的意义——小脑组的任�
 ## 8. 落地版（2026-10-11）：goal-act-v2（小脑组自研模型）接入
 
 > **面向小脑组的交接版说明书见 [`goalact-handoff.md`](goalact-handoff.md)**
-> （名字对照、双方接口、命令、验收、现状，可直接转交对方）。
+> （名字对照、双方接口、命令、验收、现状，可直接转交给小脑组）。
 
 小脑组的 `act_trajectory` 项目（Goal-ACT V2：35 维状态×10 帧历史、13 维目标
 特征、8 相位、16 步弧度增量、自定义 PyTorch、HDF5 数据）即 §5 的**情形 B**。
@@ -154,48 +154,48 @@ LLM 编排全部不动。** 这就是接缝先行的意义——小脑组的任�
 1. 能喂进去：当前关节位形 + 目标点——模型想要的任何方言（35 维/历史/相位/度）
    由适配器翻译；
 2. 能吐出来：逐拍关节目标——绝对或增量皆可（增量由适配器对实测累加；
-   goal-act-v2 适配器每次只返回 1 个目标，使我们的拍循环**精确等价于**模型
+   goal-act-v2 适配器每次只返回 1 个目标，使大脑组的拍循环**精确等价于**模型
    自己的"逐步重规划"闭环）；
 3. 输出必须过驱动硬闸（限位/非有限）——任何模型都绕不过。
 
 ### 8.3 数据字段级映射（`data/raw/<run>/*.npz` → `episode_*.h5`）
 
-| 我们的字段 | 他们的字段 | 转换规则 |
+| 大脑组的字段 | 小脑组的字段 | 转换规则 |
 | --- | --- | --- |
 | `joints_before/after`（原生单位：swing 弧度 + 三缸米；到位节拍） | `observations/state[:, 6:10]`（**度**）+ `joint_rad`（弧度） | 经 machine 文件换算；**未标定默认拒绝**（fail-closed，防米当角污染） |
-| 拍序列（到位节拍） | **拍 = 帧**（`timeline=beats`，control_frequency=10 名义） | 不重采样（他们的训练帧本就是受 max_joint_step 限幅的"步"，与我们"拍"同构；重采样到细粒度会让部署循环数千拍跑不完）。`--resample-hz` 可选显式等间隔 |
-| 相邻拍差分 | `actions/joint_increment` (T,16,4) | 16 步滑窗 + pad；**写成度**（他们的 99% 分位>0.5 嗅探在两极幅度下都判度；另写 `annotations/unit_joint_increment="deg"` 备改显式） |
-| `goal` 4 个地面坐标 | `annotations/goal` + `goal` (T,6) | z 取 machine 文件 `pick_z_m/dump_z_m`；他们现有载入器仍 FK 伪推断，直读需下方任务② |
+| 拍序列（到位节拍） | **拍 = 帧**（`timeline=beats`，control_frequency=10 名义） | 不重采样（小脑组的训练帧本就是受 max_joint_step 限幅的"步"，与大脑组"拍"同构；重采样到细粒度会让部署循环数千拍跑不完）。`--resample-hz` 可选显式等间隔 |
+| 相邻拍差分 | `actions/joint_increment` (T,16,4) | 16 步滑窗 + pad；**写成度**（小脑组载入器的 99% 分位>0.5 嗅探在两极幅度下都判度；另写 `annotations/unit_joint_increment="deg"` 备改显式） |
+| `goal` 4 个地面坐标 | `annotations/goal` + `goal` (T,6) | z 取 machine 文件 `pick_z_m/dump_z_m`；小脑组现有载入器仍 FK 伪推断，直读需下方任务② |
 | `scoop` 载料真值 | `phase` (T,)，默认 **two 模式：未载料→2、载料→4** | 与部署适配器的相位估计**同源**（train/inference 一致性优先）；`--phase-mode scoop` 给 0..7 自然分段，`time` 为时间八等分兜底 |
 | 成功判据（装料后卸掉） | —— | 不完整循环整条剔除，计入 `skipped` |
 
-转换器实测：`run_all` 112 条 → **103 条**（跳过 9 条不完整），他们自己的
+转换器实测：`run_all` 112 条 → **103 条**（跳过 9 条不完整），小脑组的
 `infer_real_episode` 载入器 **103/103 直读通过**（拍=帧时间轴、two 相位模式）。
 
 转换器同时导出 **`suggested_config.json`**（joint_limits_deg=数据实际角域、
-max_joint_step_deg=每拍运动 p99.9）——**他们重训时的 config 必须采用这组值**：
-他们的推理端把每一步 clip 到 config 的 `max_joint_step_deg`（现 ckpt 是 IK 步长
-~2.5°/步），而我们的"拍"合法行程可达 20°+/拍；沿用旧值会把部署循环压慢数倍
-（我们的执行循环每拍重观测、每次预测只走一步）。
+max_joint_step_deg=每拍运动 p99.9）——**小脑组重训时的 config 必须采用这组值**：
+小脑组推理端把每一步 clip 到 config 的 `max_joint_step_deg`（现 ckpt 是 IK 步长
+~2.5°/步），而大脑组的"拍"合法行程可达 20°+/拍；沿用旧值会把部署循环压慢数倍
+（大脑组的执行循环每拍重观测、每次预测只走一步）。
 
 ### 8.4 小脑组任务清单（按依赖排序）
 
 1. **AGX 365 机器配置 + 重训**：用实测 `links_m`（含铲斗铰点-齿尖，现为 1.2m
-   假设）+ 等效角域重造教师数据重训（他们的 geometry_signature 门强制）；
+   假设）+ 等效角域重造教师数据重训（小脑组的 geometry_signature 门强制）；
    **或**直接吃 §8.3 转换数据微调——那之前需先完成第 3 项的标定；
 2. **real 载入器小补丁**（几行）：`annotations/goal`、`annotations/phase`
    存在时直读（现在只会从 FK/液压电流推断伪标签）；
 3. **标定协作**（AGX license 恢复后，约半天）：按 `scripts/agx_machine_fit.py`
    的采样格式（每缸 ≥5 点扫行程 + 齿尖在策略系坐标，见该脚本 docstring）记录
    采样 JSON → 拟合（median 残差 ≤0.05m 才判过）→ 输出 `calibrated: true` 的
-   `machine_agx365.json` 与**建议给他们的 `links_m`**（进他们 config 的
+   `machine_agx365.json` 与**建议给到小脑组的 `links_m`**（进小脑组 config 的
    geometry_signature，会强制重造数据重训）。拟合器已带合成自测
    （`--selftest` 与 pytest 往返恢复），license 恢复后只需补"扫缸记录"这一环；
 4. **修推理交付**：`.venv` 坏链（指向 `D:\anaconda\...`）修复或给
    requirements；确认 `src/act_trajectory` 可被外部 import（yaml `src:` 路径引用）；
-5. **补位移↔角多项式逆映射**（`agx_adapter_hydraulic.py` 未实现；我们侧
+5. **补位移↔角多项式逆映射**（`agx_adapter_hydraulic.py` 未实现；大脑组的
    `machine_map.JointMap` 已用单调二分实现，可作参考）；
-6. **对齐问题**：phase 供给（推荐 phase-free 变体；否则我们用 scoop 真值估计，
+6. **对齐问题**：phase 供给（推荐 phase-free 变体；否则大脑组用 scoop 真值估计，
    默认 phase_dig=2 / phase_dump=4）、goal 的 z 语义、达标线=10 留出点 ≥7。
 
 ### 8.5 使用（接线已就绪）
