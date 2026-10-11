@@ -13,17 +13,23 @@
   原生→角的换算走 ``--machine``（``jiuwen_agx.machine_map``）；**未标定的
   机器文件默认拒绝**（米值被当角度是会静默污染训练数据的，fail-closed），
   只有 ``--allow-uncalibrated`` 的干跑才放行并在文件属性里标红。
-- 到位节拍 → **固定 ``--hz`` 等间隔**时间轴（逐关节线性重采样；他们的
-  加速度/jerk 损失与时钟检查都要求等间隔）。
-- 相邻帧差分 → ``actions/joint_increment`` (T,16,4)。**写成度**：他们载入器
-  用"99 分位 >0.5 即视为度"的启发式自动识别，度制在正常与异常（大盘摆）两种
-  幅度下都会被正确识别；弧度制在盘摆跳变时可能被误判。同时写
+- **时间轴默认"拍 = 帧"**（一条 120 拍循环 = 120 帧，control_frequency=10 为
+  名义值）：他们的训练帧本来就是"步"（IK 生成器每步运动受 max_joint_step
+  限幅 ≤2.5°，评估也是逐步语义），而我们的"拍"正是"到位一步"——两者同构。
+  若把事情做反（重采样到细粒度 10Hz），模型会学出 ~0.2°/步的增量，部署时
+  我们的拍循环要上千拍才走完一个循环（max_beats=300 直接失败）。
+  ``--resample-hz`` 可显式要求等间隔重采样（默认关闭）。
+- 相邻（拍/帧）差分 → ``actions/joint_increment`` (T,16,4)。**写成度**：他们
+  载入器用"99 分位 >0.5 即视为度"的启发式自动识别，度制在正常与异常（大盘摆）
+  两种幅度下都会被正确识别；弧度制在盘摆跳变时可能被误判。同时写
   ``annotations/unit_joint_increment = "deg"`` 备他们改成显式读取。
 - goal 4 个地面坐标 → ``annotations/goal``（精确值）与 ``goal``（同构镜像），
   z 取机器文件的 ``pick_z_m``/``dump_z_m``。他们现有载入器只会从 FK 伪推断
   目标；获得直读需要他们在 ``infer_real_episode`` 里加几行（对接文档任务项）。
-- ``scoop`` 载料真值 → ``phase``：未载料段四等分为 0..3，载料段分 4/5、
-  末帧 6，卸载后 7（``--phase-mode time`` 退回时间八等分）。
+- ``scoop`` 载料真值 → ``phase``，默认 **two 模式**（未载料 → 2、载料 → 4）：
+  与部署侧适配器的相位估计规则**完全同源**（train/inference 一致性优先于
+  标签丰富度）。``--phase-mode scoop`` 给 0..7 自然分段（仅当适配器由固定
+  2/4 升级到同规则估计时才用）；``time`` 为他们的时间八等分兜底。
 - 成功判据与采集端一致（装料后卸掉），不完整循环整条剔除并计入 ``skipped``。
 """
 
@@ -31,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -61,7 +68,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--hz",
         type=float,
         default=10.0,
-        help="their control frequency (uniform timeline)",
+        help="nominal control frequency recorded in attrs (frames are beats by default)",
+    )
+    parser.add_argument(
+        "--resample-hz",
+        type=float,
+        default=None,
+        help="opt-in: resample the beat timeline onto a uniform grid at this rate "
+        "(default: off — frames ARE beats, see module docstring)",
     )
     parser.add_argument("--chunk-size", type=int, default=16)
     parser.add_argument(
@@ -71,9 +85,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--phase-mode",
-        choices=("scoop", "time"),
-        default="scoop",
-        help="scoop: phase from the measured carry truth; time: their 8-split fallback",
+        choices=("two", "scoop", "time"),
+        default="two",
+        help="two: not-loaded -> 2, loaded -> 4 (matches the deployment adapter's "
+        "estimator exactly); scoop: natural 0..7 segments; time: their 8-split fallback",
     )
     parser.add_argument(
         "--allow-uncalibrated",
@@ -98,6 +113,18 @@ def _hold_resample(
     index = np.searchsorted(times, grid, side="right") - 1
     index = np.clip(index, 0, len(values) - 1)
     return values[index]
+
+
+def _phase_from_two(scoop: np.ndarray) -> np.ndarray:
+    """Two-label phase that mirrors the deployment adapter's estimator exactly.
+
+    The adapter can only see the measure truth at inference time, so it feeds
+    phase 2 (approach/dig, active goal = pick) until the bucket loads and 4
+    (swing, active goal = dump) after. Training labels must use the same rule
+    or the phase embedding would be conditioned on a distribution the model
+    never sees in deployment.
+    """
+    return np.where(scoop, 4, 2).astype(np.int64)
 
 
 def _phase_from_scoop(scoop: np.ndarray) -> np.ndarray:
@@ -125,18 +152,22 @@ def _phase_from_time(length: int) -> np.ndarray:
 
 
 def _action_chunks(
-    joint_rad: np.ndarray, chunk_size: int
+    diffs_rad: np.ndarray, length: int, chunk_size: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Their sliding-window future increments + pad mask (see their generation.py)."""
-    length = joint_rad.shape[0]
-    diffs = np.diff(joint_rad, axis=0)  # (T-1, 4) radians
-    chunks = np.zeros((length, chunk_size, joint_rad.shape[1]), dtype=np.float32)
+    """Their sliding-window future increments + pad mask (see their generation.py).
+
+    ``diffs_rad[t]`` is the motion leaving frame ``t`` (there are ``length`` or
+    ``length - 1`` of them, depending on whether the source series carries an
+    extra trailing pose); frame ``t`` charges toward the future ``diffs[t:]``.
+    """
+    available = diffs_rad.shape[0]
+    chunks = np.zeros((length, chunk_size, diffs_rad.shape[1]), dtype=np.float32)
     pad = np.ones((length, chunk_size), dtype=np.uint8)
     for t in range(length):
-        count = min(chunk_size, length - 1 - t)
+        count = min(chunk_size, available - t)
         if count > 0:
             chunks[t, :count] = np.rad2deg(
-                diffs[t : t + count]
+                diffs_rad[t : t + count]
             )  # DEGREES on purpose (see module docstring)
             pad[t, :count] = 0
     return chunks, pad
@@ -147,30 +178,59 @@ def convert_episode(
     machine: MachineMap,
     *,
     slots: tuple[int, ...],
-    hz: float,
     chunk_size: int,
     phase_mode: str,
+    resample_hz: float | None = None,
 ) -> dict[str, np.ndarray]:
-    """Build the H5 payload for one episode (caller writes it)."""
+    """Build the H5 payload for one episode (caller writes it).
+
+    Default timeline is ``frames = beats``: the state series is the measured
+    pose at each beat's start, the increments are the per-beat motions, and the
+    phase comes straight off the per-beat scoop truth — the same quantities the
+    deployment loop reproduces one beat at a time. ``resample_hz`` opts into a
+    uniform grid (linear interpolation; scoop step-held).
+    """
     if tuple(episode.joint_names) != machine.joint_order:
         raise ValueError(
             f"episode joint order {episode.joint_names} != machine order {machine.joint_order}"
         )
-    # Native timeline: state after each beat, plus the initial pose at t=0.
-    times = np.concatenate(
-        [[0.0], np.cumsum(np.asarray(episode.beat_seconds, dtype=np.float64))]
-    )
-    native = np.vstack([episode.joints_before[:1], episode.joints_after])  # (T+1, 4)
-    scoop = np.concatenate([[False], np.asarray(episode.scoop, dtype=bool)])
-    grid = np.arange(0.0, times[-1] + 1e-9, 1.0 / hz)
+    # Poses along the native timeline: initial pose + the measurement after each beat.
+    poses = np.vstack([episode.joints_before[:1], episode.joints_after])  # (T+1, 4)
+    scoop_frames = np.asarray(episode.scoop, dtype=bool)  # (T,)
 
-    native_u = _resample(times, native, grid)  # (N, 4) native units
-    scoop_u = _hold_resample(times, scoop.astype(np.float64), grid) > 0.5
+    if resample_hz is None:
+        frames_native = poses[
+            : len(scoop_frames)
+        ]  # (T, 4): frame t = pose at beat t's start
+        extra_tail = poses[
+            len(scoop_frames) :
+        ]  # keeps the last beat's motion in the diffs
+        scoop_used = scoop_frames
+    else:
+        times = np.concatenate(
+            [[0.0], np.cumsum(np.asarray(episode.beat_seconds, dtype=np.float64))]
+        )
+        grid = np.arange(0.0, times[-1] + 1e-9, 1.0 / float(resample_hz))
+        frames_native = _resample(times, poses, grid)  # (N, 4)
+        extra_tail = np.empty((0, poses.shape[1]))
+        scoop_used = (
+            _hold_resample(
+                times, np.concatenate([[False], scoop_frames]).astype(np.float64), grid
+            )
+            > 0.5
+        )
 
-    joint_rad = np.empty_like(native_u)
+    joint_rad = np.empty_like(frames_native)
     for column, name in enumerate(machine.joint_order):
         jmap = machine.joints[name]
-        joint_rad[:, column] = [jmap.to_policy(value) for value in native_u[:, column]]
+        joint_rad[:, column] = [
+            jmap.to_policy(value) for value in frames_native[:, column]
+        ]
+    tail_rad = np.empty_like(extra_tail)
+    for column, name in enumerate(machine.joint_order):
+        jmap = machine.joints[name]
+        tail_rad[:, column] = [jmap.to_policy(value) for value in extra_tail[:, column]]
+    diffs = np.diff(np.vstack([joint_rad, tail_rad]), axis=0)  # (frames, 4)
 
     length = joint_rad.shape[0]
     state = np.zeros((length, 35), dtype=np.float32)
@@ -187,12 +247,13 @@ def convert_episode(
         dtype=np.float32,
     )
     goal = np.tile(goal_row, (length, 1))
-    phase = (
-        _phase_from_scoop(scoop_u)
-        if phase_mode == "scoop"
-        else _phase_from_time(length)
-    )
-    chunks, pad = _action_chunks(joint_rad, chunk_size)
+    if phase_mode == "two":
+        phase = _phase_from_two(scoop_used)
+    elif phase_mode == "scoop":
+        phase = _phase_from_scoop(scoop_used)
+    else:
+        phase = _phase_from_time(length)
+    chunks, pad = _action_chunks(diffs, length, chunk_size)
     return {
         "observations/state": state,
         "actions/joint_increment": chunks,
@@ -247,6 +308,10 @@ def main(argv: list[str] | None = None) -> None:
     kept = 0
     skipped: Counter[str] = Counter()
     phases_seen: Counter[int] = Counter()
+    travel_deg: list[np.ndarray] = []
+    step_p999: list[np.ndarray] = []
+    limits_min: np.ndarray | None = None
+    limits_max: np.ndarray | None = None
     for path in files:
         episode = Episode.read_npz(path)
         if not (episode.scoop.any() and not episode.scoop[-1]):
@@ -260,9 +325,9 @@ def main(argv: list[str] | None = None) -> None:
                 episode,
                 machine,
                 slots=slots,
-                hz=float(args.hz),
                 chunk_size=int(args.chunk_size),
                 phase_mode=args.phase_mode,
+                resample_hz=args.resample_hz,
             )
         except ValueError as exc:
             skipped[f"{exc}"] += 1
@@ -272,6 +337,9 @@ def main(argv: list[str] | None = None) -> None:
             "source": "jiuwen_agx_agx365",
             "source_episode": path.name,
             "control_frequency": float(args.hz),
+            "timeline": "beats"
+            if args.resample_hz is None
+            else f"uniform_{float(args.resample_hz):g}hz",
             "chunk_size": int(args.chunk_size),
             "history_length": 10,
             "machine": machine.machine,
@@ -279,18 +347,74 @@ def main(argv: list[str] | None = None) -> None:
             "calibrated": int(machine.calibrated),
             "unit_joint_increment": "deg",
             "unit_state_joint_slots": "deg",
+            "phase_mode": args.phase_mode,
             "created_at": dt.datetime.now().isoformat(timespec="seconds"),
         }
         _write_h5(out_dir / name, payload, attrs)
         phases_seen.update(int(p) for p in np.unique(payload["phase"]))
+        joint_deg = np.rad2deg(payload["joint_rad"]).astype(np.float64)
+        increments = np.abs(payload["actions/joint_increment"]).astype(np.float64)
+        travel_deg.append(np.abs(np.diff(joint_deg, axis=0)).sum(axis=0))
+        step_p999.append(
+            np.percentile(increments.reshape(-1, increments.shape[-1]), 99.9, axis=0)
+        )
+        low, high = joint_deg.min(axis=0), joint_deg.max(axis=0)
+        limits_min = low if limits_min is None else np.minimum(limits_min, low)
+        limits_max = high if limits_max is None else np.maximum(limits_max, high)
         kept += 1
 
-    print(f"[convert] dataset: {out_dir}  episodes: {kept}  (from {len(files)} npz)")
+    timeline = (
+        "beats"
+        if args.resample_hz is None
+        else f"uniform_{float(args.resample_hz):g}hz"
+    )
+    print(
+        f"[convert] dataset: {out_dir}  episodes: {kept}  (from {len(files)} npz)  "
+        f"timeline={timeline} phase_mode={args.phase_mode}"
+    )
     if skipped:
         print("[convert] skipped:")
         for reason, count in skipped.most_common():
             print(f"      {count:4d}  {reason}")
     print(f"[convert] phases seen: {dict(sorted(phases_seen.items()))}")
+    if kept and limits_min is not None and limits_max is not None:
+        # Their training config must adopt AGX beat-scale values or the closed
+        # loop stalls: their inference clips every step to config
+        # max_joint_step_deg (the current checkpoints declare ~2.5 deg), while
+        # our beats legitimately travel up to ~20+ deg per joint.
+        step_cap = np.ceil(np.median(np.stack(step_p999), axis=0) * 2.0) / 2.0
+        suggested = {
+            "machine": machine.machine,
+            "from_dataset": str(out_dir),
+            "timeline": timeline,
+            "note": (
+                "重训时请把 configs/<machine>.json 的这两组值设为本文件输出："
+                "joint_limits_deg=数据实际角域（要余量自行外扩）；max_joint_step_deg="
+                "每拍运动 p99.9 向上取整到 0.5°（步长设小：推理端每步 clip，偏小会把"
+                "部署循环压慢数倍；偏大则失去保护）。"
+            ),
+            "joint_limits_deg": np.stack([limits_min, limits_max], axis=1)
+            .round(1)
+            .tolist(),
+            "max_joint_step_deg": step_cap.round(1).tolist(),
+            "cycle_travel_deg_p50": np.median(np.stack(travel_deg), axis=0)
+            .round(0)
+            .tolist(),
+        }
+        suggested_path = out_dir / "suggested_config.json"
+        suggested_path.write_text(
+            json.dumps(suggested, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"[convert] suggested AGX365 config -> {suggested_path}")
+        print(f"[convert]   joint_limits_deg     = {suggested['joint_limits_deg']}")
+        print(f"[convert]   max_joint_step_deg   = {suggested['max_joint_step_deg']}")
+        print(
+            f"[convert]   cycle travel p50 (deg/joint) = {suggested['cycle_travel_deg_p50']}"
+        )
+        print(
+            "[convert]   现 ckpt 的 max_joint_step_deg 是他们的 IK 步长（~2.5°/步），"
+            "按它部署会把循环压到 1/8 步速；重训必须采用上面的建议值"
+        )
     if not machine.calibrated:
         print(
             "[convert] NOTE: uncalibrated dry run — regenerate after calibration before training"

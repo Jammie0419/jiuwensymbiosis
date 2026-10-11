@@ -160,14 +160,20 @@ LLM 编排全部不动。** 这就是接缝先行的意义——小脑组的任�
 | 我们的字段 | 他们的字段 | 转换规则 |
 | --- | --- | --- |
 | `joints_before/after`（原生单位：swing 弧度 + 三缸米；到位节拍） | `observations/state[:, 6:10]`（**度**）+ `joint_rad`（弧度） | 经 machine 文件换算；**未标定默认拒绝**（fail-closed，防米当角污染） |
-| 拍序列（到位节拍） | 固定 10 Hz 等间隔 | 逐关节线性重采样 |
-| 相邻帧差分 | `actions/joint_increment` (T,16,4) | 16 步滑窗 + pad；**写成度**（他们的 99% 分位>0.5 嗅探在两极幅度下都判度；另写 `annotations/unit_joint_increment="deg"` 备改显式） |
+| 拍序列（到位节拍） | **拍 = 帧**（`timeline=beats`，control_frequency=10 名义） | 不重采样（他们的训练帧本就是受 max_joint_step 限幅的"步"，与我们"拍"同构；重采样到细粒度会让部署循环数千拍跑不完）。`--resample-hz` 可选显式等间隔 |
+| 相邻拍差分 | `actions/joint_increment` (T,16,4) | 16 步滑窗 + pad；**写成度**（他们的 99% 分位>0.5 嗅探在两极幅度下都判度；另写 `annotations/unit_joint_increment="deg"` 备改显式） |
 | `goal` 4 个地面坐标 | `annotations/goal` + `goal` (T,6) | z 取 machine 文件 `pick_z_m/dump_z_m`；他们现有载入器仍 FK 伪推断，直读需下方任务② |
-| `scoop` 载料真值 | `phase` (T,) 0..7 | 未载料段四等分 0..3、载料段 4/5、末帧 6、卸载后 7（`--phase-mode time` 兜底） |
+| `scoop` 载料真值 | `phase` (T,)，默认 **two 模式：未载料→2、载料→4** | 与部署适配器的相位估计**同源**（train/inference 一致性优先）；`--phase-mode scoop` 给 0..7 自然分段，`time` 为时间八等分兜底 |
 | 成功判据（装料后卸掉） | —— | 不完整循环整条剔除，计入 `skipped` |
 
 转换器实测：`run_all` 112 条 → **103 条**（跳过 9 条不完整），他们自己的
-`infer_real_episode` 载入器 **103/103 直读通过**。
+`infer_real_episode` 载入器 **103/103 直读通过**（拍=帧时间轴、two 相位模式）。
+
+转换器同时导出 **`suggested_config.json`**（joint_limits_deg=数据实际角域、
+max_joint_step_deg=每拍运动 p99.9）——**他们重训时的 config 必须采用这组值**：
+他们的推理端把每一步 clip 到 config 的 `max_joint_step_deg`（现 ckpt 是 IK 步长
+~2.5°/步），而我们的"拍"合法行程可达 20°+/拍；沿用旧值会把部署循环压慢数倍
+（我们的执行循环每拍重观测、每次预测只走一步）。
 
 ### 8.4 小脑组任务清单（按依赖排序）
 
