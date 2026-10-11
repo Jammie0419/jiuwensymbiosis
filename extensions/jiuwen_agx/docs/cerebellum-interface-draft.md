@@ -182,8 +182,12 @@ max_joint_step_deg=每拍运动 p99.9）——**他们重训时的 config 必须
    **或**直接吃 §8.3 转换数据微调——那之前需先完成第 3 项的标定；
 2. **real 载入器小补丁**（几行）：`annotations/goal`、`annotations/phase`
    存在时直读（现在只会从 FK/液压电流推断伪标签）；
-3. **标定协作**（AGX license 恢复后，半天）：与我们共同扫三缸全行程 + 齿尖
-   记录，填 `machine_agx365.json` 的 `calibrated: true`；
+3. **标定协作**（AGX license 恢复后，约半天）：按 `scripts/agx_machine_fit.py`
+   的采样格式（每缸 ≥5 点扫行程 + 齿尖在策略系坐标，见该脚本 docstring）记录
+   采样 JSON → 拟合（median 残差 ≤0.05m 才判过）→ 输出 `calibrated: true` 的
+   `machine_agx365.json` 与**建议给他们的 `links_m`**（进他们 config 的
+   geometry_signature，会强制重造数据重训）。拟合器已带合成自测
+   （`--selftest` 与 pytest 往返恢复），license 恢复后只需补"扫缸记录"这一环；
 4. **修推理交付**：`.venv` 坏链（指向 `D:\anaconda\...`）修复或给
    requirements；确认 `src/act_trajectory` 可被外部 import（yaml `src:` 路径引用）；
 5. **补位移↔角多项式逆映射**（`agx_adapter_hydraulic.py` 未实现；我们侧
