@@ -23,3 +23,5 @@ agx_scene_report.json
 
 # AGX extension: recorded demonstrations & datasets (never commit training data)
 extensions/jiuwen_agx/data/
+# training run artifacts (checkpoints/smoke outputs — large binaries, regenerable)
+extensions/jiuwen_agx/outputs/
