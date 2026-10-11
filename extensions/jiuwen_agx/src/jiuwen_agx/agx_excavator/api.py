@@ -133,7 +133,13 @@ class AgxExcavatorApi(SimMachineApi):
         }
 
         def observe() -> dict[str, Any]:
-            return {"joints": driver.get_joint_positions(), "goal": dict(goal)}
+            # ``scoop`` is the body's measured carry truth: the goal-act-v2
+            # adapter consumes it for phase estimation; other policies ignore it.
+            return {
+                "joints": driver.get_joint_positions(),
+                "goal": dict(goal),
+                "scoop": bool(driver.scoop_state()),
+            }
 
         try:
             policy = self._get_policy(cfg)

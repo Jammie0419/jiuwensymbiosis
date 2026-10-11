@@ -1,0 +1,55 @@
+{
+  "_doc": "每机器标定文件（三层分离的机器层）：policy_goal_act.py 适配器与 lerobot_to_goalact_h5.py 转换器共用。calibrated=false 时只可用于 mock 链路干跑（预测无意义），转换器默认拒绝。标定方法：桥接把三个 Prismatic 各扫全行程并记录（位移,位形）→ 拟合 min/max（或 poly_coeffs）；swing 用 sign/offset 校零。模板数值抄自小脑组 agx_mapping.json 的占位值，不是 AGX 365 实测。",
+  "machine": "agx_excavator_365",
+  "calibrated": false,
+  "policy_joint_order": ["swing", "boom", "arm", "bucket"],
+  "pick_z_m": 0.0,
+  "dump_z_m": 0.0,
+  "joints": [
+    {
+      "name": "swing",
+      "native_unit": "rad",
+      "sign": 1,
+      "offset_rad": 0.0
+    },
+    {
+      "name": "boom",
+      "native_unit": "m",
+      "sign": 1,
+      "offset_rad": 0.0,
+      "hydraulic_conversion": {
+        "min_displacement_m": 0.5,
+        "max_displacement_m": 1.5,
+        "min_angle_deg": -35.0,
+        "max_angle_deg": 75.0,
+        "poly_coeffs": null
+      }
+    },
+    {
+      "name": "arm",
+      "native_unit": "m",
+      "sign": 1,
+      "offset_rad": 0.0,
+      "hydraulic_conversion": {
+        "min_displacement_m": 0.5,
+        "max_displacement_m": 1.3,
+        "min_angle_deg": -120.0,
+        "max_angle_deg": 20.0,
+        "poly_coeffs": null
+      }
+    },
+    {
+      "name": "bucket",
+      "native_unit": "m",
+      "sign": 1,
+      "offset_rad": 0.0,
+      "hydraulic_conversion": {
+        "min_displacement_m": 0.5,
+        "max_displacement_m": 1.2,
+        "min_angle_deg": -120.0,
+        "max_angle_deg": 60.0,
+        "poly_coeffs": null
+      }
+    }
+  ]
+}

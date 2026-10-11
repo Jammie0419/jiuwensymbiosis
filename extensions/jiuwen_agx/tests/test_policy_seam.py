@@ -70,8 +70,16 @@ class _StubDriver:
         return dict(self._joints)
 
     def scoop_state(self) -> bool:
+        """Scripted truth indexed by completed MOVES, not by call count.
+
+        The runner legitimately reads the truth more than once per beat (a
+        precondition probe, an observation for the policy, the transition
+        check), and that read count is an implementation detail — indexing by
+        ``len(self.moves)`` keeps a scripted False->True->False cycle pinned to
+        the moves, so the script and its beat expectations stay stable.
+        """
         if self._scoop_script:
-            return self._scoop_script.pop(0)
+            return self._scoop_script[min(len(self.moves), len(self._scoop_script) - 1)]
         return False
 
     def mark_scoop(self, loaded: bool) -> None:
@@ -199,7 +207,10 @@ class TestCapabilityGating:
         # builds do not trip the capability-mismatch alarm (the env side never
         # declares it either; the tool gate outcome is identical).
         assert "policy.act" not in _api(AgxExcavatorConfig()).capabilities
-        assert "policy.act" in _api(AgxExcavatorConfig(policy={"name": "fake"})).capabilities
+        assert (
+            "policy.act"
+            in _api(AgxExcavatorConfig(policy={"name": "fake"})).capabilities
+        )
 
     def test_session_builder_respects_the_gate(self):
         gated = build_agx_excavator_session.from_dict({})
@@ -259,9 +270,9 @@ class TestActExec:
         # -- register a scripted policy for this test only
         POLICIES["test_chunk"] = _ChunkPolicy
         try:
-            # script slot 0 is consumed by the shared precondition check
-            # (bucket must be clear to start); beats 1-5 then walk
-            # False → False → True → True → False = one full scooped cycle.
+            # Scoop truth is indexed by completed moves (see _StubDriver): the
+            # precondition and the observation both see slot 0; moves 1..5 then
+            # walk False → False → True → True → False = one full scooped cycle.
             driver = _StubDriver(scoop_script=[False, False, False, True, True, False])
             api = _api(
                 self._cfg({"name": "test_chunk", "chunk": 4}, policy_max_beats=50),

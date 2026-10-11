@@ -57,6 +57,7 @@ register_actions(DIG, GET_TERRAIN, ACT_EXECUTE)
 from jiuwen_agx import (
     policy,  # noqa: F401
     policy_act,  # noqa: F401
+    policy_goal_act,  # noqa: F401
     sim,  # noqa: F401
 )
 
