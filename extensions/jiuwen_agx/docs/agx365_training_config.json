@@ -1,0 +1,80 @@
+{
+  "seed": 42,
+  "control_frequency": 10.0,
+  "chunk_size": 16,
+  "history_length": 10,
+  "state_dim": 35,
+  "joint_state_indices": [6, 7, 8, 9],
+  "links_m": [7.8, 3.6, 2.2733],
+  "geometry": {
+    "machine": "AGX365",
+    "model": "openplx_measured_planar_3link",
+    "frame": "idealized_boom_pivot",
+    "calibrated": true,
+    "bucket_length_source": "OpenPLX 365_model.openplx: Bucket.BucketHinge_mc -> cutting-edge midpoint = 2.2733 m",
+    "nominal_length_source": "AGX OpenPLX export, geometric scan 2026-10-12 (boom/arm are pin-to-pin distances)",
+    "source_url": ""
+  },
+  "real_data": {
+    "machine": "AGX365"
+  },
+  "joint_limits_deg": [
+    [-177.5, 177.6],
+    [11.4, 44.4],
+    [-129.0, -46.1],
+    [-74.1, 3.5]
+  ],
+  "max_joint_step_deg": [17.5, 3.0, 6.5, 8.5],
+  "workspace": {
+    "pick_radius_m": [9.4, 10.6],
+    "pick_angle_deg": [-180.0, 180.0],
+    "pick_z_m": [-3.1, -2.1],
+    "place_radius_m": [7.2, 9.2],
+    "place_angle_deg": [-180.0, 180.0],
+    "place_z_m": [-2.7, -1.4]
+  },
+  "generator": {
+    "episodes": 1000,
+    "max_steps_per_waypoint": 100,
+    "position_tolerance_m": 0.08,
+    "damping": 0.08,
+    "noise_std_deg": 0.04,
+    "real_start_probability": 0.0,
+    "tool_pitch_deg": [-25, -35, 15, -10, -10, -15, -55, -25]
+  },
+  "model": {
+    "hidden_dim": 256,
+    "nheads": 8,
+    "encoder_layers": 4,
+    "dropout": 0.1,
+    "phase_count": 8,
+    "goal_feature_dim": 13
+  },
+  "loss": {
+    "joint_weights": [3.0, 1.0, 1.0, 1.0],
+    "action_weight": 1.0,
+    "fk_trajectory_weight": 0.5,
+    "acceleration_weight": 0.05,
+    "jerk_weight": 0.01
+  },
+  "evaluation": {
+    "execute_steps": 1,
+    "pick_tolerance_m": 0.15,
+    "dump_tolerance_m": 0.20,
+    "max_episodes": 100
+  },
+  "training": {
+    "epochs": 50,
+    "batch_size": 128,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0001,
+    "num_workers": 0,
+    "val_ratio": 0.1
+  },
+  "finetune": {
+    "epochs": 20,
+    "batch_size": 64,
+    "learning_rate": 0.00003,
+    "synthetic_ratio": 0.3
+  }
+}

@@ -25,3 +25,5 @@ agx_scene_report.json
 extensions/jiuwen_agx/data/
 # training run artifacts (checkpoints/smoke outputs — large binaries, regenerable)
 extensions/jiuwen_agx/outputs/
+# local rehearsal/scratch copies (e.g. patched cerebellum repo) — never commit
+extensions/jiuwen_agx/work/

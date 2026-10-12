@@ -6,9 +6,14 @@
 > 看不懂的术语先翻 §5「名字对照表」——两边叫法不一样，这是之前读不懂的根源。
 > 要动手改代码/写脚本的，看 §8 附录（完整字段表、标定文件、红线）。
 
-**现在的最短结论**：数据早就采好了（103 条），转换格式也通了（小脑组载入器
-实测 103/103 直读）；剩下三件：① 换一把"量尺"（标定，等 AGX 许可证）；
-② 小脑组加 6 行代码让训练用上大脑组写入的目标和相位；③ 小脑组重训模型。
+**现在的最短结论（2026-10-12 更新）**：量尺**已经标定好**（纯几何扫描，不等许可证），
+数据也已用真尺重转（103 条，`data/goalact_h5/run_all_calibrated`，`calibrated=1`，
+可直接训练）；交接物齐了——载入器补丁（`docs/patches/goalact_loader_read_annotations.patch`，
+已在本机副本验证可干净应用）、AGX365 训练配置样例（`docs/agx365_training_config.json`，
+已过小脑组 `validate_geometry` / `check_real_machine` / `Kinematics` 三道校验）、
+建议配置数字（同目录 `suggested_config.json`）。剩下两件：
+① 小脑组应用补丁 + 建配置 + 用新数据重训；② 大脑组接入 + 10 点验收。
+实机复核项（§4.4）挂起等许可证恢复，**不阻塞重训**。
 
 ---
 
@@ -68,14 +73,14 @@
 
 ### 2.2 小脑组训练用的：同一条循环 = 一个 h5 文件（120 帧，帧=拍）
 
-文件：`episode_000000.h5`（由上面那条 npz 转出来的；转换见 §3）
+文件：`episode_000000.h5`（由上面那条 npz 转出来的；转换见 §3。下表是**真尺版**数字）
 
 | 字段 | 形状 | 真实样例 |
 |---|---|---|
-| `observations/state` | (120, 35) | 帧 0 的第 6~9 列 = `[-0.0, -91.1, -207.5, -248.7]`；帧 47 = `[108.1, -99.4, -247.7, -421.9]`——**度**（其余 31 列全 0） |
-| `actions/joint_increment` | (120, 16, 4) | 帧 0 的第 0 行 = `[4.842, 0.904, -0.002, 0.09]`：**第 0 拍这一拍里，四个关节各动了多少（度）**；再往下 15 行是未来 15 拍的 |
+| `observations/state` | (120, 35) | 帧 0 的第 6~9 列 = `[-0.0, 23.2, -89.0, -62.8]`；帧 47 = `[108.1, 19.4, -77.5, -5.7]`——**度**（其余 31 列全 0） |
+| `actions/joint_increment` | (120, 16, 4) | 帧 0 的第 0 行 = `[4.842, 0.417, 0.001, -0.037]`：**第 0 拍这一拍里，四个关节各动了多少（度）**；再往下 15 行是未来 15 拍的 |
 | `annotations/phase` | (120,) | 帧 0 = **2**（还没装土）；帧 47 = **4**（装上了，该去卸了） |
-| `annotations/goal` | (120, 6) | `[-1.74, 5.34, 0.0, 1.90, 5.46, 0.0]` = 挖点 xyz + 卸点 xyz（米） |
+| `annotations/goal` | (120, 6) | `[-1.74, 5.34, -2.485, 1.90, 5.46, -1.564]` = 挖点 xyz + 卸点 xyz（米，z 是动臂铰点系） |
 | `annotations/valid` | (120,) 真假 | 有效帧（大脑组全填"真"） |
 
 ### 2.3 对应关系记住三句话就够
@@ -90,22 +95,22 @@
 
 ## 3. 转换怎么转的（7 步，用拍 47 走一遍）
 
-用拍 47 的真实数字（`before = [1.886, -0.085, -0.23, -0.674]`）：
+用拍 47 的真实数字（`before = [1.886, -0.085, -0.23, -0.674]`；已完成标定，下表即真值）：
 
 | 步骤 | 做什么 | 拍 47 的结果 |
 |---|---|---|
 | 1 | **对齐时间轴**：不重采样。大脑组的"拍"就是小脑组的"帧"，1 拍 = 1 帧 | 拍 47 → 帧 47 |
-| 2 | **单位换算**（用"标定文件"这一把尺，全局唯一换算点） | swing：`1.886 弧度 ×57.3 = 108.1 度`；boom：`-0.085 米 → -99.4 度`（**注**：现在这把尺是占位值，标定后数字会变，机制不变） |
-| 3 | **写状态**：35 列的矩阵全填 0，只把 4 个角度放进第 6~9 列 | `state[47] = [0,0,...,0, 108.1, -99.4, -247.7, -421.9, 0,...]` |
-| 4 | **生成增量**：把每拍的位形变化算出来，从每一帧起存"未来 16 拍"的 | 拍 0：`after−before = [0.0845, 0.0082, ...] → [4.842, 0.904, ...] 度` |
+| 2 | **单位换算**（用"标定文件"这一把尺，全局唯一换算点） | swing：`1.886 弧度 ×57.3 = 108.1 度`；boom：`-0.085 米 → 19.4 度`；arm：`-0.23 米 → -77.5 度`；bucket：`-0.674 米 → -5.7 度` |
+| 3 | **写状态**：35 列的矩阵全填 0，只把 4 个角度放进第 6~9 列 | `state[47] = [0,0,...,0, 108.1, 19.4, -77.5, -5.7, 0,...]` |
+| 4 | **生成增量**：把每拍的位形变化算出来，从每一帧起存"未来 16 拍"的 | 拍 0：`after−before = [0.0845, 0.0082, ...] → [4.842, 0.417, 0.001, -0.037] 度` |
 | 5 | **写相位**：看载料真值，没装土写 2、装上了写 4 | 拍 47 装上了 → `phase[47] = 4` |
-| 6 | **写目标**：挖点/卸点补上地面高度（z）变成 6 个数，铺满 120 帧 | `[-1.74, 5.34, 0, 1.90, 5.46, 0]` |
-| 7 | **收尾**：写文件属性（单位、时间轴、标定状态…），顺带导出小脑组训练配置要用的建议值 `suggested_config.json` | — |
+| 6 | **写目标**：挖点/卸点补上实测的齿尖高度（z）变成 6 个数，铺满 120 帧 | `[-1.74, 5.34, -2.485, 1.90, 5.46, -1.564]`（z 取 112 条实测在装载/卸载时刻的齿尖高度中位，动臂铰点系） |
+| 7 | **收尾**：写文件属性（单位、时间轴、标定状态=1…），顺带导出训练配置要用的建议值 `suggested_config.json` | — |
 
 > 为什么单位换算要先"标定"：AGX 原生数据说"缸伸出 0.085 米"，小脑组模型的世界说
-> "臂转了 -99 度"——米变度靠一把尺量出来（在 AGX 里扫一遍缸、量齿尖）。
-> 现在用的是估的尺，所以产出的文件标记"未标定、禁止训练"。
-> **尺一量好，原数据重新转一遍（几分钟，一条命令），数字就都是真值了。**
+> "臂转了 19.4 度"——米变度靠一把尺量出来。**这把尺已经量好了**：用模型自身的机构
+> 几何（铰点、缸锚点）纯几何扫描 + 112 条实采数据回放做物理自检（`scripts/calibrate_agx365.py`，
+> 不需要 AGX 许可证）；产出的换算文件 `calibrated: true`，转换器直接放行。
 
 ---
 
@@ -118,44 +123,59 @@
 - 时间轴（拍=帧）、单位（状态用度、增量写度，小脑组载入器的自动识别实测正确）；
 - 相位和目标的设计（2/4 规则、6 维目标）。
 
-### 4.2 还不对的三处（都有明确的修复办法）
+### 4.2 三处的现状（2026-10-12：全部闭环）
 
-**① 量尺还是占位值（值不对）**
-- 现状：换算文件 `calibrated: false`——现在 h5 里所有的"度"都是估的；
-- 后果：小脑组训练里的"末端轨迹一致性"损失和自评都用自己的几何公式算——
-  尺不对，这些信号算出来就是错的；训出的模型将来在 AGX 上的动作换算会系统性偏；
-- 修复：**等 AGX 许可证 → 大脑组扫缸标定（半天）→ 重新转换（几分钟）**。
-  原始 103 条采集原样复用，不用重采。
+**① 量尺——已标定（完成，不等许可证）**
+- 真尺：`configs/machine_agx365.json`（`calibrated: true`），纯几何扫描生成
+  （`scripts/calibrate_agx365.py`：解析 AGX 导出的 OpenPLX 文本 → 四连杆闭环扫缸 →
+  112 条实采数据回放做物理自检选符号；**不需要 AGX 许可证**）；
+- 结果要点：boom/arm/bucket 用 poly5 换算表（bucket 线性误差 13°→0.11°）；
+  `pick_z=-2.485 / dump_z=-1.564 m`（动臂铰点系）；swing 零位=原生读数（待实机复核，见 §4.4）；
+- 数据已重转：**`data/goalact_h5/run_all_calibrated`（103 条，`calibrated=1`，可直接训练）**；
+  占位版干跑 `run_all_dryrun` 保留作对照，不再使用。
 
-**② 小脑组载入器暂时不读大脑组写入的"目标和相位"（行为没对齐）**
-- 现状：`annotations/goal`、`annotations/phase` 这两列会被**静默忽略**——
-  小脑组训练时会用公式反推的近似目标 + 时间平分的相位（和大脑组部署时给的 2/4 不一样）；
-- 后果：训练时见到的条件和部署时给的条件不是一回事，性能打折；
-- 修复：小脑组加约 **6 行代码**优先读这两列（样例在本文档 §8.4，可直接粘贴）。
+**② 小脑组载入器补丁——已成文（一条命令应用）**
+- 补丁：`docs/patches/goalact_loader_read_annotations.patch`（对你们
+  `src/act_trajectory/data.py` 的完整 diff；已在本机副本实测：干净应用后
+  `phase` 读到 2/4、`goal` 六个数字与标注一致；无标注的数据仍走原逻辑）；
+- 这个文件替代了旧版本文档里的"6 行代码样例"（§8.4 保留说明）。
 
-**③ 小脑组的 AGX365 训练配置还没建（参数没填）**
-- 需要填四个值：三段臂长（=大脑组标定结果）、关节活动范围（=数据实际范围）、
-  每步动作上限（=大脑组导出的建议值）、机器名（两处写成同一个字符串）；
-- 不填的后果：前两个不对，程序**直接拒绝加载数据**；动作上限沿用旧值，
-  部署跑起来会慢好几倍；
-- 修复：拿大脑组标定后的数字建一份配置（小脑组的活，半小时）。
+**③ AGX365 训练配置——样例已备好**
+- 文件：`docs/agx365_training_config.json`（已过你们的 `validate_geometry` /
+  `check_real_machine` / `ExcavatorKinematics` 三道校验；键集与你们 `config.json` 完全一致）；
+- 关键值：`links_m [7.8, 3.6, 2.2733]`；`joint_limits_deg` / `max_joint_step_deg`
+  取 `run_all_calibrated/suggested_config.json` 实测值；`workspace` 是按大脑组数据
+  实测推导的建议值（合成数据用，可调）；机器名两处统一为 `"AGX365"`。
 
 ### 4.3 还缺什么（一条线）
 
 ```
-AGX 许可证（外部）
-  → ① 标定（大脑组，半天）
-  → ② 重新转换 + 导出建议配置（大脑组，几分钟）
-  → ③ 小脑组建配置 + 加 6 行代码 + 用大脑组的数据重训（小脑组的关键路径）
-  → ④ 大脑组接入 + 10 个留出点验收（脚本现成，≥7 通过）
+大脑组 ✅：纯几何标定 → 真尺 → 重转数据（run_all_calibrated）→ 补丁/配置样例/本文档
+  → ① 小脑组：应用补丁 + 建 AGX365 配置 + 用 run_all_calibrated 重训（关键路径）
+  → ② 小脑组先过自己的闭环自测（pick 0.15 / dump 0.20 m 容差）
+  → ③ 大脑组接入 + 10 个留出点验收（脚本现成，≥7 通过）
+  → ④（待许可证）实机复核 swing 零位 + 真桥接复测（§4.4）
 ```
 
-**明确不缺的**：数据（103 条早就采好）、格式（不用再改）、
-转换器/接入适配器/验收脚本（都已经建好并实测过）。
+**明确不缺的**：数据（103 条）、尺（已标定并重转）、格式、补丁、配置样例、
+接入适配器、验收脚本。
 
-**最大的不确定性不在格式**：小脑组现有的模型连其团队自己的测试都没过
+**最大的不确定性仍是模型质量**：小脑组现有的模型连其团队自己的测试都没过
 （官方评估里"挖到点/卸到点"都是 False，挖点偏差约 1.4 米、合格线 0.15 米）。
 格式和补丁解决"接得对"，模型质量解决"答得对"——后者要靠小脑组重训。
+
+### 4.4 待实机复核项（等 AGX 许可证；不阻塞现在重训）
+
+1. **swing 的世界系零位/符号**：本次纯几何标定有一个无法离线确定的量——
+   录制场景把机器摆在 world `(0,10,0)`，而目标点按**原点**环带采样；也就是说
+   目标点的**半径**在采集时并未被物理兑现（方向语义有效，半径从未核对过）。
+   机器文件里 `swing` 的 `offset_rad` 是唯一旋钮：许可证恢复后做一次
+   "驱动到已知位置、瞄准一个已知点、看齿尖落点方位"的核对即可；
+   若需修正，重转数据是分钟级。
+2. 桥接读一次三缸原生读数，对照 `configs/calibration/agx365_cylinders.json` 的扫描端点。
+3. 已知小项：swing 单帧增量 |Δ|>30° 的帧占 **0.26%**（505/197760，分布 19/103 条
+   episode）——录制数据自身的跨 ±180° 大回转，新旧数据集一致；你们 swing 周期
+   编码 + slew clip 可消化，知悉即可。
 
 ---
 
@@ -183,15 +203,17 @@ AGX 许可证（外部）
 ## 6. 双方各自要做什么
 
 **大脑组：**
-1. 等许可证恢复 → 扫缸标定（半天）→ 出正式的换算文件 + 三段臂长；
-2. 重新转换数据 + 导出建议配置 → 交给小脑组；
-3. 拿到新模型后：填一行配置、跑 10 点验收。
+1. ~~等许可证 → 扫缸标定~~ ✅ **已完成**（纯几何标定，不等许可证；真尺 + 重转数据 +
+   补丁 + 配置样例 + 本说明都已在仓库）；
+2. ~~重新转换数据 + 导出建议配置~~ ✅ 已交付（`data/goalact_h5/run_all_calibrated`）；
+3. 拿到新模型后：填一行配置、跑 10 点验收；
+4. （待许可证）实机复核 swing 零位（§4.4）。
 
 **小脑组：**
-1. 给载入器加 6 行代码（优先读大脑组写入的目标和相位）；
-2. 用大脑组导出的建议值 + 臂长建 AGX365 训练配置；
-3. 用大脑组交付的数据重训，**先过小脑组自己的闭环测试**（达到自己的合格线）
-   再交付 `.pt`；
+1. 应用补丁：`docs/patches/goalact_loader_read_annotations.patch`（一条命令，§7）；
+2. 用 `docs/agx365_training_config.json` 建 AGX365 配置（拷进你们的 `configs/` 即可）；
+3. 用大脑组交付的 `run_all_calibrated` 重训，**先过小脑组自己的闭环测试**
+   （pick 0.15 / dump 0.20 m 容差）再交付 `.pt`；
 4. （可选）让 `src` 目录可被外部引用（修 venv 或给 requirements）。
 
 **两队一起确认**："AGX 域数据由大脑组采集并交付"这个分工（本来就在三方对接
@@ -201,35 +223,48 @@ AGX 许可证（外部）
 
 ## 7. 照抄就能跑的命令
 
-**转换（大脑组跑）：**
+**转换（大脑组跑；已完成，留档）：**
 ```bash
 cd extensions/jiuwen_agx
 python scripts/lerobot_to_goalact_h5.py \
     --raw data/raw/run_all \
-    --machine data/machine_agx365.json \
-    --out data/goalact_h5/run_all
-# 标定前加 --allow-uncalibrated 只验证链路（产出会标记未标定，禁止拿去训练）
+    --machine configs/machine_agx365.json \
+    --out data/goalact_h5/run_all_calibrated
+```
+
+**标定（大脑组跑；已完成，留档）：**
+```bash
+python scripts/calibrate_agx365.py --data data/raw/run_all
+# 纯几何 + 数据回放自检；fail-closed，自检不过不写机器文件
+```
+
+**应用补丁（小脑组跑）：**
+```bash
+cd E:/AGX-2.42.2.1/act_trajectory/act_trajectory
+git apply -p1 --verbose <大脑组仓库>/extensions/jiuwen_agx/docs/patches/goalact_loader_read_annotations.patch
+# 没有 git 的副本用： patch -p1 -i <补丁路径>
 ```
 
 **训练（小脑组跑）：**
 ```bash
 python3 scripts/finetune_real.py \
-    --config configs/<AGX365 配置>.json \
+    --config configs/agx365.json \
     --synthetic <小脑组的合成数据.h5> \
-    --real-dir <大脑组交付的目录> \
+    --real-dir <大脑组交付的 run_all_calibrated 目录> \
     --resume outputs/act_pretrained.pt \
     --output outputs/act_agx365_v1.pt
 ```
 
-**自测（小脑组跑，不依赖 AGX）：**
+**自测（小脑组跑，不依赖 AGX；打补丁后应看到 phase 2/4 与真实 goal）：**
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'src')
 from pathlib import Path
 from act_trajectory.data import infer_real_episode
-cfg = json.loads(Path('configs/<配置>.json').read_text(encoding='utf-8'))
-s, g, ph, a, pad, v = infer_real_episode(Path('<目录>/episode_000000.h5'), cfg)
+cfg = json.loads(Path('configs/agx365.json').read_text(encoding='utf-8'))
+s, g, ph, a, pad, v = infer_real_episode(Path('<run_all_calibrated 目录>/episode_000000.h5'), cfg)
 print(s.shape, a.shape, ph[:5], g[0])"
+# 期望: (120, 35) (120, 16, 4) [2 2 2 2 2] [-1.742 5.342 -2.485 1.898 5.463 -1.564]
 ```
 
 **验收（大脑组跑，拿到模型后）：**
@@ -251,8 +286,8 @@ python scripts/act_acceptance.py \
 | `observations/state` | (T,35)；第 6~9 列**度**，其余 0 | 每帧的四关节状态 | ✅ **必需** |
 | `actions/joint_increment` | (T,16,4)；**度** | 未来 16 帧的每帧增量 | ✅ 可选但保留（缺了会用差分重算） |
 | `annotations/valid` | (T,) 真假 | 有效帧 | ✅ 可选（缺省全真） |
-| `annotations/goal` | (T,6)；米 | 精确的 pick/place xyz | ❌ 现在被忽略（§4.2②） |
-| `annotations/phase` | (T,)；2/4 | 相位标签 | ❌ 现在被忽略（§4.2②） |
+| `annotations/goal` | (T,6)；米 | 精确的 pick/place xyz | ✅ 打上 §8.4 补丁后优先读取（之前被忽略） |
+| `annotations/phase` | (T,)；2/4 | 相位标签 | ✅ 打上 §8.4 补丁后优先读取（之前被忽略） |
 | `annotations/action_pad`、`joint_rad`、`goal`、`phase` | — | 补零掩码/调试用副本 | ❌（保留无害） |
 
 文件属性：`timeline=beats`、`control_frequency=10`（名义）、`chunk_size=16`、
@@ -265,36 +300,48 @@ python scripts/act_acceptance.py \
 
 ### 8.2 标定文件（那把"尺"，训练和部署共用）
 
-模板：`configs/machine_agx365.template.json`；工作副本 `data/machine_agx365.json`。
-内容：四个关节的原生单位声明、swing 零位偏移、每缸"位移（米）↔ 角度（度）"映射、
-挖/卸点的地面高度。`calibrated` 字段只有变成真，转换器才接受（防污染训练数据）。
-标定方法：`scripts/agx_machine_fit.py`（文档头写了采样格式；拟合器带自测，
-残差超 0.05 米会拒绝出文件）——许可证恢复后半天完成。
+**真尺：`configs/machine_agx365.json`（`calibrated: true`，2026-10-12 交付）**；
+扫描原表 `configs/calibration/agx365_cylinders.json`（401 点 disp↔θ↔关节角）；
+schema 模板保留在 `configs/machine_agx365.template.json`。
+内容：四个关节的原生单位声明、swing 零位偏移、每缸"位移（米）↔ 角度（度）"的
+poly5 换算表、挖/卸点的齿尖高度。`calibrated` 字段只有变成真，转换器才接受。
+标定方法：`scripts/calibrate_agx365.py`（解析 AGX 导出的 OpenPLX 文本，纯几何，
+不需要许可证；四连杆闭环 + ψ 分支连续跟踪；符号由 112 条实采数据回放选定；
+自检含：销距一致性、臂长/四连杆尺寸对拍、装斗时刻齿尖高度）。
+注：旧文档提的 `scripts/agx_machine_fit.py`（桥接实测采样 → 拟合）保留，
+但其"每缸线性仿射"模型在全行程下表示不了 365 的曲柄滑块非线性
+（几何合成样本残差 0.227 m > 其 0.05 门）；如走桥接实测路线，需先给它升级多项式。
 
-### 8.3 五条一致性红线
+### 8.3 五条一致性红线（含 2026-10-12 自查）
 
-1. **换算只有一个来源**：米↔角度只走标定文件，训练和部署用同一份；
-2. **拍 = 步 = 帧**：不重采样、不二次切分；
-3. **相位同源**：训练标签和部署估计都是 2/4 规则；
-4. **目标语义**：挖点/卸点 = pick/place，同一对坐标；
+1. **换算只有一个来源**：米↔角度只走标定文件，训练和部署用同一份
+   —— ✅ 转换器与部署适配器都指向 `configs/machine_agx365.json`
+   （适配器 policy 节的 `machine:` 键指同一文件，示例见 `docs/cerebellum-interface-draft.md` §8.5）；
+2. **拍 = 步 = 帧**：不重采样、不二次切分 —— ✅ 转换器默认 `timeline=beats`；
+3. **相位同源**：训练标签和部署估计都是 2/4 规则 —— ✅ 转换器 `phase_mode=two`，
+   适配器 `phase_dig=2/phase_dump=4`；
+4. **目标语义**：挖点/卸点 = pick/place，同一对坐标 —— ✅ xy 原样用录制值；
+   z 为实测齿尖高度中位（§3 步骤 6 注明口径）；
 5. **关节顺序**：`swing, boom, arm, bucket` 三处一致（对不上大脑组的适配器
-   **直接报错**，不会默默出错）。
+   **直接报错**，不会默默出错）—— ✅ 数据/机器文件/适配器三处一致。
 
-### 8.4 供小脑组参考的 6 行代码（优先读大脑组写入的标注）
+### 8.4 载入器补丁（优先读大脑组写入的标注）
 
-在小脑组项目 `data.py` 的 `infer_real_episode` 里、现有的伪推断之前加：
+**补丁文件：`docs/patches/goalact_loader_read_annotations.patch`**（对你们
+`src/act_trajectory/data.py` 的真实 diff；应用命令见 §7；已在本机副本验证）。
+改动本质（等价于早前说的"6 行"）：
 
 ```python
-# 优先读大脑组写好的精确标注；没有才回退到原有的伪推断（原逻辑不动）
-if "annotations/goal" in f:
-    goal = np.asarray(f["annotations/goal"], dtype=np.float32)
-else:
-    ...  # 原有的 FK 极值伪推断
-if "annotations/phase" in f:
-    phase = np.asarray(f["annotations/phase"], dtype=np.int64)
-else:
-    ...  # 原有的液压阈值/时间八等分
+# infer_real_episode 里：读文件时顺带把两列标注读出来
+goal_annotation  = np.asarray(f["annotations/goal"],  dtype=np.float32) if "annotations/goal"  in f else None
+phase_annotation = np.asarray(f["annotations/phase"], dtype=np.int64)   if "annotations/phase" in f else None
+# 原来那两行改成"有标注用标注，没有回退原逻辑"
+goal  = goal_annotation  if goal_annotation  is not None else <原有 FK 极值伪推断>
+phase = phase_annotation if phase_annotation is not None else <原有液压阈值/时间八等分>
 ```
+
+打上之后，训练见到的目标/相位与大脑组部署时给的完全同源（phase 2/4、
+goal 六个数），这正是"训练条件和部署条件一致"的关键一步。
 
 ### 8.5 FAQ
 
@@ -314,9 +361,11 @@ else:
 | 采集器 | `extensions/jiuwen_agx/scripts/record_demos.py` | —（无需自建） |
 | 原始数据 | `extensions/jiuwen_agx/data/raw/run_all/*.npz` | — |
 | 转换器 | `extensions/jiuwen_agx/scripts/lerobot_to_goalact_h5.py` | — |
-| 训练数据（交接物） | `extensions/jiuwen_agx/data/goalact_h5/<run>/` | 拷去当 `--real-dir` |
-| 建议配置（交接物） | 同目录 `suggested_config.json` | 建进 `configs/<AGX365>.json` |
-| 标定 | `src/jiuwen_agx/machine_fit.py` + `scripts/agx_machine_fit.py` | 臂长用同一结果 |
+| 标定 | `extensions/jiuwen_agx/scripts/calibrate_agx365.py`（真尺见 `configs/machine_agx365.json`） | 臂长用同一结果 |
+| 训练数据（交接物） | `extensions/jiuwen_agx/data/goalact_h5/run_all_calibrated/`（calibrated=1） | 拷去当 `--real-dir` |
+| 建议配置（交接物） | 同目录 `suggested_config.json` | 建进 `configs/agx365.json` |
+| 配置样例（交接物） | `extensions/jiuwen_agx/docs/agx365_training_config.json` | 可直接拷进 `configs/` |
+| 载入器补丁（交接物） | `extensions/jiuwen_agx/docs/patches/goalact_loader_read_annotations.patch` | `git apply -p1` 应用到 `src/act_trajectory/data.py` |
 | 接入适配器 | `src/jiuwen_agx/policy_goal_act.py` | —（无需改） |
 | 验收 | `scripts/act_acceptance.py` | — |
 
@@ -329,4 +378,5 @@ else:
 ---
 
 *本文档由大脑组维护；所有字段名与行为都对照过双方代码。数字举例取自真实
-数据文件（ep_0000 循环）；标定完成后角度数值会变，结构不变。*
+数据文件（ep_0000 循环，真尺版）；§2.2 示例与 §3 走查对应
+`data/goalact_h5/run_all_calibrated/episode_000000.h5`。*

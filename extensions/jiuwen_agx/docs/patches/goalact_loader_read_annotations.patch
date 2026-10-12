@@ -1,0 +1,28 @@
+--- a/src/act_trajectory/data.py
++++ b/src/act_trajectory/data.py
+@@ -72,12 +72,23 @@
+             actions, pad = action_chunks(np.deg2rad(state[:, cfg["joint_state_indices"]]), cfg["chunk_size"])
+         valid = np.asarray(f["annotations/valid"], dtype=bool) if "annotations/valid" in f else np.ones(len(state), bool)
+         hydraulic = np.asarray(f["actions/hydraulic_current"][:, 0], dtype=np.float32) if "actions/hydraulic_current" in f else None
++        # brain-group exact annotations take precedence over the pseudo-inference below
++        goal_annotation = np.asarray(f["annotations/goal"], dtype=np.float32) if "annotations/goal" in f else None
++        phase_annotation = np.asarray(f["annotations/phase"], dtype=np.int64) if "annotations/phase" in f else None
+     kin = ExcavatorKinematics(cfg["links_m"], cfg["joint_limits_deg"], cfg["max_joint_step_deg"])
+     q = np.deg2rad(state[:, cfg["joint_state_indices"]]); xyz = np.stack([kin.forward(x) for x in q])
+     split = max(1, int(len(xyz) * .6)); pick_idx = int(np.argmin(xyz[:split, 2]))
+     dump_idx = split + int(np.argmax(xyz[split:, 2])) if split < len(xyz) else len(xyz) - 1
+-    goal = np.tile(np.r_[xyz[pick_idx], xyz[dump_idx]].astype(np.float32), (len(state), 1))
+-    phase = infer_phases_from_hydraulic(hydraulic) if hydraulic is not None else np.minimum(np.arange(len(state)) * 8 // max(len(state), 1), 7)
++    if goal_annotation is not None:
++        goal = goal_annotation
++    else:
++        goal = np.tile(np.r_[xyz[pick_idx], xyz[dump_idx]].astype(np.float32), (len(state), 1))
++    if phase_annotation is not None:
++        phase = phase_annotation
++    elif hydraulic is not None:
++        phase = infer_phases_from_hydraulic(hydraulic)
++    else:
++        phase = np.minimum(np.arange(len(state)) * 8 // max(len(state), 1), 7)
+     return state, goal, phase.astype(np.int64), actions, pad, valid
+ 
+ 
