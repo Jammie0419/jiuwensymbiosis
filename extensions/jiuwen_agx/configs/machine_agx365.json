@@ -1,0 +1,139 @@
+{
+  "_doc": "AGX 365 真尺（OpenPLX 纯几何扫描，scripts/calibrate_agx365.py 生成；符号由采集数据回放选定）。训练与部署共用本文件（五红线）。",
+  "machine": "agx_excavator_365",
+  "calibrated": true,
+  "policy_joint_order": [
+    "swing",
+    "boom",
+    "arm",
+    "bucket"
+  ],
+  "pick_z_m": -2.485055732370555,
+  "dump_z_m": -1.5643490370801874,
+  "joints": [
+    {
+      "name": "swing",
+      "native_unit": "rad",
+      "sign": 1,
+      "offset_rad": 0.0
+    },
+    {
+      "name": "boom",
+      "native_unit": "m",
+      "sign": 1.0,
+      "offset_rad": 0.0,
+      "hydraulic_conversion": {
+        "min_displacement_m": -0.7,
+        "max_displacement_m": 0.4,
+        "min_angle_deg": -10.9056,
+        "max_angle_deg": 45.5811,
+        "poly_coeffs": [
+          -10.905652,
+          56.354339,
+          -9.885992,
+          14.513363,
+          -8.314274,
+          3.818058
+        ]
+      }
+    },
+    {
+      "name": "arm",
+      "native_unit": "m",
+      "sign": 1.0,
+      "offset_rad": 0.0,
+      "hydraulic_conversion": {
+        "min_displacement_m": -0.88,
+        "max_displacement_m": 0.8,
+        "min_angle_deg": -41.4989,
+        "max_angle_deg": -136.3365,
+        "poly_coeffs": [
+          -41.534284,
+          -113.490294,
+          98.834164,
+          -163.178434,
+          139.382328,
+          -56.326653
+        ]
+      }
+    },
+    {
+      "name": "bucket",
+      "native_unit": "m",
+      "sign": 1.0,
+      "offset_rad": 0.0,
+      "hydraulic_conversion": {
+        "min_displacement_m": -1.0,
+        "max_displacement_m": 0.312,
+        "min_angle_deg": 18.6319,
+        "max_angle_deg": -104.5979,
+        "poly_coeffs": [
+          18.702747,
+          -104.833664,
+          53.871358,
+          -148.231859,
+          164.294935,
+          -88.287438
+        ]
+      }
+    }
+  ],
+  "links_m": [
+    7.8,
+    3.6,
+    2.2733
+  ],
+  "_calibration_details": {
+    "boom": {
+      "agx_reading_sign_vs_scan": 1.0,
+      "window_theta_deg": [
+        -21.8535,
+        34.6332
+      ],
+      "angle_at_stroke_ends_deg": [
+        -10.9056,
+        45.5811
+      ],
+      "linear_max_err_deg": 1.3214,
+      "poly_max_err_deg": 0.0013,
+      "poly_monotone": true,
+      "poly_increasing": true,
+      "poly_used": true,
+      "angle_increases_with_disp": true
+    },
+    "arm": {
+      "agx_reading_sign_vs_scan": 1.0,
+      "window_theta_deg": [
+        -47.5437,
+        47.2939
+      ],
+      "angle_at_stroke_ends_deg": [
+        -41.4989,
+        -136.3365
+      ],
+      "linear_max_err_deg": 3.4597,
+      "poly_max_err_deg": 0.0354,
+      "poly_monotone": true,
+      "poly_increasing": false,
+      "poly_used": true,
+      "angle_increases_with_disp": false
+    },
+    "bucket": {
+      "agx_reading_sign_vs_scan": 1.0,
+      "window_theta_deg": [
+        -81.4734,
+        41.7564
+      ],
+      "angle_at_stroke_ends_deg": [
+        18.6319,
+        -104.5979
+      ],
+      "linear_max_err_deg": 13.1823,
+      "poly_max_err_deg": 0.114,
+      "poly_monotone": true,
+      "poly_increasing": false,
+      "poly_used": true,
+      "angle_increases_with_disp": false
+    }
+  }
+}

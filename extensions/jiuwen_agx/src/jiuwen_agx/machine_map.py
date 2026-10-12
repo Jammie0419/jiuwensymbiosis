@@ -134,12 +134,20 @@ class JointMap:
                 )
             dn = (angle_deg - lo_a) / (hi_a - lo_a)
             return lo_d + dn * (hi_d - lo_d)
-        # Monotone polynomial: bisection on the normalised displacement.
+
+        # Monotone polynomial (either direction): bisection on the normalised
+        # displacement. A crank-slider joint can run the other way round (a 365
+        # arm cylinder reads smaller as the arm angle rises), so pick the
+        # bisection side from the polynomial's end values instead of assuming.
+        def poly(dn: float) -> float:
+            return float(sum(float(c) * dn**i for i, c in enumerate(coeffs)))
+
+        increasing = poly(1.0) >= poly(0.0)
         low, high = 0.0, 1.0
         for _ in range(_BISECTION_STEPS):
             mid = 0.5 * (low + high)
-            value = sum(float(c) * mid**i for i, c in enumerate(coeffs))
-            if value < angle_deg:
+            value = poly(mid)
+            if (value < angle_deg) == increasing:
                 low = mid
             else:
                 high = mid
