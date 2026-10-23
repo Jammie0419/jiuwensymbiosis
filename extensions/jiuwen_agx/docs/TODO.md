@@ -12,6 +12,10 @@
 - 载料判定：`LOADED_MASS_THRESHOLD_KG = 50`（空斗贴地本底实测 0~1 kg）。
 - 启动方式：AGX 自带 python 直跑插件（`init_app` 自建 ExampleApplication）。
   **不要改回 `agxViewer 插件.agxPy`**——agxViewer 重建进程会丢掉 PATH/PYTHONPATH。
+- 215F（山河 SWE215F）已按**同一条 365 控制链**接入：`start_agx_bridge_215f.bat`
+  → `agx_scene_probe.py --bridge` → `run_task` / `agx_215f_dig_smoke.py`，配置
+  `configs/agx_excavator/agx_excavator.215f.yaml`。机器事实、关键帧来源和三个坑
+  见 [215f-sim.md](215f-sim.md)。
 
 ## A. 还需要"看着画面"标定的
 

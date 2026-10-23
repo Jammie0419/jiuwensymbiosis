@@ -35,7 +35,7 @@ rem ③ 另开一个终端发任务（任务不进 config，一律用 --query �
 | --- | --- | --- |
 | **真 AGX**（看画面、演示） | `scripts\start_agx_bridge.bat` | ✅ 窗口里的挖掘机真动 |
 | **只验协议/规划链路**（无 AGX） | `scripts\start_demo_bridge.ps1` | ❌ 内存假机，命令"成功"但没物理 |
-| **核对场景真值**（只读，不改动） | `python scripts/agx_scene_probe.py --bridge --port 9700` | — 关节名/范围/单位清单 |
+| **核对场景真值**（只读，不改动） | `python scripts/control/agx_scene_probe.py --bridge --port 9700` | — 关节名/范围/单位清单 |
 
 ## 排障：症状 → 原因
 
@@ -51,7 +51,7 @@ rem ③ 另开一个终端发任务（任务不进 config，一律用 --query �
 | 规划失败，提示 `dig requires ['payload.clear'] but the state here is ['payload.held']` | 铲斗载料误判。空斗贴地时 AGX Terrain 的 aggregate 本底 0~1 kg，阈值取小了就永久"有料"。阈值见 `agx_bridge_server.py:LOADED_MASS_THRESHOLD_KG`，用 `inventory` 的 `bucket_mass_kg` 校准 |
 | 用 `agxViewer 插件.agxPy` 起不来：`No module named 'agxPythonModules'` | agxViewer 会用用户配置文件的环境重建进程，丢掉 PATH/PYTHONPATH，于是加载到别的 Python（本机 Anaconda 3.12.7），而 AGX 模块要求精确 3.12.10。**用 `start_agx_bridge.bat`** |
 | `dig` 报 `joint 'X' target ... outside configured limits` | 关键帧与限位单位不一致（回转 rad / 液压缸 m）。跑 `--check-config` 逐条看，见"关节单位" |
-| 想手查某个关节现在多少、或手动摆姿态 | `python scripts/monitor_ui.py --port 9700`（浏览器 8050） |
+| 想手查某个关节现在多少、或手动摆姿态 | `python scripts/control/monitor_ui.py --port 9700`（浏览器 8050） |
 
 ## 关节单位：AGX 365 是混合单位（改限位/关键帧前必读）
 
@@ -74,7 +74,7 @@ bucket `[-1.0, 0.312]`，swing 是无限位回转（报告按 ±180 兜底）。
 改完先过闸门——它会逐条报出"关键帧越限"这类 dig 执行时才会遇到的问题：
 
 ```bash
-python scripts/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml
+python scripts/control/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml
 ```
 
 ## 三种操控方式
@@ -137,12 +137,18 @@ AGX 自带 `data/models/BedTruck.agx`（17 刚体 / 17 约束）。关键约束�
 
 | 文件 | 跑在哪 | 说明 |
 | --- | --- | --- |
-| `agx_bridge_server.py` | AGX 自带 Python（headless） | 纯标准库；`--demo` 假机 / `--scene` 真实场景；协议 v1 JSON 行 |
-| `agx_viewer_bridge.agxPy` | AGX 自带 Python 3.12（自带窗口） | 插件；`init_app` 自建 `ExampleApplication` + 每步回调泵 |
-| `start_agx_bridge.bat` | Windows | 设好 PATH/PYTHONHOME/PYTHONPATH 后调 AGX python 跑插件 |
+| `agx_bridge_server.py` | AGX 自带 Python（headless） | 纯标准库；`--demo` 假机 / `--scene` 真实场景 / `--machine 215f` |
+| `agx_viewer_bridge.agxPy` | AGX 自带 Python 3.12（自带窗口） | 365 插件；`init_app` 自建 `ExampleApplication` + 每步回调泵 |
+| `agx_viewer_bridge_215f.agxPy` | AGX 自带 Python 3.12（自带窗口） | 215F 插件；场景工厂 + 同一个桥接 |
+| `agx_215f_scene.py` | AGX 自带 Python | 215F 场景工厂（`Excavator215FEnv`） |
+| `start_agx_bridge.bat` | Windows | 365 一键启动 |
+| `start_agx_bridge_215f.bat` | Windows | 215F 一键启动 |
 | `start_demo_bridge.ps1` | Windows | 无 AGX 时的协议联调（内存假机，带警告横幅） |
-| `monitor_ui.py` | 仓库 venv | NiceGUI 面板：对端身份 / 原生单位关节读数 / 手动设目标 |
-| `agx_scene_probe.py` | 两边 | `--direct`（AGX python 本地盘点）/ `--bridge`（远程清单）/ `--check-config`（配置闸门） |
+| `control/monitor_ui.py` | 仓库 venv | NiceGUI 面板：对端身份 / 原生单位关节读数 / 手动设目标 |
+| `control/agx_scene_probe.py` | 两边 | `--direct`（AGX python 本地盘点）/ `--bridge`（远程清单）/ `--check-config`（配置闸门） |
+| `control/agx_215f_dig_smoke.py` | 仓库 venv | 215F 一斗验收（同后端、同一个 `dig`） |
+| `act/` | 仓库 venv / 训练机 | ACT 采集、转换、训练、验收脚本（见 `scripts/README.md`） |
+| `calibration/` | 仓库 venv | 每机器几何/标定脚本 |
 
 跨平台边界 = 版本化 JSON 行协议 over TCP。跨机控制（AGX 在另一台机器）时把 config
 的 `host` 改成那台机器的 IP，启动前设 `JIUWEN_BRIDGE_HOST=0.0.0.0`，并放行防火墙：

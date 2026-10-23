@@ -33,7 +33,7 @@ AGX 窗口 + 仿真循环（AGX 自带 python 跑 agx_viewer_bridge.agxPy，
 1. **起 AGX + 桥接**：`scripts\start_agx_bridge.bat`（双击）→ 弹出挖掘机 + 沙地
    窗口，桥接监听 127.0.0.1:9700。不需要画面时走 headless：
    `%AGX_DIR%\python-x64\python.exe scripts\agx_bridge_server.py --scene 场景.agx`。
-2. **控制端验证**：`python scripts/agx_scene_probe.py --bridge` → 应看到
+2. **控制端验证**：`python scripts/control/agx_scene_probe.py --bridge` → 应看到
    excavator365 的 4 关节（swing=CabinHinge rad、boom=双缸 m、arm/bucket=m）。
 3. **发任务**：`python examples/run_task.py --config configs/agx_excavator/agx_excavator.local.yaml --query "..."`。
 
@@ -56,6 +56,7 @@ swing（CabinHinge）是**弧度**，boom/arm/bucket（液压缸 Prismatic）是
 | --- | --- | --- |
 | 仿真器接缝 | `adapters/_common/sim/backend.py`（`SimBackend` 协议 + mock/inprocess/remote 三后端 + 注册表） | 现成 |
 | 驱动 | `adapters/_common/sim/driver.py`（NamedJointDriver + BaseDriver 切片、关节名校验） | 现成 |
+| 轨迹播放（可选） | `play_trajectory` / `player_state` / `stop_trajectory`（`SimBackend` + 桥接） | 现成 |
 | Env / Api | `adapters/_common/sim/env.py`、`api.py`（能力按配置收窄、通用动作绑定） | 现成 |
 | 通用动作 | `move_joint` / `get_joint_positions` / `navigate_relative` / `rotate_base` / `drive_arc` / `get_terrain` / `home` | 现成 |
 
@@ -114,7 +115,7 @@ swing（CabinHinge）是**弧度**，boom/arm/bucket（液压缸 Prismatic）是
 `PATH`/`PYTHONHOME`/`PYTHONPATH`）：
 
 ```bat
-%AGX_DIR%\python-x64\python.exe scripts\agx_scene_probe.py --direct "场景文件.agx"
+%AGX_DIR%\python-x64\python.exe scripts\control\agx_scene_probe.py --direct "场景文件.agx"
 ```
 
 **通过标准**：报告里列出场景的全部可驱动约束（含类型/当前角/行程/单位），
@@ -139,7 +140,7 @@ netsh advfirewall firewall add rule name="AGX Bridge" dir=in action=allow protoc
 ### 第 ③ 步：控制端可达（本仓库 venv 跑探针）
 
 ```bash
-python scripts/agx_scene_probe.py --bridge --host 127.0.0.1 --port 9700   # 跨机填 Windows 的 IP
+python scripts/control/agx_scene_probe.py --bridge --host 127.0.0.1 --port 9700   # 跨机填 Windows 的 IP
 ```
 
 **通过标准**：`[OK] 链路通（协议 v1）` + `[OK] 场景清单已取回`，清单与第 ①
@@ -152,7 +153,7 @@ python scripts/agx_scene_probe.py --bridge --host 127.0.0.1 --port 9700   # 跨�
 
 ```bash
 # 核对：关节/限位/关键帧自洽性（关键帧越限会在这里就被点出来）
-python scripts/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml
+python scripts/control/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml
 
 # 真实任务（LLM key 已配置时）：
 python examples/run_task.py \
@@ -162,6 +163,25 @@ python examples/run_task.py \
 
 **通过标准**：AGX 窗口里挖掘机完成一次完整的挖-倒动作（对准→下铲→收斗
 →摆转→卸料），命令以退出码 0 结束。走到这一步即"确定能控制"。
+
+### Python 环境类场景（215F）怎么接
+
+有些交付模型不是 `.agx` 文件，而是一个 Gym 风格的 Python 环境类（自己建
+`agxSDK.Simulation`、铺 `agxTerrain`、注册 Shovel）。这时不用改 `work.py`，
+只在桥接侧加一个机型入口：
+
+1. 写一个场景工厂（如 `scripts/agx_215f_scene.py`），`build()` 返回
+   `{"sim", "joints", "units", "machine_name", "terrain_truth",
+   "load_mass_fn", "loaded_threshold_kg"}`；可选注入
+   `terrain_truth_fn`（动态地形）、`tip_fn`（铲尖位姿）、`surface_fn`
+   （任意点土面高度）和 `base`（运动学底盘句柄），3D IK / 整机移动会用到；
+2. `AgxSceneAdapter.attach_machine(...)` 接管这个句柄；
+3. 启动时用 `agx_bridge_server.py --machine 215f`（headless）或
+   `agx_viewer_bridge_215f.agxPy`（窗口）；
+4. 控制端仍然是一份普通 YAML：四关节、原生单位/限位/关键帧、`has_base`。
+
+215F 的完整记录（关节/单位/力矩/土堆/验收数字）见
+[215f-sim.md](215f-sim.md)。
 
 ### 卡车（自卸车）怎么接
 
