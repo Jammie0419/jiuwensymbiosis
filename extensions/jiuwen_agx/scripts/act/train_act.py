@@ -14,7 +14,7 @@ parsing, config, training — is lerobot's own code, forwarded unchanged.
 
 Usage (identical CLI to ``lerobot-train``):
 
-    python scripts/train_act.py --dataset.repo_id=... --policy.type=act ...
+    python scripts/act/train_act.py --dataset.repo_id=... --policy.type=act ...
 """
 
 from __future__ import annotations

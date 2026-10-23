@@ -323,7 +323,12 @@ class TestStandaloneConverter:
         import importlib.util
         import sys
 
-        script = Path(__file__).resolve().parents[1] / "scripts" / "npz_to_lerobot.py"
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "act"
+            / "npz_to_lerobot.py"
+        )
         # None in sys.modules makes `import jiuwen_agx` raise ImportError —
         # exactly what a bare machine without the core looks like.
         monkeypatch.setitem(sys.modules, "jiuwen_agx", None)

@@ -4,7 +4,7 @@
 > **好数据必须满足什么条件**（D1–D8）、**格式为什么长这样**（npz schema）、
 > **每个已知的"数据变坏"路径如何被设计挡住**（P1–P8）。
 > 实现落点：`jiuwen_agx/agx_excavator/record.py`（纯逻辑，可单测）+
-> `scripts/record_demos.py`（采集 CLI）+ `scripts/npz_to_lerobot.py`（转换 CLI）。
+> `scripts/act/record_demos.py`（采集 CLI）+ `scripts/act/npz_to_lerobot.py`（转换 CLI）。
 
 ---
 
@@ -182,13 +182,13 @@ features 定义（lerobot 精确契约，names 列表驱动其全部下游工具
 
 ```bash
 # 采集（需 AGX 桥接在跑；--config 指向 remote 配置）
-python scripts/record_demos.py --config configs/agx_excavator/agx_excavator.local.yaml \
+python scripts/act/record_demos.py --config configs/agx_excavator/agx_excavator.local.yaml \
     --out data/raw/run001 --chains 10 --cycles-per-chain 10 --seed 7
 # 管线自测（mock 机制验证，产物永不入训练集）
-python scripts/record_demos.py --config ... --out data/raw/smoke --chains 1 --cycles-per-chain 2 --allow-mock
+python scripts/act/record_demos.py --config ... --out data/raw/smoke --chains 1 --cycles-per-chain 2 --allow-mock
 
 # 转换（训练机；需 lerobot）
-python scripts/npz_to_lerobot.py --raw data/raw/run001 \
+python scripts/act/npz_to_lerobot.py --raw data/raw/run001 \
     --root data/lerobot --repo-id local/agx_dig_demos --fps 10
 ```
 

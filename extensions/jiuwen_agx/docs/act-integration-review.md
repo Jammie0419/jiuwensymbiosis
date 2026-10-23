@@ -44,7 +44,7 @@
 ## 二、改变设计的发现（A1–A9，均落在计划 v2）
 
 **A1 · 训练环境的三个硬前提（v1 §6 不完整，照 v1 命令直接跑必失败）**
-a) 安装：`pip install "lerobot[training]==0.6.1"`（`accelerate` 是训练硬依赖；`[training]` 还带 `[dataset]`=`datasets/pandas/pyarrow/av/torchcodec`）。b) 命令补 `--policy.push_to_hub=false` 与全新 `--output_dir`。c) Windows 符号链接：优先开「开发者模式」；不开则用提供的 `scripts/train_act.py` 包装（10 行，patch `update_last_checkpoint` 成复制/忽略）。另：`lerobot` 依赖 `numpy>=2,<2.3`，本机 venv 是 2.5.3——装 lerobot 会把它降到 2.2.x（core 只要求 `>=2`，可接受，但要知道）。
+a) 安装：`pip install "lerobot[training]==0.6.1"`（`accelerate` 是训练硬依赖；`[training]` 还带 `[dataset]`=`datasets/pandas/pyarrow/av/torchcodec`）。b) 命令补 `--policy.push_to_hub=false` 与全新 `--output_dir`。c) Windows 符号链接：优先开「开发者模式」；不开则用提供的 `scripts/act/train_act.py` 包装（10 行，patch `update_last_checkpoint` 成复制/忽略）。另：`lerobot` 依赖 `numpy>=2,<2.3`，本机 venv 是 2.5.3——装 lerobot 会把它降到 2.2.x（core 只要求 `>=2`，可接受，但要知道）。
 
 **A2 · 数据集的 features 是精确契约，不是「大概的表」**
 `create` 的每个特征按 dtype/shape **精确**校验（float32 必须真是 `np.float32`、形状必须 `(4,)`）。规范写法：

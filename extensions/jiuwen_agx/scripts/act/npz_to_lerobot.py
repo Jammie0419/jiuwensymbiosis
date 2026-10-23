@@ -14,7 +14,7 @@ recording logic is loaded from the extension's own source tree (record.py
 depends on numpy only), so a bare venv with lerobot plus a copy of the
 extensions/jiuwen_agx directory is enough (see docs/act-runbook.md).
 
-    python scripts/npz_to_lerobot.py --raw data/raw/run001 \
+    python scripts/act/npz_to_lerobot.py --raw data/raw/run001 \
         --root data/lerobot --repo-id local/agx_dig_demos --fps 10
 """
 
@@ -46,7 +46,7 @@ def _load_record_module() -> ModuleType:
         return record
     except Exception:
         record_path = (
-            Path(__file__).resolve().parents[1]
+            Path(__file__).resolve().parents[2]
             / "src"
             / "jiuwen_agx"
             / "agx_excavator"

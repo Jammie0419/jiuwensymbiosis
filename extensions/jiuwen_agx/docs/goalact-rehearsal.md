@@ -16,7 +16,7 @@
 
 ## 一、训练（他们的 `train()`，从零训我们的数据）
 
-入口等价于 `scripts/train_act.py` 的 `train(cfg, None, output, real_dir=...)`
+入口等价于 `scripts/act/train_act.py` 的 `train(cfg, None, output, real_dir=...)`
 （无合成预训练——那是小脑组自己的流程；预演只验连通性）：
 
 ```

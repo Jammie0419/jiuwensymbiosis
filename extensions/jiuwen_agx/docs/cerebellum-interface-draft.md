@@ -72,8 +72,8 @@
 | --- | --- | --- |
 | 动作契约 `act_exec` | ✅ 已提交 (3289c00) | `jiuwen_agx/actions.py`：参数与 `dig` 完全同名（四个地面坐标、米、基座系），失败返回 `{"ok": false, "error": 可读原因}` |
 | 执行循环 + 安全 | ✅ 已提交 | 策略输出逐拍过 `move_joints_blocking` 驱动校验（限位/非有限值拒绝）；超拍数兜底；失败走 RecoveryRail；成功判据 = 铲斗质量 > 50 kg 的"铲起→卸掉"序列 |
-| **数据采集器** | ✅ 已提交 (a8a32b9) | `scripts/record_demos.py`：脚本教师自动采（零人工），键盘示教旁观模式；产出带元数据的 npz（关节角对 + 目标 + 铲斗真值 + 单位/来源/种子指纹） |
-| **数据集转换器** | ✅ 已提交 | `scripts/npz_to_lerobot.py`：npz → LeRobotDataset v3（纯 Parquet，无视频依赖），四道质量闸（禁 mock / 必须有目标 / 循环完整 / 最短拍数）+ 数据集级单位一致性硬门 |
+| **数据采集器** | ✅ 已提交 (a8a32b9) | `scripts/act/record_demos.py`：脚本教师自动采（零人工），键盘示教旁观模式；产出带元数据的 npz（关节角对 + 目标 + 铲斗真值 + 单位/来源/种子指纹） |
+| **数据集转换器** | ✅ 已提交 | `scripts/act/npz_to_lerobot.py`：npz → LeRobotDataset v3（纯 Parquet，无视频依赖），四道质量闸（禁 mock / 必须有目标 / 循环完整 / 最短拍数）+ 数据集级单位一致性硬门 |
 | 数据格式规范 | ✅ 成文 | `act-data-collection-design.md`：帧对 `(state_t, action_t=state_{t+1})`、`observation.environment_state` = 目标坐标、float32、`task="excavate"` |
 | 策略适配器（部署侧） | ✅ 骨架就绪 | `jiuwen_agx/policy.py`（注册表+协议）+ `policy_act.py`（lerobot checkpoint 加载→推理→反归一化，torch 惰性导入）；换模型=换一个适配器类 |
 | 训练样本量核算 | ✅ | ~126 拍/循环 × 100 循环 ≈ 2700 个 chunk 训练窗口，对 4 维动作的 ACT 充足 |
@@ -133,7 +133,7 @@ LLM 编排全部不动。** 这就是接缝先行的意义——小脑组的任�
 小脑组的 `act_trajectory` 项目（Goal-ACT V2：35 维状态×10 帧历史、13 维目标
 特征、8 相位、16 步弧度增量、自定义 PyTorch、HDF5 数据）即 §5 的**情形 B**。
 本节的接线已实现：适配器 `policy_goal_act.py`（注册 `goal_act_v2`）、数据
-转换器 `scripts/lerobot_to_goalact_h5.py`、每机器标定 `machine_map.py`
+转换器 `scripts/act/lerobot_to_goalact_h5.py`、每机器标定 `machine_map.py`
 （schema：`configs/machine_agx365.template.json`）。
 
 ### 8.1 三层分离（通用性的落点）
@@ -185,7 +185,7 @@ max_joint_step_deg=每拍运动 p99.9）——**小脑组重训时的 config 必
    **或**直接吃 §8.3 转换数据微调——那之前需先完成第 3 项的标定；
 2. **real 载入器小补丁**（几行）：`annotations/goal`、`annotations/phase`
    存在时直读（现在只会从 FK/液压电流推断伪标签）；
-3. **标定协作**（AGX license 恢复后，约半天）：按 `scripts/agx_machine_fit.py`
+3. **标定协作**（AGX license 恢复后，约半天）：按 `scripts/calibration/agx_machine_fit.py`
    的采样格式（每缸 ≥5 点扫行程 + 齿尖在策略系坐标，见该脚本 docstring）记录
    采样 JSON → 拟合（median 残差 ≤0.05m 才判过）→ 输出 `calibrated: true` 的
    `machine_agx365.json` 与**建议给到小脑组的 `links_m`**（进小脑组 config 的
@@ -210,7 +210,7 @@ policy:
 
 ```bash
 # 数据转换（标定前可 --allow-uncalibrated 干跑验证链路，产出禁止入训练）
-python scripts/lerobot_to_goalact_h5.py --raw data/raw/run_all \
+python scripts/act/lerobot_to_goalact_h5.py --raw data/raw/run_all \
     --machine <machine.json> --out data/goalact_h5/run_all
 # 验收（与 lerobot ACT 完全同一把尺）：act_acceptance.py 10 留出点 ≥7 + dig 对照
 ```

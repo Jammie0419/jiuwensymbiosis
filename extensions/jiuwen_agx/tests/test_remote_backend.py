@@ -311,7 +311,7 @@ class TestEndToEndViaDemoBridge:
     def test_probe_bridge_mode_against_demo(self, demo_port):
         """The --bridge probe path, exercised through the same code the colleague runs."""
         probe_spec = importlib.util.spec_from_file_location(
-            "agx_probe_under_test", _REPO / "scripts" / "agx_scene_probe.py"
+            "agx_probe_under_test", _REPO / "scripts" / "control" / "agx_scene_probe.py"
         )
         assert probe_spec is not None and probe_spec.loader is not None
         probe = importlib.util.module_from_spec(probe_spec)

@@ -7,8 +7,8 @@
 符号由已采集的 112 条数据回放选定，自检全过才写 calibrated=true 的机器文件
 （fail-closed；任何一项不过就停下并报告，绝不强行放行）。
 
-    python scripts/calibrate_agx365.py                  # 只用几何：画标定表 + 报告
-    python scripts/calibrate_agx365.py --data data/raw/run_all
+    python scripts/calibration/calibrate_agx365.py                  # 只用几何：画标定表 + 报告
+    python scripts/calibration/calibrate_agx365.py --data data/raw/run_all
         # 再加数据回放：选符号、推算 pick_z/dump_z、写 machine file
 
 产物：
@@ -41,7 +41,7 @@ from jiuwen_agx.cylinder_calibration import (
 
 __all__ = ["main"]
 
-_EXT_ROOT = Path(__file__).resolve().parents[1]
+_EXT_ROOT = Path(__file__).resolve().parents[2]
 _EXPECTED_LINKS = (7.800, 3.600, 2.273)
 _EXPECTED_LINKS_TOL_M = 0.005
 

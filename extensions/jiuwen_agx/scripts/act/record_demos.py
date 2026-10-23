@@ -9,14 +9,14 @@ source — each keyframe transition is sub-stepped into beats by
 pairs. No lerobot/torch needed here; the npz output is converted on the
 training machine by ``npz_to_lerobot.py``.
 
-    python scripts/record_demos.py --config <remote.yaml> --out data/raw/run001 \
+    python scripts/act/record_demos.py --config <remote.yaml> --out data/raw/run001 \
         --chains 10 --cycles-per-chain 10 --seed 7
 
 Keyboard mode: with the bridge started as JIUWEN_KEYBOARD=1, records a
 continuous spectator stream (goal-less; the converter drops goal-less
 episodes — see docs/act-data-collection-design.md §4):
 
-    python scripts/record_demos.py --config <remote.yaml> --out data/raw/kbd001 \
+    python scripts/act/record_demos.py --config <remote.yaml> --out data/raw/kbd001 \
         --source keyboard --seconds 120
 
 Mock backends are refused unless --allow-mock (pipeline self-tests only —

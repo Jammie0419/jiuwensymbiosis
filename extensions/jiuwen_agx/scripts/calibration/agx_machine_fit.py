@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--template",
         default=str(
-            Path(__file__).resolve().parents[1]
+            Path(__file__).resolve().parents[2]
             / "configs"
             / "machine_agx365.template.json"
         ),

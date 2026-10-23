@@ -21,7 +21,12 @@ import pytest
 
 pytest.importorskip("torch", reason="ACT connection tests need torch+lerobot installed")
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_smoke_checkpoint.py"
+_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "act"
+    / "make_smoke_checkpoint.py"
+)
 JOINTS = ("swing", "boom", "arm", "bucket")
 GOAL = {"dig_x_m": -2.0, "dig_y_m": 1.0, "dump_x_m": 3.0, "dump_y_m": 0.5}
 

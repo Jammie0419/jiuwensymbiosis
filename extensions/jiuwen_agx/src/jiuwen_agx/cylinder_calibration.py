@@ -734,7 +734,7 @@ def build_machine_file(
     out = copy.deepcopy(template)
     out["calibrated"] = True
     out["_doc"] = (
-        "AGX 365 真尺（OpenPLX 纯几何扫描，scripts/calibrate_agx365.py 生成；"
+        "AGX 365 真尺（OpenPLX 纯几何扫描，scripts/calibration/calibrate_agx365.py 生成；"
         "符号由采集数据回放选定）。训练与部署共用本文件（五红线）。"
     )
     out["links_m"] = [round(v, 4) for v in scan_result["links_m"]]

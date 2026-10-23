@@ -86,7 +86,7 @@ python -c "import torch, lerobot, jiuwen_agx; print('env OK')"   # ⑤ 自检
    `backend: "remote"`、`joint_units: null`（混合单位）、`swing_unit: "rad"`、
    探针实测的 `joint_limits` / `home_joints` / `dig_cycle_tuning`；
 3. 过闸门（必做，配置错会采出废数据）：
-   `python scripts/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml`；
+   `python scripts/control/agx_scene_probe.py --check-config configs/agx_excavator/agx_excavator.local.yaml`；
 4. 教师策略多样化（远挖浅咬/近挖深咬）**已实现**（commit d73f0fc）：采集器对每个
    目标按半径自动取咬深档位并记入 npz 元数据（每行打印 `depth=0.xx`），无需额外操作。
 
@@ -94,7 +94,7 @@ python -c "import torch, lerobot, jiuwen_agx; print('env OK')"   # ⑤ 自检
 
 ```bash
 cd extensions/jiuwen_agx
-python scripts/record_demos.py --config configs/agx_excavator/agx_excavator.local.yaml --out data/raw/run001 --chains 10 --cycles-per-chain 10 --seed 7
+python scripts/act/record_demos.py --config configs/agx_excavator/agx_excavator.local.yaml --out data/raw/run001 --chains 10 --cycles-per-chain 10 --seed 7
 ```
 
 - 每条打印 `ok/BAD + 拍数 + 循环秒数`；结尾 `done: N/M passed`；
@@ -132,7 +132,7 @@ lerobot-train --help                           # CLI 可用即就绪
 - **Linux**：无额外步骤；
 - **Windows**：lerobot 每次存 checkpoint 都建符号链接（无特权会 WinError 1314 崩溃）。
   两条路：开 Windows「开发者模式」设置（推荐）；或用包装脚本
-  `scripts/train_act.py`（把 `update_last_checkpoint` 替换为忽略后转发 CLI）；
+  `scripts/act/train_act.py`（把 `update_last_checkpoint` 替换为忽略后转发 CLI）；
 - 版本**锁 0.6.1**：lerobot 的处理器 API 在版本间不兼容，checkpoint 与库版本
   绑定（部署侧 A 机装同版本）。
 
@@ -140,7 +140,7 @@ lerobot-train --help                           # CLI 可用即就绪
 
 ```bash
 cd <拷来的 jiuwen_agx 目录>
-python scripts/npz_to_lerobot.py --raw <data/raw/run001 路径> --root data/lerobot --repo-id local/agx_dig_demos --fps 10
+python scripts/act/npz_to_lerobot.py --raw <data/raw/run001 路径> --root data/lerobot --repo-id local/agx_dig_demos --fps 10
 ```
 
 结尾打印 `dataset: <目录>  episodes: N  frames: M` 与拍数分布——**记下

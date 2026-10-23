@@ -14,7 +14,7 @@
 
 用法（真桥接，需先起 start_agx_bridge.bat 并配好 policy 节）::
 
-    python scripts/act_acceptance.py \
+    python scripts/act/act_acceptance.py \
         --config configs/agx_excavator/agx_excavator.local.yaml \
         --exclude-raw data/raw/run_all --points 10 --seed 7 --also-dig \
         --out data/acceptance/act_v1.json
@@ -22,7 +22,7 @@
 mock 干跑（不用桥接，验证真 checkpoint 的加载+推理链路；mock 斗永远不载料，
 ``max_beats`` 兜底失败是**预期**）::
 
-    python scripts/act_acceptance.py --config <mock+policy 配置> --points 1 --allow-mock
+    python scripts/act/act_acceptance.py --config <mock+policy 配置> --points 1 --allow-mock
 """
 
 from __future__ import annotations

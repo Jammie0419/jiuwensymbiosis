@@ -109,7 +109,7 @@
 
 > 为什么单位换算要先"标定"：AGX 原生数据说"缸伸出 0.085 米"，小脑组模型的世界说
 > "臂转了 19.4 度"——米变度靠一把尺量出来。**这把尺已经量好了**：用模型自身的机构
-> 几何（铰点、缸锚点）纯几何扫描 + 112 条实采数据回放做物理自检（`scripts/calibrate_agx365.py`，
+> 几何（铰点、缸锚点）纯几何扫描 + 112 条实采数据回放做物理自检（`scripts/calibration/calibrate_agx365.py`，
 > 不需要 AGX 许可证）；产出的换算文件 `calibrated: true`，转换器直接放行。
 
 ---
@@ -127,7 +127,7 @@
 
 **① 量尺——已标定（完成，不等许可证）**
 - 真尺：`configs/machine_agx365.json`（`calibrated: true`），纯几何扫描生成
-  （`scripts/calibrate_agx365.py`：解析 AGX 导出的 OpenPLX 文本 → 四连杆闭环扫缸 →
+  （`scripts/calibration/calibrate_agx365.py`：解析 AGX 导出的 OpenPLX 文本 → 四连杆闭环扫缸 →
   112 条实采数据回放做物理自检选符号；**不需要 AGX 许可证**）；
 - 结果要点：boom/arm/bucket 用 poly5 换算表（bucket 线性误差 13°→0.11°）；
   `pick_z=-2.485 / dump_z=-1.564 m`（动臂铰点系）；swing 零位=原生读数（待实机复核，见 §4.4）；
@@ -230,7 +230,7 @@
 **转换（大脑组跑；已完成，留档）：**
 ```bash
 cd extensions/jiuwen_agx
-python scripts/lerobot_to_goalact_h5.py \
+python scripts/act/lerobot_to_goalact_h5.py \
     --raw data/raw/run_all \
     --machine configs/machine_agx365.json \
     --out data/goalact_h5/run_all_calibrated
@@ -238,7 +238,7 @@ python scripts/lerobot_to_goalact_h5.py \
 
 **标定（大脑组跑；已完成，留档）：**
 ```bash
-python scripts/calibrate_agx365.py --data data/raw/run_all
+python scripts/calibration/calibrate_agx365.py --data data/raw/run_all
 # 纯几何 + 数据回放自检；fail-closed，自检不过不写机器文件
 ```
 
@@ -273,7 +273,7 @@ print(s.shape, a.shape, ph[:5], g[0])"
 
 **验收（大脑组跑，拿到模型后）：**
 ```bash
-python scripts/act_acceptance.py \
+python scripts/act/act_acceptance.py \
     --config configs/agx_excavator/agx_excavator.local.yaml \
     --exclude-raw data/raw/run_all --points 10 --seed 7 --also-dig
 # 10 个训练没见过的目标点，成功 ≥7 即接入达标
@@ -309,10 +309,10 @@ python scripts/act_acceptance.py \
 schema 模板保留在 `configs/machine_agx365.template.json`。
 内容：四个关节的原生单位声明、swing 零位偏移、每缸"位移（米）↔ 角度（度）"的
 poly5 换算表、挖/卸点的齿尖高度。`calibrated` 字段只有变成真，转换器才接受。
-标定方法：`scripts/calibrate_agx365.py`（解析 AGX 导出的 OpenPLX 文本，纯几何，
+标定方法：`scripts/calibration/calibrate_agx365.py`（解析 AGX 导出的 OpenPLX 文本，纯几何，
 不需要许可证；四连杆闭环 + ψ 分支连续跟踪；符号由 112 条实采数据回放选定；
 自检含：销距一致性、臂长/四连杆尺寸对拍、装斗时刻齿尖高度）。
-注：旧文档提的 `scripts/agx_machine_fit.py`（桥接实测采样 → 拟合）保留，
+注：旧文档提的 `scripts/calibration/agx_machine_fit.py`（桥接实测采样 → 拟合）保留，
 但其"每缸线性仿射"模型在全行程下表示不了 365 的曲柄滑块非线性
 （几何合成样本残差 0.227 m > 其 0.05 门）；如走桥接实测路线，需先给它升级多项式。
 
@@ -362,16 +362,16 @@ goal 六个数），这正是"训练条件和部署条件一致"的关键一步�
 
 | 东西 | 大脑组（本仓库 `E:\jiuwensymbiosis`） | 小脑组（`E:\AGX-2.42.2.1\act_trajectory\act_trajectory`） |
 |---|---|---|
-| 采集器 | `extensions/jiuwen_agx/scripts/record_demos.py` | —（无需自建） |
+| 采集器 | `extensions/jiuwen_agx/scripts/act/record_demos.py` | —（无需自建） |
 | 原始数据 | `extensions/jiuwen_agx/data/raw/run_all/*.npz` | — |
-| 转换器 | `extensions/jiuwen_agx/scripts/lerobot_to_goalact_h5.py` | — |
-| 标定 | `extensions/jiuwen_agx/scripts/calibrate_agx365.py`（真尺见 `configs/machine_agx365.json`） | 臂长用同一结果 |
+| 转换器 | `extensions/jiuwen_agx/scripts/act/lerobot_to_goalact_h5.py` | — |
+| 标定 | `extensions/jiuwen_agx/scripts/calibration/calibrate_agx365.py`（真尺见 `configs/machine_agx365.json`） | 臂长用同一结果 |
 | 训练数据（交接物） | `extensions/jiuwen_agx/data/goalact_h5/run_all_calibrated/`（calibrated=1） | 拷去当 `--real-dir` |
 | 建议配置（交接物） | 同目录 `suggested_config.json` | 建进 `configs/agx365.json` |
 | 配置样例（交接物） | `extensions/jiuwen_agx/docs/agx365_training_config.json` | 可直接拷进 `configs/` |
 | 载入器补丁（交接物） | `extensions/jiuwen_agx/docs/patches/goalact_loader_read_annotations.patch` | `git apply -p1` 应用到 `src/act_trajectory/data.py` |
 | 接入适配器 | `src/jiuwen_agx/policy_goal_act.py` | —（无需改） |
-| 验收 | `scripts/act_acceptance.py` | — |
+| 验收 | `scripts/act/act_acceptance.py` | — |
 
 ### 8.7 附带说明：小脑组自带的 AGX 路线
 

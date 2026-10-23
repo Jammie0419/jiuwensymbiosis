@@ -1,7 +1,7 @@
 # ACT 模型接入计划（jiuwen_agx 挖掘机）· v2
 
 > 状态：**M1 已实施并提交**（2026-10-01，commit 3289c00）；**M2 采集代码已实施**
-> （同日：`agx_excavator/record.py` + `scripts/record_demos.py` + `scripts/npz_to_lerobot.py` +
+> （同日：`agx_excavator/record.py` + `scripts/act/record_demos.py` + `scripts/act/npz_to_lerobot.py` +
 > `tests/test_record.py`，设计论证见 `act-data-collection-design.md`；真数据待 AGX 桥接实采）；
 > M3–M5 待做 · 基于 lerobot 0.6.1 源码审计 · 是
 >
@@ -266,8 +266,8 @@ jiuwen_agx   + contracts.py: ActResult|ActFailure（与 DigResult 同形）
              + agx_excavator/config.py: policy 字段（~10 行）
              + agx_excavator/env.py / __init__.py: 注册链与能力门控（~10 行）
              + skills/excavate_act/SKILL.md（何时用 act_exec 何时用 dig）
-             + scripts/record_demos.py（npz 采集，零新依赖，~150 行）
-             + scripts/npz_to_lerobot.py（转换，训练机跑，~100 行）
+             + scripts/act/record_demos.py（npz 采集，零新依赖，~150 行）
+             + scripts/act/npz_to_lerobot.py（转换，训练机跑，~100 行）
              + tests/test_policy_seam.py / test_record_conversion.py（~120 行）
 core         零改动
 ```
@@ -561,7 +561,7 @@ pip install "lerobot[training]==0.6.1"    # 含 accelerate/wandb/datasets 栈;�
 2. **Windows 符号链接**：lerobot 每次存 checkpoint 都建 `last` 符号链接
    （`common/train_utils.py:96-101`），无符号链接特权（WinError 1314，本仓测试已踩过）
    会崩。两条路：开 Windows「开发者模式」（推荐，一步到位）；或提供
-   `scripts/train_act.py` 包装脚本（10 行：把 `update_last_checkpoint`
+   `scripts/act/train_act.py` 包装脚本（10 行：把 `update_last_checkpoint`
    替换为忽略/复制，再转发 CLI）。
 3. **torchcodec/av** 在 `[training]` 链路里随 `[dataset]` extra 安装；纯数值数据集
    （无视频特征）不触发其视频路径。若安装报错，备用最小清单：
@@ -636,7 +636,7 @@ ACT 的价值主张是**目标泛化与轨迹多样性**，不是单点效率—
 | --- | --- | --- | --- |
 | **M1 接缝 + 假策略** | `policy.py`、`policy_act.py` 骨架（惰性 import）、ActResult 契约、ACT_EXECUTE（含 tags）、config 字段、YAML policy 节、env 门控、SKILL.md、`FakePolicy`、`test_policy_seam.py` | 7.2 #3/#5 + mock 下全链通、ActFailure 流向正确 | ~180 行 + SKILL.md |
 | **M2 采集** | `record_demos.py`（子步进代理 + 键盘旁观；npz）、`npz_to_lerobot.py`、`test_record_conversion.py`（小 npz 往返断言） | 100–200 条成功循环落盘；`lerobot-dataset-viz` 抽查；beat 数统计出表 | ~250 行 |
-| **M3 训练** | 训练 venv + 6.1/6.2 配置 + `scripts/train_act.py`（若需） | 6.4 三门槛通过 | 配置为主 |
+| **M3 训练** | 训练 venv + 6.1/6.2 配置 + `scripts/act/train_act.py`（若需） | 6.4 三门槛通过 | 配置为主 |
 | **M4 上线** | ActPolicy 真 ckpt（3.6 加载序列）、真桥接端到端 | 7.2 #1/#2/#4；`act_exec` 与 `dig` 结果对读 | 适配器补完 ~60 行 |
 | **M5（可选）视觉版 + move_chunk** | 桥接 `grab_frame` 实现、`observation.images.wrist` 接入（dtype="image"）、`{"cmd":"move_chunk"}` 批量下发 | 视觉 ACT 上线；块单往返 | 另立计划 |
 

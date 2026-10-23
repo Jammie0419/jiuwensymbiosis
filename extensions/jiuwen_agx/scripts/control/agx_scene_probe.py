@@ -122,7 +122,7 @@ def probe_direct(scene_path: str) -> int:
     _out(f"AGX Python OK ({sys.version.split()[0]})，加载场景: {scene_path}")
 
     # 复用桥接适配器的 SWIG 下转型（.agx 里的约束以基类包装加载）
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from agx_bridge_server import AgxSceneAdapter
 
     sim = agxSDK.Simulation()
@@ -135,7 +135,7 @@ def probe_direct(scene_path: str) -> int:
     joints: list[dict[str, Any]] = []
     skipped = 0
     for constraint in sim.getConstraints():
-        actuator = AgxSceneAdapter._as_actuator(constraint)
+        actuator = AgxSceneAdapter._as_actuator(constraint)  # noqa: SLF001 - 复用桥接的 SWIG 下转型
         if actuator is None:  # Lock 等不可驱动约束：跳过（数量在末尾汇总）
             skipped += 1
             continue

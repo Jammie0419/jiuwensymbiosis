@@ -14,7 +14,7 @@ checkpoint afterwards (docs/act-runbook.md 阶段五/八).
 Requires lerobot (pip install "lerobot[training]==0.6.1", or the CPU-only
 torch variant first — see act-runbook.md 阶段三).
 
-    python scripts/make_smoke_checkpoint.py --out data/ckpt/smoke --seed 7
+    python scripts/act/make_smoke_checkpoint.py --out data/ckpt/smoke --seed 7
 """
 
 from __future__ import annotations

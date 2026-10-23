@@ -13,7 +13,7 @@
 
 用法::
 
-    python monitor_ui.py --host 127.0.0.1 --port 9700
+    python scripts/control/monitor_ui.py --host 127.0.0.1 --port 9700
     # 浏览器打开 http://127.0.0.1:8050（--ui-port 可改）
 
 注意：桥接**一次只服务一个客户端**。跑 `run_task.py` 时面板会显示"被占用"，
