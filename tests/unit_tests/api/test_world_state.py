@@ -349,6 +349,34 @@ class TestReachEnvelopeReachesThePlanner:
         assert "平移≤1m" in block and "转动≤0.7rad" in block
         assert "拆成多条" in block
 
+    def test_dig_reach_annulus_is_stated(self):
+        """Dig/dump points must be planned inside the work-tool annulus.
+
+        Measured failure (215F, "把土堆挖一斗倒到旁边"): the compiler picked
+        dump = dig + 3 m outward, (8,2) with the pile at (5,2), and ``dig``
+        rejected it at 8.25 m > reach_max 6 m. The annulus must be in the
+        planner prompt, not discovered by the action at run time.
+        """
+        block = WorldState(extra={"reach_min_m": 1.0, "reach_max_m": 6.0}).as_prompt_block()
+        assert "挖掘可达半径 1–6 m" in block
+        assert "环带" in block and "不要简单按同方向加距离" in block
+
+    def test_snapshot_reads_the_dig_annulus_from_the_machine_config(self):
+        class _Cfg:
+            reach_min_m = 1.0
+            reach_max_m = 6.0
+
+        class _ReachEnv(_Env):
+            cfg = _Cfg()
+
+        s = _fresh()
+        s.env = _ReachEnv()
+        s.api.env = s.env
+        state = WorldState.snapshot(s)
+        assert state.extra["reach_min_m"] == 1.0
+        assert state.extra["reach_max_m"] == 6.0
+        assert "挖掘可达半径 1–6 m" in state.as_prompt_block()
+
     def test_joint_names_are_rendered_next_to_the_values(self):
         """关节名必须出现在世界状态里 —— MOVE_JOINT 的契约明确让规划器从这里读名字。
 

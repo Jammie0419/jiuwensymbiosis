@@ -900,6 +900,8 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
                 "ok": False,
                 "reason": f"{type(exc).__name__}: {exc}",
                 "error_code": error_code(exc),
+                "recovery_managed": isinstance(exc, _StepExecutionError)
+                and exc.recovery_managed,
             }
         )
         state["i"] = i + 1
@@ -1122,6 +1124,25 @@ def run_sequence(
         else:
             ok_all = _run_action(step, ctx)
         if not ok_all:
+            failed = out[-1] if out else {}
+            # A business failure (e.g. dig rejected an out-of-reach dump point)
+            # is a planning error, not a rail/recovery failure: give the brain
+            # one more pass with the measured world and the exact reason instead
+            # of ending the task. Recovery-managed failures already retreated and
+            # are left to the rail stack.
+            if (
+                replan is not None
+                and replans < max_replans
+                and not failed.get("recovery_managed", False)
+            ):
+                why = f"{failed.get('op', 'step')} 失败：{failed.get('reason', '')}"
+                fresh = _request_replan(replan, session, why, out, state)
+                if fresh is not None:
+                    replans += 1
+                    pending = list(fresh)
+                    env.clear()
+                    ok_all = True
+                    continue
             break
 
     return {"ok": ok_all, "steps_done": len(out), "steps": out, "env_keys": sorted(env)}

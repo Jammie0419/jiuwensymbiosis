@@ -179,6 +179,17 @@ class WorldState:
             joints = obs.joints
             # rgb / depth are large arrays and never part of a prompt; keep the rest.
             extra = {k: v for k, v in (obs.extra or {}).items() if not hasattr(v, "shape")}
+        # The work-tool reach annulus lives on the machine config (excavator dig);
+        # state it so the planner picks reachable dig/dump points instead of
+        # discovering the violation when the action runs.
+        cfg = getattr(env, "cfg", None)
+        for key in ("reach_min_m", "reach_max_m", "reach_z_min_m", "reach_z_max_m"):
+            value = getattr(cfg, key, None)
+            if isinstance(value, (int, float)):
+                extra[key] = float(value)
+        dig_mode = getattr(cfg, "dig_mode", None)
+        if isinstance(dig_mode, str) and dig_mode:
+            extra["dig_mode"] = dig_mode
 
         caps = tuple(sorted(getattr(env, "capabilities", None) or ()))
         return cls(
@@ -240,12 +251,41 @@ class WorldState:
                 f"底盘单命令上限 平移≤{max_step:g}m/转动≤{max_turn:g}rad"
                 "（更远或更大的动作要拆成多条 navigate_relative / rotate_base）"
             )
+        reach_min = self.extra.get("reach_min_m")
+        reach_max = self.extra.get("reach_max_m")
+        if isinstance(reach_min, (int, float)) and isinstance(reach_max, (int, float)):
+            envelope.append(
+                f"挖掘可达半径 {reach_min:g}–{reach_max:g} m"
+                "（dig 的挖点/卸点都必须以基座为原点落在这个环带内；"
+                "不要简单按同方向加距离）"
+            )
+        reach_z_min = self.extra.get("reach_z_min_m")
+        reach_z_max = self.extra.get("reach_z_max_m")
+        if isinstance(reach_z_min, (int, float)) and isinstance(reach_z_max, (int, float)):
+            envelope.append(f"挖掘 Z 范围 {reach_z_min:g}–{reach_z_max:g} m")
         if envelope:
             # Stated at plan time so a target outside it is never planned, instead of being
             # rejected by SafetyRail one step into the run.
             lines.append("工作范围：" + "，".join(envelope) + "（超出即被安全护栏拒绝，请在范围内规划）")
         if self.reach_prior:
             lines.append(f"可达模型：{self.reach_prior}")
+        dig_mode = self.extra.get("dig_mode")
+        if dig_mode:
+            lines.append(f"挖掘方式：{dig_mode}")
+        terrain = self.extra.get("terrain")
+        if isinstance(terrain, list) and terrain:
+            piles = []
+            for pile in terrain:
+                if not isinstance(pile, dict):
+                    continue
+                parts = [str(pile.get("name", "?"))]
+                for key in ("x_m", "y_m", "z_m"):
+                    value = pile.get(key)
+                    if isinstance(value, (int, float)):
+                        parts.append(f"{key[:-2]}={float(value):.2f}")
+                piles.append(" ".join(parts))
+            if piles:
+                lines.append("地形真值：" + "；".join(piles))
         if self.default_orientation_policy:
             hint = _ORIENTATION_HINTS.get(self.default_orientation_policy, "")
             suffix = f"（{hint}）" if hint else ""

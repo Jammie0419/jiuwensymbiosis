@@ -100,7 +100,12 @@ def build_ability_executor(agent: Any) -> Callable[[str, dict[str, Any]], dict[s
         # leave recovery_managed unset for the runner's own safe retreat.
         ok = result.get("ok", True) if isinstance(result, dict) else True
         if not ok:
-            return {"ok": False, "reason": result.get("reason") or f"{op} reported not-ok", "result": result}
+            reason = (
+                result.get("reason")
+                or result.get("error")
+                or f"{op} reported not-ok"
+            )
+            return {"ok": False, "reason": reason, "result": result}
         return {"ok": True, "result": result}
 
     def run(op: str, params: dict[str, Any]) -> dict[str, Any]:

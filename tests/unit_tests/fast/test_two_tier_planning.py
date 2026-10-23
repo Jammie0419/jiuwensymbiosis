@@ -295,6 +295,56 @@ def test_a_failing_replanner_leaves_the_original_plan_alone():
     assert res["ok"] is True and log == ["locate", "grip"]
 
 
+def test_a_business_failure_replans_with_the_exact_reason():
+    """A tool reporting ok=False is a planning error; replan instead of aborting.
+
+    Measured failure (215F): the brain planned a dump point 8.06 m from the
+    base while the reach annulus ends at 6 m. ``dig`` correctly refused it, but
+    the runner ended the whole task. The exact reason must reach the re-planner
+    (which can choose a reachable point or move the base) and the task continue.
+    """
+    session = _Session()
+    log: list[str] = []
+    attempts: list[str] = []
+    grip_calls = {"n": 0}
+
+    def executor(op: str, params: dict) -> dict:
+        log.append(op)
+        if op == "grip":
+            grip_calls["n"] += 1
+            if grip_calls["n"] == 1:
+                return {"ok": False, "reason": "dump point outside reach"}
+        if op == "locate":
+            return {"ok": True, "result": {"ok": True, "position": [100.0, 0.0, 50.0]}}
+        return {"ok": True, "result": {"ok": True}}
+
+    def replan(world, why):
+        attempts.append(why)
+        return parse_sequence([{"op": "release"}, {"op": "grip"}], allowed_ops=_index())
+
+    steps = parse_sequence(
+        [
+            {"op": "locate", "params": {"object_name": "crate"}, "bind": "crate"},
+            {"op": "grip"},
+        ],
+        allowed_ops=_index(),
+    )
+    res = run_sequence(
+        session,
+        steps,
+        executor=executor,
+        action_index=_index(),
+        replan=replan,
+        max_replans=1,
+    )
+    assert res["ok"] is True
+    assert len(attempts) == 1 and "dump point outside reach" in attempts[0]
+    assert log == ["locate", "grip", "release", "grip"]
+    assert [
+        s["op"] for s in res["steps"] if s["op"] != "<replan>" and s["ok"]
+    ] == ["locate", "release", "grip"]
+
+
 # --------------------------------------------------------------------------- #
 # Runtime: the sensing the next step acts on was invalidated after the plan was written
 # --------------------------------------------------------------------------- #

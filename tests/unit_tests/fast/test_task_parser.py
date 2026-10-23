@@ -69,3 +69,32 @@ def test_timeout_is_forwarded(monkeypatch):
     monkeypatch.setattr(planner, "_chat", _fake_chat)
     planner.parse_task("抓杯子", api_base="x", model_name="m", timeout_s=123.0)
     assert seen["timeout_s"] == 123.0
+
+
+def test_parse_task_disables_thinking_by_default(monkeypatch):
+    """A reasoning model must not burn the read window before answering.
+
+    Measured (glm-5, 2026-10-22): the compiler (thinking disabled) answered in
+    ~2 s while the parser (thinking unspecified) timed out three times at 60 s.
+    """
+    seen: dict = {}
+
+    def _fake_chat(*args, **kwargs):
+        seen.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(planner, "_chat", _fake_chat)
+    planner.parse_task("抓杯子", api_base="x", model_name="m")
+    assert seen["thinking_mode"] == "disabled"
+
+
+def test_parse_task_can_leave_thinking_unspecified_for_incompatible_endpoint(monkeypatch):
+    seen: dict = {}
+
+    def _fake_chat(*args, **kwargs):
+        seen.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(planner, "_chat", _fake_chat)
+    planner.parse_task("抓杯子", api_base="x", model_name="m", thinking_mode=None)
+    assert seen["thinking_mode"] is None

@@ -66,6 +66,20 @@ class TestAbilityExecutorSurfacesBusinessOk:
         assert res["ok"] is False
         assert res["reason"] == "approach_for_grasp reported not-ok"
 
+    def test_business_ok_false_uses_the_error_field(self):
+        """``dig`` returns ``{ok: false, error: ...}``; that reason must survive.
+
+        Measured failure: an out-of-reach dump point was reported as the useless
+        "dig reported not-ok", hiding the annulus message that says how to fix it.
+        """
+        run = _run_for(
+            _tool_output(success=True, result={"ok": False, "error": "dump point outside"})
+        )
+        res = run("dig", {})
+        assert res["ok"] is False
+        assert res["reason"] == "dump point outside"
+        assert res["result"]["error"] == "dump point outside"
+
     def test_business_ok_true_passes_through(self):
         run = _run_for(_tool_output(success=True, result={"ok": True, "status": "in_band"}))
         assert run("approach_for_grasp", {}) == {"ok": True, "result": {"ok": True, "status": "in_band"}}

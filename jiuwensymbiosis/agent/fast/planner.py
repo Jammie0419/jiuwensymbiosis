@@ -375,6 +375,7 @@ def parse_task(
     temperature: float = 0.0,
     proxy: str | None = None,
     attempts: int = 3,
+    thinking_mode: str | None = "disabled",
 ) -> dict[str, Any]:
     """LLM① — parse a natural-language task into structured intent.
 
@@ -382,6 +383,11 @@ def parse_task(
     safe defaults on a parse failure). This is the first of the two LLM calls;
     its ``targets`` drive the pre-plan perception (which objects to detect) and
     its structure informs the planner (LLM②).
+
+    ``thinking_mode`` defaults to ``"disabled"`` like the compiler: a reasoning
+    model (glm-5) otherwise spends the whole read window on reasoning and the
+    intent parse times out even though the same model answers the compiler in
+    seconds. Pass ``None`` for an endpoint that rejects the extension.
     """
     user = f"任务：{query}\n\n请输出结构化意图 JSON 对象。"
     text = _chat(
@@ -395,6 +401,7 @@ def parse_task(
         proxy=proxy,
         attempts=attempts,
         max_tokens=256,
+        thinking_mode=thinking_mode,
     )
     parsed = _validate_parsed(_extract_json_object(text))
     logger.info("[parser] task=%r → intent=%s", query, parsed)
