@@ -74,6 +74,7 @@ def execute_pose_dig_cycle(
     dig_bucket_curl_native: float = 0.1,
     dump_bucket_open_native: float | None = None,
     ik_tolerance_m: float = 0.05,
+    dump_tolerance_m: float = 0.25,
     contact_tolerance_m: float = 0.25,
     ik_max_iters: int = 80,
     ik_stall_iters: int = 8,
@@ -408,7 +409,7 @@ def execute_pose_dig_cycle(
     for _ in range(int(ik_max_iters)):
         q_try = ik.step_ik_fixed(q_try, dump, 3, curl_value, 0.35)
     closed_error = float(np.linalg.norm(ik.forward(q_try) - dump))
-    if closed_error > float(ik_tolerance_m):
+    if closed_error > float(dump_tolerance_m):
         raise ValueError(
             f"dump pose ({dump_x:.2f}, {dump_y:.2f}, {dump_z:.2f}) cannot be "
             f"reached while carrying the bucket closed ({closed_error:.2f} m "
@@ -416,8 +417,15 @@ def execute_pose_dig_cycle(
             "high), or move the undercarriage first."
         )
     if dump_pitch is not None:
-        goto(dump_approach, pitch=dump_pitch, label="dump_approach")
-        goto(dump, pitch=dump_pitch, label="dump")
+        goto(
+            dump_approach,
+            pitch=dump_pitch,
+            label="dump_approach",
+            tolerance=dump_tolerance_m,
+        )
+        dump_error = goto(
+            dump, pitch=dump_pitch, label="dump", tolerance=dump_tolerance_m
+        )
     else:
         q_dump_approach = np.asarray(q, dtype=np.float64).copy()
         for _ in range(int(ik_max_iters)):
@@ -427,7 +435,7 @@ def execute_pose_dig_cycle(
         dump_approach_error = float(
             np.linalg.norm(ik.forward(q_dump_approach) - dump_approach)
         )
-        if dump_approach_error <= float(ik_tolerance_m) and play_native(
+        if dump_approach_error <= float(dump_tolerance_m) and play_native(
             ik.policy_to_native(q_dump_approach), "dump_approach"
         ):
             q = ik.native_to_policy(driver.get_joint_positions())
@@ -437,8 +445,22 @@ def execute_pose_dig_cycle(
                 joint_index=3,
                 value=curl_value,
                 label="dump_approach",
+                tolerance=dump_tolerance_m,
             )
-        goto_fixed(dump, joint_index=3, value=curl_value, label="dump")
+        dump_error = goto_fixed(
+            dump,
+            joint_index=3,
+            value=curl_value,
+            label="dump",
+            tolerance=dump_tolerance_m,
+        )
+    if dump_error > float(ik_tolerance_m):
+        logger.warning(
+            "[ik] dump reached within %.3f m (dump tolerance %.3f m); "
+            "opening the bucket at the achieved pose",
+            dump_error,
+            dump_tolerance_m,
+        )
 
     driver.move_joints_blocking({"bucket": dump_open_native})
     if dump_dwell_s > 0:

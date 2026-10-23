@@ -144,6 +144,7 @@ class AgxExcavatorApi(SimMachineApi):
                     dig_bucket_curl_native=cfg.dig_bucket_curl_rad,
                     dump_bucket_open_native=cfg.dump_bucket_open_rad,
                     ik_tolerance_m=cfg.ik_tolerance_m,
+                    dump_tolerance_m=cfg.dump_tolerance_m,
                     contact_tolerance_m=cfg.contact_tolerance_m,
                     ik_max_iters=cfg.ik_max_iters,
                     ik_stall_iters=cfg.ik_stall_iters,

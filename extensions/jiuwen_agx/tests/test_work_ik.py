@@ -77,7 +77,13 @@ class _FakeDriver:
         self._loaded = bool(loaded)
 
 
-def _run(ik: ExcavatorIk, driver: _FakeDriver, dump):
+def _run(
+    ik: ExcavatorIk,
+    driver: _FakeDriver,
+    dump,
+    *,
+    dump_tolerance_m: float = 0.25,
+):
     return execute_pose_dig_cycle(
         driver,
         ik=ik,
@@ -91,6 +97,7 @@ def _run(ik: ExcavatorIk, driver: _FakeDriver, dump):
         dig_bucket_open_native=1.5,
         dig_bucket_curl_native=0.1,
         ik_tolerance_m=0.05,
+        dump_tolerance_m=dump_tolerance_m,
         ik_max_iters=80,
         ik_stall_iters=8,
         dump_dwell_s=0.0,
@@ -101,7 +108,9 @@ def test_dump_point_is_reached_with_bucket_open():
     ik = _ik()
     result = _run(ik, _FakeDriver(ik), (5.0, -1.0, 3.5))
     assert result["mode"] == "ik"
-    assert result["tip_error_m"] <= 0.05
+    # The dump uses its own (looser) arrival tolerance; the achieved residual
+    # is allowed to exceed the dig tolerance before the bucket is opened.
+    assert result["tip_error_m"] <= 0.25
     assert result["volume_m3"] > 0.0
 
 

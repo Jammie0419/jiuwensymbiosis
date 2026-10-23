@@ -73,8 +73,9 @@ offset = 0 / +61.8273 / -154.3403 / +216.6141 度
   → 原地收斗（1.5→0.1）→ 用 carry 姿态举升 → dump_approach → dump（斗合着）
   → 原地外翻（0.1→1.5）→ 驻留；每点闭环读 `snapshot().tip.policy_m` 纠偏。
   接触段（press/drag）用 `contact_tolerance_m`（默认 25 cm）——土硬时压不到
-  命令深度，按实际入土继续拖切；大脑给的 entry/dump 点仍按 `ik_tolerance_m`
-  （215F 实测 10 cm）。
+  命令深度，按实际入土继续拖切；挖点 entry 仍按 `ik_tolerance_m`（215F 实测
+  10 cm），卸点按 `dump_tolerance_m`（默认 25 cm）——远侧卸点摆转接近 180°
+  时模型残差可达 ~20 cm，按 10 cm 会在开斗前抛错。
 - 收斗后检查 `scoop_state()`；没装上料会直接失败，不再把空斗当成功。
 - 超差、不可达、或卸完 `scoop_state()` 仍为真 → `ok:false + error`；大脑据此
   移动底盘或换点。自由空间段已走平滑轨迹播放，一斗约 44 s；接触段

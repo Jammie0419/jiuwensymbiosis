@@ -112,6 +112,10 @@ class AgxExcavatorConfig(SimMachineConfig):
     # 卸料时铲斗张不开（tip 在开斗状态下到不了低点），所以默认抬高。
     dump_clearance_m: float = 3.0
     ik_tolerance_m: float = 0.05
+    # 卸点到达容差：远侧卸点（摆转接近 180°）的模型残差可能到 ~0.2 m，
+    # 按挖点同样 0.10 m 会“到不了就抛错”，连开斗都执行不到。卸点单独放宽；
+    # 到达后仍会原地外翻开斗并检查载料。
+    dump_tolerance_m: float = 0.25
     # 接触段（press/drag/curl）容差：土硬时铲尖压不到命令深度，按实际入土
     # 深度继续拖切，不把“咬不深”当成“到不了大脑给的点”。
     contact_tolerance_m: float = 0.25
@@ -200,6 +204,7 @@ class AgxExcavatorConfig(SimMachineConfig):
             "dig_bucket_curl_rad",
             "dump_clearance_m",
             "ik_tolerance_m",
+            "dump_tolerance_m",
             "contact_tolerance_m",
         ):
             setattr(cfg, name, float(getattr(cfg, name)))
@@ -208,6 +213,11 @@ class AgxExcavatorConfig(SimMachineConfig):
         if cfg.dump_clearance_m < 0:
             raise ValueError(
                 f"{cls.__name__}: dump_clearance_m must be >= 0, got {cfg.dump_clearance_m}"
+            )
+        if cfg.dump_tolerance_m < 0:
+            raise ValueError(
+                f"{cls.__name__}: dump_tolerance_m must be >= 0, "
+                f"got {cfg.dump_tolerance_m}"
             )
         if cfg.contact_tolerance_m < 0:
             raise ValueError(
