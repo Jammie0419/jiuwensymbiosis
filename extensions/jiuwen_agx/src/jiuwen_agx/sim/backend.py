@@ -52,7 +52,7 @@ PROTOCOL_VERSION = 1
 
 # Default mock terrain: one pile to dig from. Ground points, base frame, metres.
 DEFAULT_PILES: list[dict[str, Any]] = [
-    {"name": "soil_pile", "x_m": -2.0, "y_m": 1.0, "volume_m3": 2.0},
+    {"name": "soil_pile", "x_m": -2.0, "y_m": 1.0, "z_m": 0.0, "volume_m3": 2.0},
 ]
 
 
@@ -79,6 +79,22 @@ class SimBackend(Protocol):
     ) -> dict[str, float]:
         """Command absolute joint targets (unmentioned joints hold), block until
         reached or timeout, return the full joint state after the motion."""
+
+    def play_trajectory(
+        self,
+        frames: list[list[float]],
+        *,
+        rate_hz: float = 60.0,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        """Play a fixed-rate joint trajectory; columns follow ``cfg.joint_names``.
+        Blocks until the last frame is applied (a viewer bridge polls internally)."""
+
+    def player_state(self) -> dict:
+        """{playing, done, frame, total, rate_hz} for the active/last playback."""
+
+    def stop_trajectory(self) -> dict:
+        """Stop playback; joints hold their last commanded targets."""
 
     def navigate_relative(
         self, dx_m: float, dyaw_rad: float, *, timeout_s: float
@@ -110,6 +126,19 @@ class SimBackend(Protocol):
         """One (rgb, depth) frame pair, or ``None`` when no camera is available.
         Like the smoke-test stub: a backend without a camera returns None rather
         than inventing content."""
+
+    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+        """Current joints + optional bucket-tip pose and soil heights at ``points``.
+
+        ``None`` = this backend cannot observe a tip/surface (mock or an old
+        bridge); the caller falls back to the keyframe work cycle. A returning
+        mapping may omit ``tip``/``surface_m`` — check before use."""
+
+    def surface(self, points: list[list[float]]) -> list[float | None] | None:
+        """Soil height (metres, base frame) at each ``(x, y)`` point.
+
+        ``None`` = unsupported; entries may be ``None`` when a point is outside
+        the height-field grid."""
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +230,41 @@ class MockSimBackend:
         self.move_log.append({"cmd": "move_joints", "targets": dict(clean)})
         return dict(self._joints)
 
+    def play_trajectory(
+        self,
+        frames: list[list[float]],
+        *,
+        rate_hz: float = 60.0,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        self._require_open()
+        rows = [[float(v) for v in row] for row in frames]
+        if rows:
+            last = rows[-1]
+            self._joints.update(
+                {
+                    name: last[index]
+                    for index, name in enumerate(self._joint_names)
+                    if index < len(last)
+                }
+            )
+        self.move_log.append(
+            {"cmd": "play_trajectory", "frames": len(rows), "rate_hz": rate_hz}
+        )
+        return {"done": True, "frames": len(rows), "rate_hz": float(rate_hz)}
+
+    def player_state(self) -> dict:
+        return {
+            "playing": False,
+            "done": True,
+            "frame": 0,
+            "total": 0,
+            "rate_hz": 0.0,
+        }
+
+    def stop_trajectory(self) -> dict:
+        return {"stopped": True}
+
     # -- undercarriage
     def navigate_relative(
         self, dx_m: float, dyaw_rad: float, *, timeout_s: float
@@ -229,7 +293,10 @@ class MockSimBackend:
     # -- terrain / scoop
     def read_terrain(self) -> list[dict[str, Any]]:
         self._require_open()
-        return [dict(p) for p in self._piles]
+        return [
+            {**dict(p), "z_m": float(p.get("z_m", 0.0))}
+            for p in self._piles
+        ]
 
     def scoop_state(self) -> bool:
         return self._scoop
@@ -239,6 +306,12 @@ class MockSimBackend:
 
     # -- camera (stage B: mock has no camera — None, never invented frames)
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
+        return None
+
+    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+        return None
+
+    def surface(self, points: list[list[float]]) -> list[float | None] | None:
         return None
 
 
@@ -287,6 +360,21 @@ class InProcessAgxBackend:
     ) -> dict[str, float]:
         raise RuntimeError("InProcessAgxBackend: not open")
 
+    def play_trajectory(
+        self,
+        frames: list[list[float]],
+        *,
+        rate_hz: float = 60.0,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        raise RuntimeError("InProcessAgxBackend: not open")
+
+    def player_state(self) -> dict:
+        raise RuntimeError("InProcessAgxBackend: not open")
+
+    def stop_trajectory(self) -> dict:
+        raise RuntimeError("InProcessAgxBackend: not open")
+
     def navigate_relative(
         self, dx_m: float, dyaw_rad: float, *, timeout_s: float
     ) -> dict:
@@ -309,6 +397,12 @@ class InProcessAgxBackend:
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         return None
 
+    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+        raise RuntimeError("InProcessAgxBackend: not open")
+
+    def surface(self, points: list[list[float]]) -> list[float | None] | None:
+        raise RuntimeError("InProcessAgxBackend: not open")
+
 
 # ---------------------------------------------------------------------------
 # remote — bridge over TCP (works today, AGX or bridge --demo on the other end)
@@ -328,6 +422,7 @@ class RemoteSimBackend:
         self._port = int(getattr(cfg, "port", 9700))
         self._startup_timeout_s = float(getattr(cfg, "startup_timeout_s", 60.0))
         self._default_timeout_s = float(getattr(cfg, "move_timeout_s", 30.0))
+        self._joint_names = tuple(str(name) for name in getattr(cfg, "joint_names", ()))
         self._sock: socket.socket | None = None
         self._file: Any = None
 
@@ -460,6 +555,56 @@ class RemoteSimBackend:
                 joints = self.read_joints()
         return joints
 
+    def play_trajectory(
+        self,
+        frames: list[list[float]],
+        *,
+        rate_hz: float = 60.0,
+        timeout_s: float = 30.0,
+    ) -> dict:
+        import time as _time
+
+        rows = [[float(v) for v in row] for row in frames]
+        if not rows:
+            raise ValueError("play_trajectory: empty frames")
+        if self._joint_names and any(
+            len(row) != len(self._joint_names) for row in rows
+        ):
+            raise ValueError(
+                f"play_trajectory: every frame needs {len(self._joint_names)} "
+                f"values (joint_names={list(self._joint_names)})"
+            )
+        resp = self._call(
+            {
+                "cmd": "play_trajectory",
+                "frames": rows,
+                "names": list(self._joint_names),
+                "rate_hz": float(rate_hz),
+                "timeout_s": float(timeout_s),
+            },
+            read_timeout_s=float(timeout_s) + 5.0,
+        )
+        if not resp.get("async"):
+            return resp
+        deadline = _time.monotonic() + float(timeout_s) + 5.0
+        state = resp
+        while _time.monotonic() < deadline:
+            state = self._call({"cmd": "player_state"})
+            if state.get("done"):
+                return state
+            _time.sleep(0.05)
+        self.stop_trajectory()
+        raise TimeoutError(
+            f"play_trajectory: not done after {timeout_s:.1f}s "
+            f"(frame {state.get('frame')}/{state.get('total')})"
+        )
+
+    def player_state(self) -> dict:
+        return self._call({"cmd": "player_state"})
+
+    def stop_trajectory(self) -> dict:
+        return self._call({"cmd": "stop_trajectory"})
+
     # -- undercarriage
     def _await_base_idle(self, timeout_s: float, cmd: str) -> None:
         """pump 模式的底盘命令是"发了就走"：轮询到停车，恢复本协议承诺的阻塞语义。
@@ -523,6 +668,18 @@ class RemoteSimBackend:
 
     def mark_scoop(self, loaded: bool) -> None:
         self._call({"cmd": "mark_scoop", "loaded": bool(loaded)})
+
+    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+        try:
+            return self._call({"cmd": "snapshot", "points": points or []})
+        except Exception:  # noqa: BLE001 - old bridge has no snapshot: keyframe fallback
+            return None
+
+    def surface(self, points: list[list[float]]) -> list[float | None] | None:
+        try:
+            return self._call({"cmd": "surface", "points": points}).get("surface_m")
+        except Exception:  # noqa: BLE001 - old bridge has no surface query
+            return None
 
     # -- camera (stage B)
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:

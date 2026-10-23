@@ -122,7 +122,7 @@ class TestMockBackend:
         )
         backend.open()
         assert backend.read_terrain() == [
-            {"name": "p", "x_m": 1.0, "y_m": 2.0, "volume_m3": 3.0}
+            {"name": "p", "x_m": 1.0, "y_m": 2.0, "z_m": 0.0, "volume_m3": 3.0}
         ]
         assert backend.scoop_state() is False
         backend.mark_scoop(True)
@@ -192,6 +192,44 @@ class TestDriver:
         driver = SimMachineDriver(_cfg(), backend=MockSimBackend(_cfg()))
         with pytest.raises(RuntimeError, match="connect"):
             driver.get_joint_positions()
+
+
+class TestTrajectoryPlayback:
+    def test_play_trajectory_moves_to_last_frame(self):
+        driver = _driver()
+        result = driver.play_trajectory(
+            [[0.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0, 4.0]], rate_hz=60.0
+        )
+        assert result["done"] is True
+        assert driver.get_joint_positions() == {
+            "swing": 1.0,
+            "boom": 2.0,
+            "arm": 3.0,
+            "bucket": 4.0,
+        }
+        assert driver._backend.move_log[-1]["cmd"] == "play_trajectory"
+
+    def test_rejects_wrong_column_count(self):
+        driver = _driver()
+        with pytest.raises(ValueError, match="values, expected 4"):
+            driver.play_trajectory([[0.0, 0.0, 0.0]], rate_hz=60.0)
+
+    def test_rejects_out_of_limit_frame(self):
+        driver = _driver()
+        with pytest.raises(ValueError, match="outside configured limits"):
+            driver.play_trajectory(
+                [[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 500.0]], rate_hz=60.0
+            )
+
+    def test_rejects_nonpositive_rate(self):
+        driver = _driver()
+        with pytest.raises(ValueError, match="rate_hz must be > 0"):
+            driver.play_trajectory([[0.0, 0.0, 0.0, 0.0]], rate_hz=0.0)
+
+    def test_player_state_and_stop(self):
+        driver = _driver()
+        assert driver.player_state()["done"] is True
+        assert driver.stop_trajectory()["stopped"] is True
 
 
 # ============================================================================ env

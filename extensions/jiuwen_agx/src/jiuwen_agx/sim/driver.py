@@ -125,6 +125,69 @@ class SimMachineDriver:
             ),
         )
 
+    def play_trajectory(
+        self,
+        frames: list[list[float]],
+        *,
+        rate_hz: float = 60.0,
+        timeout_s: float | None = None,
+    ) -> dict:
+        """Play a fixed-rate joint trajectory (columns = ``joint_names`` order).
+
+        Frames are validated against the configured joint limits before they
+        reach the simulator, so a bad trajectory is refused locally instead of
+        driving the body into a limit and timing out.
+        """
+        self._require_connected()
+        if not frames:
+            raise ValueError(f"{self._cfg.name}: empty trajectory")
+        rate = float(rate_hz)
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError(f"{self._cfg.name}: rate_hz must be > 0, got {rate_hz!r}")
+        names = tuple(self._cfg.joint_names)
+        limits = self._cfg.joint_limits
+        clean: list[list[float]] = []
+        for index, row in enumerate(frames):
+            if len(row) != len(names):
+                raise ValueError(
+                    f"{self._cfg.name}: trajectory frame {index} has {len(row)} "
+                    f"values, expected {len(names)} ({list(names)})"
+                )
+            values = [float(value) for value in row]
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError(
+                    f"{self._cfg.name}: trajectory frame {index} has non-finite values"
+                )
+            if limits is not None:
+                for name, value in zip(names, values, strict=True):
+                    if name in limits:
+                        low, high = limits[name]
+                        if not (low <= value <= high):
+                            raise ValueError(
+                                f"{self._cfg.name}: trajectory frame {index} joint "
+                                f"{name!r} target {value} outside configured limits "
+                                f"[{low}, {high}]"
+                            )
+            clean.append(values)
+        duration_s = (len(clean) - 1) / rate
+        effective_timeout = max(
+            float(timeout_s) if timeout_s is not None else 0.0,
+            duration_s + 5.0,
+        )
+        return self._backend.play_trajectory(
+            clean,
+            rate_hz=rate,
+            timeout_s=effective_timeout,
+        )
+
+    def player_state(self) -> dict:
+        self._require_connected()
+        return self._backend.player_state()
+
+    def stop_trajectory(self) -> dict:
+        self._require_connected()
+        return self._backend.stop_trajectory()
+
     def home(self) -> None:
         """Return to the configured home joint posture. No home_joints = no-op."""
         if not self._cfg.home_joints:
@@ -200,6 +263,16 @@ class SimMachineDriver:
     def mark_scoop(self, loaded: bool) -> None:
         """Sim-truth write for work cycles; see SimBackend.mark_scoop."""
         self._backend.mark_scoop(loaded)
+
+    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+        """Joints + optional bucket-tip pose and soil heights; None if unsupported."""
+        self._require_connected()
+        return self._backend.snapshot(points)
+
+    def surface(self, points: list[list[float]]) -> list[float | None] | None:
+        """Soil height at each base-frame (x, y); None if unsupported."""
+        self._require_connected()
+        return self._backend.surface(points)
 
     # ------------------------------------------------------------------ camera (stage B)
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:

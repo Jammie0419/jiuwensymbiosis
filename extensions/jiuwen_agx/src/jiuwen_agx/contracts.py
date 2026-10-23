@@ -33,6 +33,7 @@ class PileInfo(TypedDict):
     name: str
     x_m: float
     y_m: float
+    z_m: float
     volume_m3: float
 
 
@@ -45,7 +46,7 @@ class TerrainScan(TypedDict):
     """
 
     ok: Literal[True]
-    piles: list  # list[PileInfo]
+    piles: list[PileInfo]
 
 
 class DigFailure(TypedDict):
@@ -66,6 +67,11 @@ class DigResult(TypedDict, total=False):
     ok: Literal[True]
     volume_m3: float
     cycle_s: float
+    # Which work cycle actually ran, and the worst IK residual when the body
+    # executed a 3D bucket-tip pose. Both optional: a keyframe/older backend
+    # omits them.
+    mode: Literal["keyframe", "ik"]
+    tip_error_m: float
 
 
 class ActFailure(TypedDict):

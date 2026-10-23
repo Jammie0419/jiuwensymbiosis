@@ -163,7 +163,16 @@ class TestRegistration:
 
     def test_act_exec_contract_mirrors_dig(self):
         dig = planner_vocabulary(["motion.excavator"])["dig"]
-        assert ACT_EXECUTE.params == dig.params
+        # act_exec is the learned 2D goal; the policy supplies its own
+        # calibrated depths, so it deliberately does not mirror dig's optional
+        # z/pitch fields.
+        assert set(ACT_EXECUTE.params) == {
+            "dig_x_m",
+            "dig_y_m",
+            "dump_x_m",
+            "dump_y_m",
+        }
+        assert set(ACT_EXECUTE.params) <= set(dig.params)
         assert ACT_EXECUTE.requires == dig.requires == ("payload.clear",)
         assert ACT_EXECUTE.invalidates_locations is True
 
