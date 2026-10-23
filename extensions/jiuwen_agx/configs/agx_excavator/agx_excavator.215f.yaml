@@ -1,0 +1,155 @@
+# AGX 215F（SWE215F / describe_215i）挖掘机配置 —— 和 365 同一条控制链。
+#
+# 场景由 `scripts/agx_215f_scene.py` 搭建（山河交付包的 Excavator215FEnv：
+# 可变形 agxTerrain 土壤 + Shovel + 265 kg 岩石）；底盘固定、无履带。
+#
+# 用法（和 365 一一对应）：
+#   start_agx_bridge_215f.bat
+#   python extensions\jiuwen_agx\scripts\control\agx_scene_probe.py --bridge --port 9700
+#   python examples\run_task.py --config <本文件> --query "把土堆挖一斗倒旁边"
+#
+# 单位：四个关节全是旋转关节，一律弧度（365 是混合单位、joint_units 留空；
+# 两份配置别混用）。
+#
+# 关键帧来源：小脑组 215F 参考轨迹 agx_task_215f.json 的 reference_q_rad，
+# 按 q_AGX = q_policy − offset（sign +1，offset 0 / +61.8273 / −154.3403 /
+# +216.6141 度）换算后抽样：ready=f20、dig=f32、curl=f36；dump 用旧脚本在
+# 215F 上的实测值。六个关键帧与 365 的 dig 循环完全同构。
+#
+# 本机私有值（API key 等）复制成 *.local.yaml 再改，不要改这份。
+
+adapter: agx_excavator
+
+env:
+  cfg:
+    low_level:
+      backend: "remote"
+      host: "127.0.0.1"
+      port: 9700
+      startup_timeout_s: 60.0
+      # 单帧到位超时；带土时动臂被土顶住会慢一些，不够就调大。
+      move_timeout_s: 30.0
+
+      # 工作关节（顺序 = q 索引顺序）。桥接侧映射：
+      #   swing=base_to_shangche, boom=dongbi_joint,
+      #   arm=dougan_joint, bucket=chandou_joint
+      joint_names: ["swing", "boom", "arm", "bucket"]
+      joint_units: "rad"
+      swing_unit: "rad"
+
+      # 限位（rad）：URDF/场景实测行程，SafetyRail 与 driver 都据此拦截。
+      joint_limits:
+        swing: [-3.14159, 3.14159]
+        boom: [-1.570796, 1.570796]
+        arm: [0.0, 2.218300]
+        bucket: [0.0, 3.248105]
+
+      # 安全收拢姿态（rad）：交付环境的复现位形（DIRECT_INIT）。
+      home_joints:
+        swing: 0.0
+        boom: -0.670305
+        arm: 0.678116
+        bucket: 1.992748
+
+      # dig 六段关键帧（弧度；键名沿用历史 *_deg 命名）。
+      # ready=f20、dig=f32、curl=f36；dump 为 215F 实测卸料位形。
+      dig_cycle_tuning:
+        swing_offset_deg: 0.0
+        ready_boom_deg: -0.392224
+        ready_arm_deg: 1.329440
+        ready_bucket_deg: 0.001275
+        dig_boom_deg: -0.550090
+        dig_arm_deg: 1.084667
+        dig_bucket_deg: 0.386657
+        curl_boom_deg: -0.641547
+        curl_arm_deg: 1.109371
+        curl_bucket_deg: 0.449709
+        # dump 位形比旧值低：boom 0.6→0.2、arm 1.75→1.35，收斗角仍为 0，
+        # 倒完不会把铲斗举在半空。
+        dump_boom_deg: 0.200000
+        dump_arm_deg: 1.350000
+        dump_bucket_deg: 0.0
+        bucket_volume_m3: 0.9
+
+      # 自然挖掘段（可选）：抬升 → 对准 → 就位 → 四点拖切 → 举升 → 摆转 → 卸料驻留。
+      # 值都是各关节原生单位（rad）。拖切点/举升位形取自 215F 参考轨迹的切入段与
+      # 搬运段；举升时保持收斗角（bucket=curl 的 0.449709），避免摆转途中撒土。
+      dig_travel:
+        boom: -0.068668
+        arm: 1.019556
+        bucket: 0.900000
+      dig_cut_path:
+        - {boom: -0.341422, arm: 1.267733, bucket: 0.043798}
+        - {boom: -0.445069, arm: 1.143025, bucket: 0.218137}
+        - {boom: -0.550090, arm: 1.084667, bucket: 0.386657}
+        - {boom: -0.641547, arm: 1.109371, bucket: 0.449709}
+      dig_carry:
+        boom: -0.280293
+        arm: 0.917791
+        bucket: 0.449709
+      # 卸料后驻留，等土从斗里流光（旧实测 1.5 s 足够）
+      dig_dump_dwell_s: 1.5
+
+      # 挖掘方式：ik = 大脑给 3D 铲尖位姿，本机用标定 IK 执行；
+      # 快照不可用时自动回落到上面的 keyframe 段。365 不写这个字段（默认 keyframe）。
+      dig_mode: ik
+      dig_ik_machine: "configs/machine_swe215f.json"
+      approach_gap_m: 0.35
+      bite_m: 0.25
+      cut_length_m: 1.0
+      carry_lift_m: 1.0
+      # 铲斗角（原生 rad）：入土/拖切时张开 1.5，收斗时往机身内侧合到 0.1，
+      # 卸料时再往外翻到 2.0。0.0 是往内翻的一端，不是卸料方向。
+      dig_bucket_open_rad: 1.5
+      dig_bucket_curl_rad: 0.1
+      # 1.5 已能倒空；2.0 翻得更开（实测 62 s、卸完 0 kg）。
+      dump_bucket_open_rad: 2.0
+      # 没给 dump_z_m 时，卸点 = 该点地形高度 + 这个余量。太低太近的卸点
+      # 手臂带料够不着、也没有空间往外翻斗，默认抬高 3 m。
+      dump_clearance_m: 3.0
+      # 实测铲尖与模型在非静止位形下差 ~5.5 cm（静止位 6 mm），5 cm 容差
+      # 会在 approach 就卡住；给到 10 cm，大脑给的挖点/卸点仍按该容差闭环。
+      ik_tolerance_m: 0.10
+      # 接触段（press/drag/curl）：土硬时压不到命令深度，按实际入土继续拖切。
+      contact_tolerance_m: 0.25
+      ik_max_iters: 80
+      ik_stall_iters: 8
+
+      # 215F 交付模型是 fixed-base 简化：没有履带关节。我们把整机做成
+      # 运动学底盘（释放 root LockJoint + base_link KINEMATICS），可以整机
+      # 平移/旋转到目标附近；履带不转、无履带-土壤接触。
+      has_base: true
+      base_step_limits: [1.0, 0.7]   # 每命令 ≤1 m / ≤0.7 rad，大位移拆多条
+
+      # 地形真值（get_terrain）。remote 后端从场景工厂读**动态最高点**；
+      # 这里的 terrain_piles 只给 mock 后端与文档，不代表固定的挖点/卸点。
+      # 真正的 dig/dump 坐标由大脑每次根据 get_terrain 规划，不在配置里写死。
+      terrain_enabled: true
+      terrain_piles:
+        - name: "soil_pile_215f"
+          x_m: 5.0
+          y_m: 2.0
+          z_m: 1.95
+          volume_m3: 9.98
+
+      reach_min_m: 1.0
+      reach_max_m: 6.0
+
+      camera_enabled: false
+      camera_resolution: [640, 480]
+
+model:
+  provider: OpenAI
+  api_base: "https://coding.dashscope.aliyuncs.com/v1"
+  api_key: ""                    # 留空；用 --api-key 或 *.215f.local.yaml 注入
+  model_name: "glm-5"
+  temperature: 0.3
+  max_tokens: 2048
+
+agent:
+  log_level: INFO
+  log_dir: ./logs
+  exec_mode: fastagent
+  enable_skill: true
+  # GLM-5 这类推理模型实测 60 s 会被读超时打断三次；给慢端点留足时间。
+  intent_timeout_s: 120.0

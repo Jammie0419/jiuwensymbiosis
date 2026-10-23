@@ -126,6 +126,10 @@ def execute_dig_cycle(
     reach_max_m: float = 6.0,
     swing_unit: str = "deg",
     depth_scale: float = 1.0,
+    travel: dict[str, float] | None = None,
+    cut_path: list[dict[str, float]] | None = None,
+    carry: dict[str, float] | None = None,
+    dump_dwell_s: float = 0.0,
 ) -> dict[str, float]:
     """Run one dig-and-dump cycle on ``driver``; return {volume_m3, cycle_s}.
 
@@ -141,11 +145,21 @@ def execute_dig_cycle(
     recorder uses this to vary bite depth with goal radius (远挖浅咬) so the
     learned policy sees goal-dependent behaviour, not one fixed curve.
 
+    Optional natural-cycle stages (all default off, so 365 keeps the original
+    six-move behaviour):
+      ``travel``      raise to a clear pose before slewing to the dig bearing;
+      ``cut_path``    follow a list of frames instead of the dig/curl pair,
+                      making the cut a dragged slice rather than one jump;
+      ``carry``       lift/retract the loaded bucket before the dump swing;
+      ``dump_dwell_s`` hold the dump pose so the soil can empty.
+
     Raises ValueError (surfaced by the api as a DigFailure dict) through
     :func:`check_cycle_preconditions`, or when ``depth_scale`` leaves [0, 1].
     """
     if not (0.0 <= depth_scale <= 1.0):
         raise ValueError(f"depth_scale must be within [0, 1], got {depth_scale!r}")
+    if dump_dwell_s < 0:
+        raise ValueError(f"dump_dwell_s must be >= 0, got {dump_dwell_s!r}")
     check_cycle_preconditions(
         driver,
         dig_x_m=dig_x_m,
@@ -194,14 +208,32 @@ def execute_dig_cycle(
     }
 
     started = time.perf_counter()
-    # 对准 → 就位 → 下铲 → 收斗(装满) → 摆转 → 卸料
+    # 抬升 → 对准 → 就位 → 拖切/收斗 → 举升 → 摆转 → 卸料(驻留)
+    if travel is not None:
+        driver.move_joints_blocking(dict(travel))
     driver.move_joints_blocking({"swing": swing_dig})
     driver.move_joints_blocking(dict(ready))
-    driver.move_joints_blocking(dig)
-    driver.move_joints_blocking(curl)
+    if cut_path:
+        for frame in cut_path:
+            scaled = {
+                joint: (
+                    ready[joint] + depth_scale * (value - ready[joint])
+                    if joint in ready
+                    else value
+                )
+                for joint, value in frame.items()
+            }
+            driver.move_joints_blocking(scaled)
+    else:
+        driver.move_joints_blocking(dig)
+        driver.move_joints_blocking(curl)
     driver.mark_scoop(True)
+    if carry is not None:
+        driver.move_joints_blocking(dict(carry))
     driver.move_joints_blocking({"swing": swing_dump})
     driver.move_joints_blocking(_frame("dump"))
+    if dump_dwell_s > 0:
+        time.sleep(float(dump_dwell_s))
     driver.mark_scoop(False)
     cycle_s = time.perf_counter() - started
 

@@ -32,6 +32,20 @@ __all__ = ["SimMachineApi"]
 class SimMachineApi(BaseRobotApi):
     """Generic sim-machine surface: joints + undercarriage + terrain truth."""
 
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """Withhold ``motion.base`` when the config declares no undercarriage.
+
+        The base verbs stay implemented (any subclass shares the same surface), so
+        the MRO derivation would otherwise advertise actions whose calls the
+        bridge cannot serve — e.g. 215F, which has a fixed chassis.
+        """
+        caps = super().capabilities
+        cfg = getattr(self.env, "cfg", None)
+        if cfg is not None and not getattr(cfg, "has_base", False):
+            caps = caps - {"motion.base"}
+        return caps
+
     # ============================================================ Joint (motion.joint)
     @implements(MOVE_JOINT)
     def move_joint(self, targets: dict[str, float]) -> Any:

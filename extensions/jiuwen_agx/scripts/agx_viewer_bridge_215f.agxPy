@@ -1,0 +1,160 @@
+# coding: utf-8
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""215F 带窗口桥接 —— 场景工厂 + AGX 窗口 + 每步网络泵。
+
+用 **AGX 自带的 Python** 运行（与 ``agx_viewer_bridge.agxPy`` 同理，不是 agxViewer）::
+
+    start_agx_bridge_215f.bat            rem 一键（本目录）
+
+    rem 手工：
+    set PYTHONPATH=%AGX_DIR%\\bin\\x64\\agxpy;%AGX_DIR%\\data\\python\\modules
+    %AGX_DIR%\\python-x64\\python.exe agx_viewer_bridge_215f.agxPy
+
+与 headless（``agx_bridge_server.py --machine 215f``）的区别只有"谁拥有步进"：
+这里窗口主线程每步调一次 ``adapter.pump()``，命令异步返回，客户端轮询到位
+（viewer 语义）。
+
+环境变量：
+    JIUWEN_BRIDGE_HOST / JIUWEN_BRIDGE_PORT    监听（默认 127.0.0.1:9700）
+    JIUWEN_215F_*                              透传给场景工厂（见 agx_215f_scene.py）
+    JIUWEN_215F_HOLD=1                         桥接退出后保持窗口（默认关窗退出）
+    JIUWEN_215F_REALTIME                       仿真倍率（默认 1.0 = 实时；0 = 全速）
+"""
+
+import os
+import sys
+import time
+
+_SCRIPTS_DIR = os.environ.get("JIUWEN_SCRIPTS_DIR", os.path.dirname(os.path.abspath(__file__)))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+import agx  # noqa: E402
+import agxIO  # noqa: E402
+import agxOSG  # noqa: E402
+
+from agx_bridge_server import AgxSceneAdapter, port_busy, port_busy_hint  # noqa: E402
+
+import agx_215f_scene  # noqa: E402
+
+# 交付环境里的土壤辅助刚体（照他们的做法不渲染）
+_HIDDEN_BODIES = {"215f_shovel_proxy_body"}
+
+
+def _main() -> int:
+    host = os.environ.get("JIUWEN_BRIDGE_HOST", "127.0.0.1")
+    port = int(os.environ.get("JIUWEN_BRIDGE_PORT", "9700"))
+    if port_busy(host, port):
+        print(f"[215f_viewer] {port_busy_hint(host, port)}", flush=True)
+        return 2
+
+    handle = agx_215f_scene.build()
+    sim = handle["sim"]
+    env = handle["env"]
+
+    adapter = AgxSceneAdapter(list(handle["joints"]), {}, None, mode="viewer")
+    adapter.attach_machine(
+        handle["sim"],
+        handle["joints"],
+        units=handle.get("units"),
+        machine_name=handle.get("machine_name", "excavator215f"),
+        terrain_truth=handle.get("terrain_truth"),
+        terrain_truth_fn=handle.get("terrain_truth_fn"),
+        load_mass_fn=handle.get("load_mass_fn"),
+        loaded_threshold_kg=handle.get("loaded_threshold_kg"),
+        tip_fn=handle.get("tip_fn"),
+        surface_fn=handle.get("surface_fn"),
+        base=handle.get("base"),
+    )
+    adapter.start_pump(host, port)
+    print(
+        f"[215f_viewer] pump on {host}:{port} (joints={list(handle['joints'])}, "
+        f"machine={handle['machine_name']})",
+        flush=True,
+    )
+
+    app = agxOSG.ExampleApplication(sim)
+    app.init(agxIO.ArgumentParser())
+    scene_root = app.getScene() or app.getRoot()
+    for rb in sim.getRigidBodies():
+        if rb.getName() in _HIDDEN_BODIES:
+            continue
+        try:
+            agxOSG.createVisual(rb, scene_root)
+        except Exception as exc:  # noqa: BLE001
+            print("[215f_viewer] createVisual 警告:", exc, flush=True)
+    try:
+        renderer = agxOSG.TerrainVoxelRenderer(env.ground, scene_root)
+        renderer.setRenderHeights(False, agx.RangeReal(-1.25, 2.5))
+        renderer.setRenderVoxelSolidMass(False)
+        renderer.setRenderVoxelFluidMass(False)
+        renderer.setRenderHeightField(True)
+        renderer.setRenderVoxelBoundingBox(False)
+        renderer.setRenderSoilParticlesMesh(True)
+        sim.add(renderer)
+    except Exception as exc:  # noqa: BLE001
+        print("[215f_viewer] 地形渲染警告:", exc, flush=True)
+    camera = app.getCameraData()
+    camera.eye = agx.Vec3(11.0, -11.0, 6.0)
+    camera.center = agx.Vec3(3.2, 1.6, 1.2)
+    app.applyCameraData(camera)
+    app.setCameraHome(
+        agx.Vec3(11.0, -11.0, 6.0), agx.Vec3(3.2, 1.6, 1.2), agx.Vec3(0, 0, 1)
+    )
+    # 窗口创建前的 applyCameraData 常常不生效（实测首帧是默认近机位）——窗口出第一帧
+    # 后再套一次全景机位，只套一次，之后鼠标操作归用户。
+    camera_pending = True
+    app.setAutoStepping(False)
+    timer = agx.HighAccuracyTimer()
+    timer.start()
+    # 窗口循环本身不受限，实测跑 14.6× 实时——默认按 1.0 倍速把仿真时间对齐墙钟。
+    rate_raw = os.environ.get("JIUWEN_215F_REALTIME", "1").strip()
+    try:
+        realtime = float(rate_raw) if rate_raw else 1.0
+    except ValueError:
+        print(f"[215f_viewer] WARNING: bad JIUWEN_215F_REALTIME={rate_raw!r}, using 1.0")
+        realtime = 1.0
+    paced = realtime > 0
+    wall_anchor = time.perf_counter()
+    sim_anchor = float(sim.getTimeStamp())
+    print(
+        f"[215f_viewer] window up; pacing={'%.2fx realtime' % realtime if paced else 'full speed'}; "
+        "Ctrl-C here (or close the window) to stop.",
+        flush=True,
+    )
+
+    try:
+        while True:
+            adapter.tick()  # 平滑轨迹播放：先给本步关节目标，再步进
+            sim.stepForward()
+            adapter.pump()  # 每仿真步收发网络（主线程，非阻塞）
+            if not app.executeOneStepWithGraphics(timer):
+                break
+            if camera_pending:
+                camera = app.getCameraData()
+                camera.eye = agx.Vec3(11.0, -11.0, 6.0)
+                camera.center = agx.Vec3(3.2, 1.6, 1.2)
+                app.applyCameraData(camera)
+                camera_pending = False
+            if paced:
+                lag = wall_anchor + (float(sim.getTimeStamp()) - sim_anchor) / realtime
+                lag -= time.perf_counter()
+                if lag > 0:
+                    time.sleep(min(lag, 0.25))
+    except KeyboardInterrupt:
+        pass
+    if os.environ.get("JIUWEN_215F_HOLD", "").strip() in ("1", "true", "yes"):
+        print("[215f_viewer] holding window; close it to exit", flush=True)
+        try:
+            while app.executeOneStepWithGraphics(timer):
+                adapter.pump()
+                time.sleep(0.005)
+        except KeyboardInterrupt:
+            pass
+    print("[215f_viewer] exit", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

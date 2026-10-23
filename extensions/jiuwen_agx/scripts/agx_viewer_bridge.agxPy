@@ -33,7 +33,7 @@
     JIUWEN_BRIDGE_EXCAVATOR   "1"=程序化搭建挖掘机；"0"=对已加载场景做约束发现（默认：场景为空则搭建）
 
 之后从控制端验证/驱动：
-    python scripts/agx_scene_probe.py --bridge --port 9700
+    python scripts/control/agx_scene_probe.py --bridge --port 9700
     python examples/run_task.py --config configs/agx_excavator/agx_excavator.local.yaml ...
 """
 
@@ -86,7 +86,11 @@ def buildScene():
     adapter.start_pump(host, port)
 
     # agxViewer 冻结后台线程 → 网络泵挂到每步回调（viewer 主线程，60Hz）
-    StepEventCallback.preCallback(lambda t: adapter.pump())
+    def _on_pre_step(_t):
+        adapter.tick()  # 平滑轨迹播放：先给本步关节目标
+        adapter.pump()
+
+    StepEventCallback.preCallback(_on_pre_step)
     print(f"[agx_viewer_bridge] pump registered on {host}:{port} "
           f"(build_excavator={build_excavator}, joints={joint_names})", flush=True)
 

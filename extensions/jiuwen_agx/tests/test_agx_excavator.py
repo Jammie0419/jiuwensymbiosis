@@ -118,6 +118,30 @@ class TestDigCycle:
         assert result["cycle_s"] >= 0.0
         assert driver.scoop_state() is False  # cycle ends unloaded
 
+    def test_optional_natural_stages_extend_the_cycle(self):
+        driver = _SpyDriver()
+        execute_dig_cycle(
+            driver,
+            dig_x_m=-2.0,
+            dig_y_m=1.0,
+            dump_x_m=3.0,
+            dump_y_m=0.5,
+            travel={"boom": 1.0, "arm": 2.0, "bucket": 3.0},
+            cut_path=[
+                {"boom": 0.1, "arm": 0.2, "bucket": 0.3},
+                {"boom": 0.4, "arm": 0.5, "bucket": 0.6},
+            ],
+            carry={"boom": 0.7, "arm": 0.8, "bucket": 0.9},
+        )
+        # travel → swing → ready → cut0 → cut1 → carry → swing_dump → dump
+        assert len(driver.moves) == 8
+        assert driver.moves[0] == {"boom": 1.0, "arm": 2.0, "bucket": 3.0}
+        assert driver.moves[3] == pytest.approx(
+            {"boom": 0.1, "arm": 0.2, "bucket": 0.3}
+        )
+        assert driver.moves[5] == {"boom": 0.7, "arm": 0.8, "bucket": 0.9}
+        assert driver.scoop_state() is False
+
     def test_tuning_overlay_changes_keyframes_and_volume(self):
         driver = _SpyDriver()
         result = execute_dig_cycle(

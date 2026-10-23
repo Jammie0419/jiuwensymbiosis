@@ -14,6 +14,9 @@
   # 无 AGX 演示/联调：内置内存机器，行为与 MockSimBackend 一致
   python agx_bridge_server.py --demo --port 9700
 
+  # 代码搭建的机型（215F：交付包是 Python 环境类，不是 .agx 文件）
+  python agx_bridge_server.py --machine 215f --port 9700
+
 协议（版本化 JSON 行协议，v=1；一行请求，一行响应）：
   请求  {"v": 1, "cmd": "...", ...}
   响应  {"v": 1, "ok": true, ...}          成功（携带命令各自的载荷字段）
@@ -30,8 +33,9 @@ from __future__ import annotations
 
 import argparse
 import base64
-import math
+import importlib
 import json
+import math
 import os
 import socket
 import threading
@@ -51,7 +55,7 @@ LOADED_MASS_THRESHOLD_KG = 50.0
 
 # 演示机器的地形真值（基座系，米）。
 DEMO_PILES: list[dict[str, Any]] = [
-    {"name": "soil_pile", "x_m": -2.0, "y_m": 1.0, "volume_m3": 2.0},
+    {"name": "soil_pile", "x_m": -2.0, "y_m": 1.0, "z_m": 0.0, "volume_m3": 2.0},
 ]
 
 
@@ -209,12 +213,14 @@ class AgxSceneAdapter:
         *,
         mode: str = "headless",
         build_excavator: bool = False,
+        machine: str | None = None,
     ) -> None:
         self.joint_names = joint_names
         self.joint_map = joint_map
         self.scene_path = scene_path
         self.mode = mode
         self.build_excavator = build_excavator
+        self.machine = machine
         # viewer 模式走"每步回调泵"：仿真步进与渲染都在宿主主线程，网络收发
         # 不能阻塞它、也不能从别的线程碰 AGX 对象，只能挂在每步回调里。
         self.pump_mode = mode == "viewer"
@@ -229,12 +235,22 @@ class AgxSceneAdapter:
         self._constraints: dict[str, Any] = {}  # 名字 -> agx 约束对象
         self._units: dict[str, str] = {}  # 名字 -> "rad" | "m"
         self._ranges: dict[str, tuple[float, float]] = {}
+        # 外部场景（场景工厂）可选提供的真值；None = 用 365 原逻辑
+        self._machine_name: str | None = None
+        self._terrain_truth: list[dict[str, Any]] | None = None
+        self._terrain_truth_fn: Any = None
+        self._load_mass_fn: Any = None
+        self._loaded_threshold_kg = LOADED_MASS_THRESHOLD_KG
+        self._tip_fn: Any = None
+        self._surface_fn: Any = None
+        self._base: dict[str, Any] | None = None
         # pump 状态（viewer 模式）
         self._listener = None
         self._conn = None
         self._read_buffer = b""
         self._write_buffer = b""  # 非阻塞 send 的未竟字节，pump 每步排空
         self._bridge_session: BridgeSession | None = None
+        self._player: dict[str, Any] | None = None  # 平滑轨迹播放器（viewer 每步推进）
         self._drive_goal: dict[str, Any] | None = None  # 底盘闭环目标（见 base_track_command）
         # 看门狗只读这个时间戳（主线程每步刷新），不碰任何 AGX 对象
         self._last_pump_ts = time.monotonic()
@@ -242,6 +258,9 @@ class AgxSceneAdapter:
 
     # -- 场景
     def load(self) -> None:
+        if self.machine:
+            self._load_machine_scene(self.machine)
+            return
         if self.build_excavator:
             if self.mode == "headless":
                 raise ValueError(
@@ -254,7 +273,7 @@ class AgxSceneAdapter:
         if self.scene_path:
             self._load_scene_file(self.scene_path)
             return
-        raise ValueError("--demo / --scene / --excavator 必须三选一")
+        raise ValueError("--demo / --scene / --excavator / --machine 必须四选一")
 
     def _require_sim(self):
         if self._sim is None:
@@ -280,6 +299,90 @@ class AgxSceneAdapter:
                 raise RuntimeError(f"加载场景失败: {path}")
         self._reset_scene_truth()
         self._auto_discover()
+
+    def attach_machine(
+        self,
+        sim: Any,
+        joints: dict[str, Any],
+        *,
+        units: dict[str, str] | None = None,
+        machine_name: str = "scene",
+        terrain_truth: list[dict[str, Any]] | None = None,
+        terrain_truth_fn: Any = None,
+        load_mass_fn: Any = None,
+        loaded_threshold_kg: float | None = None,
+        tip_fn: Any = None,
+        surface_fn: Any = None,
+        base: dict[str, Any] | None = None,
+    ) -> None:
+        """接管一个由 Python 场景工厂搭好的场景（如 215F）。
+
+        ``joints`` 的每个值可以是一个 AGX 约束，也可以是约束列表（成组驱动）。
+        单位不传时按 Hinge=rad / Prismatic=m 推断；土堆真值和载料质量是可选的，
+        不传就保持 365/内存的原有行为。``tip_fn``/``surface_fn`` 供 3D IK 使用；
+        ``base`` 是一个运动学底盘句柄（``pose_fn``/``move_fn``），不传则没有底盘。
+        """
+        self._sim = sim
+        for name in self.joint_names:
+            raw = joints.get(name)
+            if raw is None:
+                raise ValueError(
+                    f"attach_machine: joint {name!r} missing from the scene handle "
+                    f"(got {sorted(joints)})"
+                )
+            group = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+            unit = (units or {}).get(name)
+            if unit is None:
+                unit = "rad" if type(group[0]).__name__ == "Hinge" else "m"
+            self._constraints[name] = group
+            self._units[name] = unit
+            range_real = group[0].getRange1D().getRange()
+            lo, hi = float(range_real.lower()), float(range_real.upper())
+            if lo == float("-inf"):
+                lo, hi = (-math.pi, math.pi) if unit == "rad" else (-180.0, 180.0)
+            self._ranges[name] = (lo, hi)
+        self._machine_name = str(machine_name)
+        self._terrain_truth = (
+            None if terrain_truth is None else [dict(p) for p in terrain_truth]
+        )
+        self._terrain_truth_fn = terrain_truth_fn
+        self._load_mass_fn = load_mass_fn
+        if loaded_threshold_kg is not None:
+            self._loaded_threshold_kg = float(loaded_threshold_kg)
+        self._tip_fn = tip_fn
+        self._surface_fn = surface_fn
+        self._base = base
+        # 外部场景没有"内置演示土堆"这回事——没声明真值就报空，别漏 DEMO_PILES。
+        self._piles = []
+        self._scoop = False
+
+    def _load_machine_scene(self, machine: str) -> None:
+        """从场景工厂模块加载代码搭建的机型（目前只有 215f）。"""
+        builders = {"215f": ("agx_215f_scene", "build")}
+        try:
+            module_name, attr = builders[machine]
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown --machine {machine!r}; known: {sorted(builders)}"
+            ) from exc
+        handle = getattr(importlib.import_module(module_name), attr)()
+        if not isinstance(handle, dict) or handle.get("sim") is None:
+            raise ValueError(
+                f"{module_name}.{attr}() must return a dict with a 'sim' key"
+            )
+        self.attach_machine(
+            handle["sim"],
+            dict(handle.get("joints") or {}),
+            units=handle.get("units"),
+            machine_name=str(handle.get("machine_name", machine)),
+            terrain_truth=handle.get("terrain_truth"),
+            terrain_truth_fn=handle.get("terrain_truth_fn"),
+            load_mass_fn=handle.get("load_mass_fn"),
+            loaded_threshold_kg=handle.get("loaded_threshold_kg"),
+            tip_fn=handle.get("tip_fn"),
+            surface_fn=handle.get("surface_fn"),
+            base=handle.get("base"),
+        )
 
     def _load_excavator_scene(self) -> None:
         """程序化搭建 AGX 自带挖掘机 + 沙地（镜像官方 excavator_365_terrain.agxPy）。"""
@@ -496,6 +599,120 @@ class AgxSceneAdapter:
             self._step(dt)
         return self.read_joints()
 
+    # -- 平滑轨迹播放（Phase 4） -----------------------------------------
+    def play_trajectory(
+        self,
+        frames: list[list[float]],
+        names: list[str],
+        rate_hz: float,
+        timeout_s: float,
+    ) -> dict[str, Any]:
+        """Play a fixed-rate joint trajectory.
+
+        viewer/pump: store it and let :meth:`tick` advance one frame per sim
+        step, returning immediately (the render thread owns stepping). headless:
+        own the stepping and block until the last frame is applied.
+        """
+        self._require_sim()
+        if not frames:
+            raise ValueError("play_trajectory: empty frames")
+        if not names:
+            raise ValueError("play_trajectory: empty joint names")
+        if len(set(names)) != len(names):
+            raise ValueError("play_trajectory: duplicate joint names")
+        missing = [name for name in names if name not in self._constraints]
+        if missing:
+            raise ValueError(f"play_trajectory: unknown joints {missing}")
+        rate = float(rate_hz)
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError(f"play_trajectory: rate_hz must be > 0, got {rate_hz!r}")
+        clean: list[list[float]] = []
+        for index, row in enumerate(frames):
+            if len(row) != len(names):
+                raise ValueError(
+                    f"play_trajectory: frame {index} has {len(row)} values, "
+                    f"expected {len(names)} ({names})"
+                )
+            values = [float(v) for v in row]
+            if not all(math.isfinite(v) for v in values):
+                raise ValueError(
+                    f"play_trajectory: frame {index} has non-finite values"
+                )
+            for name, value in zip(names, values, strict=True):
+                low, high = self._ranges.get(name, (-math.inf, math.inf))
+                if not (low - 1e-9 <= value <= high + 1e-9):
+                    raise ValueError(
+                        f"play_trajectory: frame {index} joint {name}={value} "
+                        f"outside [{low}, {high}]"
+                    )
+            clean.append(values)
+        if self.pump_mode:
+            sim = self._require_sim()
+            self._player = {
+                "names": list(names),
+                "frames": clean,
+                "rate_hz": rate,
+                "start_s": float(sim.getTimeStamp()),
+                "index": -1,
+                "done": False,
+            }
+            self.tick()
+            return {
+                "async": True,
+                "frames": len(clean),
+                "rate_hz": rate,
+                "duration_s": (len(clean) - 1) / rate,
+            }
+        deadline = time.monotonic() + max(float(timeout_s), 1.0)
+        for row in clean:
+            if time.monotonic() > deadline:
+                raise TimeoutError("play_trajectory: timed out")
+            self.set_joint_targets(dict(zip(names, row, strict=True)))
+            self._step(1.0 / rate)
+        return {"done": True, "frames": len(clean), "rate_hz": rate}
+
+    def player_state(self) -> dict[str, Any]:
+        player = self._player
+        if player is None:
+            return {
+                "playing": False,
+                "done": True,
+                "frame": 0,
+                "total": 0,
+                "rate_hz": 0.0,
+            }
+        return {
+            "playing": not player["done"],
+            "done": bool(player["done"]),
+            "frame": int(player["index"]) + 1 if player["index"] >= 0 else 0,
+            "total": len(player["frames"]),
+            "rate_hz": float(player["rate_hz"]),
+        }
+
+    def stop_trajectory(self) -> dict[str, Any]:
+        self._player = None
+        return {"stopped": True}
+
+    def tick(self) -> None:
+        """Advance the trajectory player; called once per sim step by the viewer."""
+        player = self._player
+        if player is None or player["done"]:
+            return
+        sim = self._require_sim()
+        elapsed = float(sim.getTimeStamp()) - float(player["start_s"])
+        index = min(
+            int(elapsed * float(player["rate_hz"])), len(player["frames"]) - 1
+        )
+        if index < 0:
+            index = 0
+        if index != player["index"]:
+            self.set_joint_targets(
+                dict(zip(player["names"], player["frames"][index], strict=True))
+            )
+            player["index"] = index
+        if index >= len(player["frames"]) - 1:
+            player["done"] = True
+
     # -- 履带底盘（闭环：按真实位姿驱动，到位才停）
     def _apply_tracks(self, left: float, right: float) -> None:
         """给两条履带的驱动轮设速度（rad/s）。"""
@@ -513,6 +730,8 @@ class AgxSceneAdapter:
         yaw 取欧拉角的 Z 分量 —— 实测约定：``Quat.getAsEulerAngles()`` 的分量就是
         (x, y, z)（rad），用已知旋转验证过。
         """
+        if self._base is not None:
+            return dict(self._base["pose_fn"]())
         exc = self._excavator
         if exc is None or self._sim is None:
             return {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0}
@@ -567,6 +786,13 @@ class AgxSceneAdapter:
         """
         exc = self._excavator
         if exc is None:
+            if self._base is not None:
+                # 215F: kinematic whole-machine relocation (no articulated tracks).
+                fn = self._base.get("move_fn")
+                if fn is None:
+                    raise RuntimeError("kinematic base has no move_fn")
+                pose = dict(fn(float(dx_m), 0.0, float(dyaw_rad)))
+                return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad), **pose}
             raise RuntimeError("navigate_relative 需要 --excavator 场景（履带驱动轮）")
 
         if abs(dyaw_rad) <= 1e-4 and abs(dx_m) <= 1e-4:
@@ -601,6 +827,10 @@ class AgxSceneAdapter:
         判据是**真实位姿与目标的差距**（不是计时器）：没有它，连发的多条相对命令
         会互相覆盖（实测 9 条 ``rotate_base(0.7)`` 只走出 0.7 rad ≈ 40°）。
         """
+        if self._base is not None:
+            # Kinematic relocation is applied atomically; there is no in-flight
+            # track loop to wait for.
+            return {"busy": False, "remaining_s": 0.0}
         if self._drive_goal is None or self._sim is None:
             return {"busy": False, "remaining_s": 0.0}
         pose = self.base_pose()
@@ -621,6 +851,16 @@ class AgxSceneAdapter:
         """常曲率弧线：内外履带速度差（半径近似，转角闭环）。"""
         exc = self._excavator
         if exc is None:
+            if self._base is not None:
+                # Kinematic approximation: end at the chord position + rotation.
+                fn = self._base.get("move_fn")
+                if fn is None:
+                    raise RuntimeError("kinematic base has no move_fn")
+                dyaw = float(dyaw_rad)
+                chord_x = float(radius_m) * math.sin(dyaw)
+                chord_y = float(radius_m) * (1.0 - math.cos(dyaw))
+                fn(chord_x, chord_y, dyaw)
+                return {"radius_m": float(radius_m), "dyaw_rad": dyaw}
             raise RuntimeError("navigate_arc 需要 --excavator 场景")
         speed = BASE_MAX_TRACK_SPEED
         arc_len = abs(radius_m * dyaw_rad)
@@ -646,21 +886,27 @@ class AgxSceneAdapter:
 
     # -- 地形 / 铲斗
     def read_terrain(self) -> list[dict[str, Any]]:
+        if self._terrain_truth_fn is not None:
+            return [dict(p) for p in self._terrain_truth_fn()]
+        if self._terrain_truth is not None:
+            return [dict(p) for p in self._terrain_truth]
         if self._terrain is not None:
             # 平整沙地场景：土壤无处不在，报告一个"机身前方 3 m"的代表性可挖点
             # （基座系；确保落在可达环带内，LLM 引用它即得到合法 dig 目标）
-            return [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "volume_m3": 1.0}]
+            return [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "z_m": 0.0, "volume_m3": 1.0}]
         return [dict(p) for p in self._piles]
 
     def scoop_state(self) -> bool:
-        if self._shovel is not None:
-            return self.bucket_mass_kg() > LOADED_MASS_THRESHOLD_KG
+        if self._load_mass_fn is not None or self._shovel is not None:
+            return self.bucket_mass_kg() > self._loaded_threshold_kg
         return self._scoop
 
     def bucket_mass_kg(self) -> float:
         """铲斗内土壤颗粒总质量（kg）。注意空斗贴地时也有读数（接触区土壤被算进
         aggregate），所以"是否载料"必须用远高于该本底噪声的阈值 —— 见
         :data:`LOADED_MASS_THRESHOLD_KG`；实测值可从 inventory 的 bucket_mass_kg 读。"""
+        if self._load_mass_fn is not None:
+            return float(self._load_mass_fn())
         if self._shovel is None:
             return 0.0
         return float(self._shovel.getSoilParticleAggregate().getTotalAggregateMass())
@@ -668,6 +914,34 @@ class AgxSceneAdapter:
     def mark_scoop(self, loaded: bool) -> None:
         # AGX 真值是测出来的（铲斗内颗粒质量），此写接口仅为协议兼容
         self._scoop = bool(loaded)
+
+    # -- 3D 位姿反馈（可选；只有场景工厂注入了 tip_fn/surface_fn 才有）
+    def surface(self, points: list[list[float]] | None = None) -> dict[str, Any]:
+        points = points or []
+        if self._surface_fn is None:
+            return {"surface_m": None}
+        values = [
+            self._safe(
+                lambda p=p: self._surface_fn(float(p[0]), float(p[1])),
+                default=None,
+            )
+            for p in points
+        ]
+        return {"surface_m": values}
+
+    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "joints": self.read_joints(),
+            "scoop": bool(self._safe(self.scoop_state, False)),
+            "base_pose": dict(self._safe(self.base_pose, {}) or {}),
+        }
+        if self._tip_fn is not None:
+            tip = self._safe(self._tip_fn)
+            if tip is not None:
+                out["tip"] = tip
+        if self._surface_fn is not None and points:
+            out.update(self.surface(points))
+        return out
 
     # -- 相机（阶段B）
     def grab_frame(self) -> dict[str, Any] | None:
@@ -711,10 +985,10 @@ class AgxSceneAdapter:
                     ),
                 }
             )
-        terrain = []
-        if self._terrain is not None:
-            terrain = [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "volume_m3": 1.0}]
-        machine_name = "excavator365" if self._excavator is not None else "scene"
+        terrain = self._safe(self.read_terrain, default=[])
+        machine_name = self._machine_name or (
+            "excavator365" if self._excavator is not None else "scene"
+        )
         return {
             "machines": [
                 {
@@ -723,7 +997,13 @@ class AgxSceneAdapter:
                     "terrain": terrain,
                     # 诊断用：空斗本底 vs 满载各是多少，据此校准载料阈值
                     "bucket_mass_kg": self._safe(self.bucket_mass_kg),
-                    "loaded_threshold_kg": LOADED_MASS_THRESHOLD_KG,
+                    "loaded_threshold_kg": self._loaded_threshold_kg,
+                    "features": {
+                        "snapshot": self._tip_fn is not None or self._surface_fn is not None,
+                        "surface": self._surface_fn is not None,
+                        "tip": self._tip_fn is not None,
+                        "base": self._base is not None or self._excavator is not None,
+                    },
                     "scoop_loaded": self._safe(self.scoop_state),
                 }
             ]
@@ -985,6 +1265,11 @@ class BridgeSession:
         targets = {
             str(k): float(v) for k, v in dict(request.get("targets") or {}).items()
         }
+        # A manual joint command takes over from a playing trajectory. Older
+        # scene adapters (and test doubles) may not have the player at all.
+        stop_player = getattr(self._scene, "stop_trajectory", None)
+        if callable(stop_player):
+            stop_player()
         if getattr(self._scene, "pump_mode", False):
             # viewer 泵模式：立即返回，客户端轮询到位（不能阻塞主线程）
             self._scene.set_joint_targets(targets)
@@ -997,6 +1282,22 @@ class BridgeSession:
             targets, self._num(request, "timeout_s", 30.0)
         )
         return {"joints": joints}
+
+    def _cmd_play_trajectory(self, request: dict[str, Any]) -> dict[str, Any]:
+        frames = [list(row) for row in (request.get("frames") or [])]
+        names = [str(name) for name in (request.get("names") or [])]
+        return self._scene.play_trajectory(
+            frames=frames,
+            names=names,
+            rate_hz=self._num(request, "rate_hz", 60.0),
+            timeout_s=self._num(request, "timeout_s", 30.0),
+        )
+
+    def _cmd_player_state(self, _request: dict[str, Any]) -> dict[str, Any]:
+        return self._scene.player_state()
+
+    def _cmd_stop_trajectory(self, _request: dict[str, Any]) -> dict[str, Any]:
+        return self._scene.stop_trajectory()
 
     def _base_motion_reply(self, result: dict[str, Any]) -> dict[str, Any]:
         """底盘命令的回复：pump 模式补 ``async`` + 预计耗时，客户端据此等到位。
@@ -1059,6 +1360,12 @@ class BridgeSession:
 
     def _cmd_inventory(self, _request: dict[str, Any]) -> dict[str, Any]:
         return self._scene.inventory()
+
+    def _cmd_surface(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._scene.surface(points=request.get("points"))
+
+    def _cmd_snapshot(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._scene.snapshot(points=request.get("points"))
 
 
 def serve(scene: AgxSceneAdapter, host: str, port: int, *, load: bool = True) -> None:
@@ -1123,6 +1430,7 @@ def build_scene_adapter(args: argparse.Namespace) -> AgxSceneAdapter | DemoScene
         args.scene,
         mode=getattr(args, "mode", "headless"),
         build_excavator=bool(getattr(args, "excavator", False)),
+        machine=getattr(args, "machine", None),
     )
 
 
@@ -1140,6 +1448,11 @@ def main() -> None:
         "--excavator",
         action="store_true",
         help="程序化搭建 AGX 自带挖掘机+沙地场景（镜像官方 excavator_365_terrain 脚本）",
+    )
+    parser.add_argument(
+        "--machine",
+        default=None,
+        help="代码搭建的机型场景（目前只有 215f，由 scripts/agx_215f_scene.py 提供）",
     )
     parser.add_argument(
         "--mode",
