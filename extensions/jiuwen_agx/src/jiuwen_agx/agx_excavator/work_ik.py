@@ -435,17 +435,31 @@ def execute_pose_dig_cycle(
         dump_approach_error = float(
             np.linalg.norm(ik.forward(q_dump_approach) - dump_approach)
         )
-        if dump_approach_error <= float(dump_tolerance_m) and play_native(
-            ik.policy_to_native(q_dump_approach), "dump_approach"
-        ):
-            q = ik.native_to_policy(driver.get_joint_positions())
+        # The approach is only a staging point. At a far-side dump it can be
+        # unreachable even when the dump point itself is reachable (the point
+        # is higher); trying it anyway drives the arm into its lower limit and
+        # aborts before the bucket ever opens. Skip it in that case.
+        if dump_approach_error <= float(dump_tolerance_m):
+            if play_native(ik.policy_to_native(q_dump_approach), "dump_approach"):
+                q = ik.native_to_policy(driver.get_joint_positions())
+            else:
+                try:
+                    goto_fixed(
+                        dump_approach,
+                        joint_index=3,
+                        value=curl_value,
+                        label="dump_approach",
+                        tolerance=dump_tolerance_m,
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "[ik] dump approach failed (%s); going directly to the dump point",
+                        exc,
+                    )
         else:
-            goto_fixed(
-                dump_approach,
-                joint_index=3,
-                value=curl_value,
-                label="dump_approach",
-                tolerance=dump_tolerance_m,
+            logger.warning(
+                "[ik] dump approach unreachable by %.2f m; going directly to the dump point",
+                dump_approach_error,
             )
         dump_error = goto_fixed(
             dump,
