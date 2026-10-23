@@ -18,6 +18,17 @@
 | `start_agx_bridge_215f.bat` | Windows | 215F 一键启动 |
 | `start_demo_bridge.ps1` | Windows | 无 AGX 的协议 mock |
 
+## run/：任务入口（仓库 venv）
+
+| 文件 | 作用 |
+| --- | --- |
+| `run_task.py` | AGX 扩展的 LLM/动作任务入口。`--config` 选 365/215F；Windows 下绕过 `runtime` 的 `fcntl` 准入层；YAML 里的 `runtime/` 相对路径按仓库根解析 |
+
+`run_task.py` 是 `examples/run_task.py` 的 AGX/Windows 对应入口：后者走
+`jiuwensymbiosis.runtime.bindings` 的资源准入（依赖 Unix 的 `fcntl`），在 Windows
+上会在建会话前失败。需要 `--mock`、语音、跨机器人资源准入时仍用
+`examples/run_task.py`（Linux 或已解决 fcntl 的环境）。
+
 ## control/：控制端与排障（仓库 venv）
 
 | 文件 | 作用 |
@@ -46,6 +57,12 @@
 
 ## 扩展约定
 
+- **任务是入口，实验是临时**：会长期使用的任务入口放 `run/`；控制/排障工具放
+  `control/`；一次性的采样、调参、探针脚本放 `work/`（`.gitignore` 忽略，不进仓库）。
+  `work/` 里不要放别人会依赖的入口。
+- **运行产物**：统一写到 YAML 的 `workspace` / `episode_dir` / `trace_dir` /
+  `log_dir`（当前四份 AGX YAML 都指向 `extensions/jiuwen_agx/runtime/`）。不要往
+  源码目录或 `scripts/` 下写日志/轨迹。
 - **新机型**：场景工厂放根目录 `agx_<machine>_scene.py`，在 `agx_bridge_server.py` 的
   `builders` 里注册一个 `--machine <name>`；控制端配置放
   `configs/agx_excavator/agx_excavator.<name>.yaml`；本目录只放该机型的专用工厂/启动器。

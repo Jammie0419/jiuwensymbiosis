@@ -186,8 +186,44 @@ class TraceRail(AgentRail):
   `tests/unit_tests/agent/test_builder_parallel.py` 覆盖并行互斥；
   `tests/unit_tests/agent/test_trace_html.py` 覆盖持久化数据的回放消费。
 
-## 7. 变更历史
+## 7. 与规划级 trace 的分层
+
+工具级 trace 回答“每个工具调用做了什么”，规划级 trace 回答“为什么这么规划、计划
+怎么被修正、最终结果如何”。两者是分层引用关系，不是同一份数据的两种视图：
+
+| 层 | 文件 | 写入者 | 关键内容 |
+|---|---|---|---|
+| 规划级 | `<workspace>/episodes/*.jsonl` | `agent/episode_trace.py` | episode / intent / world / plan_attempt / step / replan / outcome |
+| 工具级 | `<workspace>/traces/*.json` | `agent/trace.py` | 每次工具调用的参数、结果、耗时、rail 事件、帧 |
+
+设计要点：
+
+- **分开存储**。规划级是 append-only JSONL（逐行 flush、坏行可跳过），工具级仍是
+  一次 invoke 一份 JSON（整份写盘）。两者的生命周期和消费方式不同，混在一个文件
+  会让任一层无法独立演进。
+- **单向引用**。`outcome.trace_path` 指向工具级 JSON；`TraceEntry.runner_step`
+  指向规划级的 `step.step_id`。规划级不复制工具参数和结果，工具级不记录计划和
+  重规划。
+- **step id 桥接**。runner 在 `run_sequence` 里把当前 `state["i"]` 写进
+  `step_context` 的 contextvar；executor 包装在取消线程内层设置它，`TraceRail`
+  的 `before_tool_call` 读取并写入 entry。这样 `track_detect` / `track_grasp` /
+  `<replan>` 这类不经过 `ability_manager` 的步骤不会伪造工具引用。
+- **写入不得影响执行**。recorder 内部吞掉所有写盘/序列化异常；runner 再用
+  `emit_safely` 包一层，保证一个坏 sink 不会进入 `_run_action` 的失败分支、
+  触发 `_safe_retreat`。
+- **默认零开销**。`enable_episode_trace=False` 时使用 `NullEpisodeRecorder`，
+  不建目录、不开文件；`run_sequence` 的 `trace_sink=None` 时每条发射点直接返回。
+- **v0 范围**。只覆盖 `fastagent`：它有明确的 `PlanResult` 与重规划回调。慢路径
+  由模型逐步决定工具调用，没有可记录的 plan 对象；`mode` 字段为以后扩展保留。
+- **测试证据**：`tests/unit_tests/agent/test_episode_trace.py` 覆盖写入/读取/坏行/
+  写失败；`tests/unit_tests/fast/test_runner_episode.py` 覆盖 step/replan 事件与
+  contextvar；`tests/unit_tests/fast/test_run_fast_task_episode.py` 覆盖快路径端到端
+  接线与两级引用；`tests/unit_tests/rails/test_trace_episode_link.py` 覆盖
+  `runner_step` / `last_trace_path`。
+
+## 8. 变更历史
 
 | 日期 | 变更内容 | 原因 |
 | --- | --- | --- |
 | 2026-08-10 | 新增执行轨迹模块设计文档 | 记录 Trace 的数据、状态、接口与一致性约束 |
+| 2026-10-23 | 新增规划级 trace 分层 | 方向一：记录计划、重规划与结果，并与工具级 trace 互相引用 |

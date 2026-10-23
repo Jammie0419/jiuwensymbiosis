@@ -223,6 +223,12 @@ class RobotAgentConfig:
     trace_console: bool = False
     trace_dir: str | None = None  # default <workspace>/traces
     trace_capture_loggers: list[str] = field(default_factory=lambda: ["jiuwensymbiosis"])
+    # -- Planning-level (episode) trace — one JSONL per task run. --
+    # Answers "why this plan / how was it repaired / what was the outcome";
+    # the tool-level TraceRail above answers "what did each tool call do".
+    # Independent flags: either layer can be on alone.
+    enable_episode_trace: bool = False
+    episode_dir: str | None = None  # default <workspace>/episodes
     # -- Online diagnosis (DiagnosisRail) — requires enable_tracing. --
     enable_diagnosis: bool = False
     diagnosis_max_chars: int = 1500

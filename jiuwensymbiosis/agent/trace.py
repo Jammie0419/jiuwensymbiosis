@@ -28,7 +28,6 @@ No tool / env / action implementation is modified.
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import logging
@@ -41,6 +40,8 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 import numpy as np
 
 from jiuwensymbiosis.agent.abstractions import AgentRail
+from jiuwensymbiosis.agent.step_context import current_runner_step
+from jiuwensymbiosis.utils.json_safe import json_safe as _json_safe
 
 if TYPE_CHECKING:
     # TraceLogHandler is defined in utils.logging; imported only for type
@@ -137,41 +138,6 @@ def _unwrap_robot_control(tool_name: str, tool_args: Any) -> tuple[str, Any]:
     return tool_name, tool_args
 
 
-def _json_safe(obj: Any, *, depth: int = 0) -> Any:
-    """Recursively coerce ``obj`` to JSON-serialisable primitives.
-
-    numpy arrays → lists; numpy scalars → py scalars; bytes → base64 str;
-    everything else unsupported → ``repr()`` string. Depth-bounded to avoid
-    pathological nesting.
-    """
-    if depth > 8:
-        return repr(obj)[:_MAX_OUTPUT_SUMMARY]
-    if obj is None or isinstance(obj, (bool, int, float, str)):
-        return obj
-    if isinstance(obj, np.ndarray):
-        if obj.size > 64:
-            return f"<ndarray shape={obj.shape} dtype={obj.dtype}>"
-        return obj.tolist()
-    if isinstance(obj, np.generic):
-        return obj.item()
-    if isinstance(obj, bytes):
-        try:
-            return base64.b64encode(obj).decode("ascii")
-        except ValueError:
-            return "<bytes>"
-    if isinstance(obj, dict):
-        return {str(k): _json_safe(v, depth=depth + 1) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set, frozenset)):
-        return [_json_safe(v, depth=depth + 1) for v in obj]
-    # Objects with __dict__ (dataclasses, plain objects) — best effort.
-    if hasattr(obj, "__dict__"):
-        try:
-            return {k: _json_safe(v, depth=depth + 1) for k, v in vars(obj).items() if not k.startswith("_")}
-        except (TypeError, AttributeError, RecursionError):
-            return repr(obj)[:_MAX_OUTPUT_SUMMARY]
-    return repr(obj)[:_MAX_OUTPUT_SUMMARY]
-
-
 def _summarise_output(value: Any) -> str:
     """One-line, length-capped string of a tool result for quick scanning."""
     try:
@@ -202,6 +168,10 @@ class TraceEntry:
     output_summary: str = ""
     rail_events: list[dict] = field(default_factory=list)
     log_events: list[dict] = field(default_factory=list)
+    # Runner step id (the fast path's plan position) this tool call belongs to.
+    # None in the slow path or for calls made outside ``run_sequence``. It is the
+    # join key between this tool-level trace and the episode JSONL.
+    runner_step: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -217,6 +187,7 @@ class TraceEntry:
             "output_summary": self.output_summary,
             "rail_events": _json_safe(self.rail_events),
             "log_events": _json_safe(self.log_events),
+            "runner_step": self.runner_step,
         }
 
 
@@ -465,6 +436,9 @@ class TraceRail(AgentRail):
         self.capture_log_level = capture_log_level
 
         self._trace: ExecutionTrace | None = None
+        # Path of the last successfully flushed JSON, so the episode trace can
+        # reference the tool-level file without re-deriving the run token.
+        self.last_trace_path: Path | None = None
         self._frames_saved = 0
         self._traces_dir = Path(traces_dir) if traces_dir else Path(workspace) / "traces"
         # Base frames dir; each invoke writes into its own run-named subdir (see
@@ -602,6 +576,7 @@ class TraceRail(AgentRail):
             query=query if isinstance(query, str) else None,
             workspace=self.workspace,
         )
+        self.last_trace_path = None
         self._frames_saved = 0
         # Pin this invoke's run token so its frames land in a dedicated subdir
         # (``frames/{token}/step_NNN.jpg``), not the shared flat ``frames/`` —
@@ -642,6 +617,7 @@ class TraceRail(AgentRail):
             input_params=dict(effective_args) if isinstance(effective_args, dict) else {},
             started_at=time.time(),
         )
+        entry.runner_step = current_runner_step()
         ctx.extra[_TRACE_CURRENT_KEY] = entry
         if self.console:
             params = entry.input_params
@@ -731,6 +707,7 @@ class TraceRail(AgentRail):
         if self._trace is None:
             return None
         path = self._trace.save(self._traces_dir)
+        self.last_trace_path = path
         if self._log_handler is not None:
             self._log_handler.set_sink(None)
         done = path

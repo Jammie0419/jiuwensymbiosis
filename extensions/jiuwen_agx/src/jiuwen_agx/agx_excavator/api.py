@@ -138,6 +138,7 @@ class AgxExcavatorApi(SimMachineApi):
                     approach_gap_m=cfg.approach_gap_m,
                     bite_m=cfg.bite_m,
                     cut_length_m=cfg.cut_length_m,
+                    min_drag_radius_m=cfg.dig_min_drag_radius_m,
                     carry_lift_m=cfg.carry_lift_m,
                     carry=cfg.dig_carry,
                     dig_bucket_open_native=cfg.dig_bucket_open_rad,
@@ -182,6 +183,30 @@ class AgxExcavatorApi(SimMachineApi):
             "volume_m3": result["volume_m3"],
             "cycle_s": result["cycle_s"],
         }
+
+    def release_effector(self) -> dict:
+        """Open the bucket so a failed cycle does not leave ``payload.held``.
+
+        ``RecoveryRail`` / ``_safe_retreat`` call this before homing. An
+        excavator has no gripper, so the generic ``set_end_effector(False)``
+        fallback refuses the body; opening the bucket is this body's release.
+        """
+        env = self.env
+        cfg: AgxExcavatorConfig = env.cfg  # type: ignore[assignment]
+        # Only the IK cycle has a calibrated open angle in the bucket's native
+        # units. The 365 keyframe body's bucket is a prismatic joint in metres;
+        # sending the generic 1.5 "rad" default there would be rejected.
+        if str(getattr(cfg, "dig_mode", "")) != "ik":
+            return {
+                "ok": False,
+                "reason": "release_effector is only calibrated for dig_mode=ik",
+            }
+        bucket = cfg.dump_bucket_open_rad
+        if bucket is None:
+            bucket = cfg.dig_bucket_open_rad
+        env.driver.move_joints_blocking({"bucket": float(bucket)}, timeout_s=10.0)
+        env.driver.mark_scoop(False)
+        return {"ok": True, "bucket": float(bucket)}
 
     def _get_ik(self, machine_path: str) -> Any:
         """Load/caches the per-machine IK model; native limits from this body."""

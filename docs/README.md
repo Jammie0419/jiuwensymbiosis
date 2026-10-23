@@ -39,6 +39,7 @@
 - [移植机器人硬件适配器](zh/how-to/port-hardware-adapter.md)
 - [使用 Trace Feedback Loop](zh/how-to/use-trace-feedback.md)
 - [记录和回放执行轨迹](zh/how-to/use-tracing.md)
+- [记录和回放规划级轨迹](zh/how-to/use-episode-trace.md)
 
 ### Reference（参考）
 
@@ -48,6 +49,7 @@
 - [Agent 与框架 API 参考](zh/reference/framework-api.md)
 - [机器人环境、能力与工具 API 参考](zh/reference/robot-api.md)
 - [执行轨迹参考](zh/reference/tracing.md)
+- [规划级轨迹参考](zh/reference/episode-trace.md)
 
 ### Explanation（解释）
 

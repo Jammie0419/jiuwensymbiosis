@@ -28,6 +28,7 @@ pages follow the same paths and user tasks.
 - [Port a Robot Hardware Adapter](how-to/port-hardware-adapter.md)
 - [Use the Trace Feedback Loop](how-to/use-trace-feedback.md)
 - [Record and Replay Execution Traces](how-to/use-tracing.md)
+- [Record and Replay Planning-Level Traces](how-to/use-episode-trace.md)
 
 ## Reference
 
@@ -37,6 +38,7 @@ pages follow the same paths and user tasks.
 - [Agent and Framework API Reference](reference/framework-api.md)
 - [Robot Environment, Capability, and Tool API Reference](reference/robot-api.md)
 - [Execution Tracing Reference](reference/tracing.md)
+- [Planning-Level Trace Reference](reference/episode-trace.md)
 
 ## Explanation
 

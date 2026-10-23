@@ -183,7 +183,14 @@ class WorldState:
         # state it so the planner picks reachable dig/dump points instead of
         # discovering the violation when the action runs.
         cfg = getattr(env, "cfg", None)
-        for key in ("reach_min_m", "reach_max_m", "reach_z_min_m", "reach_z_max_m"):
+        for key in (
+            "reach_min_m",
+            "reach_max_m",
+            "reach_z_min_m",
+            "reach_z_max_m",
+            "dig_min_drag_radius_m",
+            "cut_length_m",
+        ):
             value = getattr(cfg, key, None)
             if isinstance(value, (int, float)):
                 extra[key] = float(value)
@@ -263,6 +270,13 @@ class WorldState:
         reach_z_max = self.extra.get("reach_z_max_m")
         if isinstance(reach_z_min, (int, float)) and isinstance(reach_z_max, (int, float)):
             envelope.append(f"挖掘 Z 范围 {reach_z_min:g}–{reach_z_max:g} m")
+        min_drag = self.extra.get("dig_min_drag_radius_m")
+        cut_length = self.extra.get("cut_length_m")
+        if isinstance(min_drag, (int, float)) and min_drag > 0 and isinstance(cut_length, (int, float)):
+            envelope.append(
+                f"挖点拖切限制 向机身拖 {cut_length:g} m，拖切终点半径须 ≥ {min_drag:g} m"
+                f"（即挖点半径 ≥ {min_drag + cut_length:g} m；太近先退底盘再重读地形）"
+            )
         if envelope:
             # Stated at plan time so a target outside it is never planned, instead of being
             # rejected by SafetyRail one step into the run.

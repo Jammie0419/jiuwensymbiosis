@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "build_robot_agent",
     "build_robot_agent_config",
+    "resolve_workspace",
 ]
 
 
@@ -82,6 +83,16 @@ def _resolve_workspace(session: RobotSession, workspace: str | None) -> str:
                 path = (Path.home() / ".jiuwensymbiosis" / f"{session.name}_workspace").resolve()
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
+
+
+def resolve_workspace(session: RobotSession, workspace: str | None = None) -> str:
+    """Public wrapper around :func:`_resolve_workspace`.
+
+    The fast path needs the same resolved workspace the agent builder uses, but
+    it opens the episode trace before building the agent. Keeping one
+    implementation guarantees ``episodes/`` and ``traces/`` land side by side.
+    """
+    return _resolve_workspace(session, workspace)
 
 
 def _format_tool_list(api: Any) -> str:

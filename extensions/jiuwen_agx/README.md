@@ -17,10 +17,16 @@ rem ② 起 AGX + 桥接：双击即可（弹出挖掘机 + 沙地窗口，桥�
 extensions\jiuwen_agx\scripts\start_agx_bridge.bat
 
 rem ③ 另开一个终端发任务（任务不进 config，一律用 --query 给）
-.venv\Scripts\python.exe examples\run_task.py ^
+.venv\Scripts\python.exe extensions\jiuwen_agx\scripts\run\run_task.py ^
   --config extensions\jiuwen_agx\configs\agx_excavator\agx_excavator.local.yaml ^
   --query "挖一斗土倒到旁边"
 ```
+
+`scripts\run\run_task.py` 是 AGX 扩展的通用任务入口，365 和 215F 都靠 `--config`
+选机型；它绕过 `examples\run_task.py` 的资源准入层（该层在 Windows 上会因
+`import fcntl` 失败）。运行产物统一收口到 `extensions\jiuwen_agx\runtime\`：
+`agent/`（openjiuwen workspace）、`episodes/`（规划级）、`traces/`（工具级）、
+`logs/`（框架 + openjiuwen 日志）。
 
 窗口里的挖掘机随即执行：读地形 → 摆转对准 → 下铲 → 收斗 → 摆转 → 卸料 → 归位
 （一轮约 19 s）。实测记录：`get_terrain → dig(3,0 → 6,0) → home` 三步 `ok`。
@@ -81,7 +87,7 @@ python scripts/control/agx_scene_probe.py --check-config configs/agx_excavator/a
 
 | 方式 | 命令 | 适合 |
 | --- | --- | --- |
-| **自然语言**（LLM 当司机） | `run_task.py --config ... --query "..."` | 日常演示、任务级控制 |
+| **自然语言**（LLM 当司机） | `scripts\run\run_task.py --config ... --query "..."` | 日常演示、任务级控制 |
 | **代码直接控制** | `build_agx_excavator_session(...)` → `api.move_joint / dig / navigate_relative` | 精确测试、写自动化脚本 |
 | **手动/观察** | `monitor_ui.py`（关节读数 + 逐个设目标）；或启动前 `set JIUWEN_KEYBOARD=1` 用键盘开 | 标定姿态、排查"到底动没动" |
 

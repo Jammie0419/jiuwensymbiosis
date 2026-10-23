@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from jiuwensymbiosis.agent.cancel import CancelToken, RunCancelled, cancellable_call, sleep_cancellable
+from jiuwensymbiosis.agent.episode_trace import TraceSink, emit_safely
 from jiuwensymbiosis.agent.fast.realtime.binding import ServoBinding
 from jiuwensymbiosis.agent.fast.realtime.mask_tracking import MaskTargetFilter, MaskTrackingConfig
 from jiuwensymbiosis.agent.fast.realtime.servo import ServoConfig, ServoController, ServoResult
@@ -43,6 +44,7 @@ from jiuwensymbiosis.agent.fast.sequence import (
     referenced_binding_names,
     resolve_params,
 )
+from jiuwensymbiosis.agent.step_context import bind_executor
 from jiuwensymbiosis.api.decorators import ToolMeta
 from jiuwensymbiosis.api.memory import ExecutionMemory
 from jiuwensymbiosis.api.state import contradicted_requirements
@@ -779,6 +781,64 @@ class _RunContext:
     cache: dict
     out: list[dict]
     state: dict
+    # Optional planning-level trace sink (episode JSONL). None = zero overhead.
+    trace_sink: TraceSink | None = None
+
+
+def _step_brief(step: ActionStep | LoopStep) -> dict[str, Any]:
+    """Compact, JSON-able description of a plan step for a trace event."""
+    if isinstance(step, ActionStep):
+        return {"op": step.op, "params": dict(step.params), "bind": step.bind}
+    return {
+        "loop": step.detect_op,
+        "params": dict(step.detect_params),
+        "bind": step.bind,
+        "max_iters": step.max_iters,
+    }
+
+
+def _emit_step(
+    ctx: _RunContext,
+    step: ActionStep,
+    *,
+    step_id: int,
+    params: dict[str, Any],
+    ok: bool,
+    result: Any = None,
+    error: str | None = None,
+    error_code: str | None = None,
+    recovery_managed: bool = False,
+    duration_s: float = 0.0,
+    cancelled: bool = False,
+) -> None:
+    """Push one planning-level step event; never raises."""
+    sink = ctx.trace_sink
+    if sink is None:
+        return
+    tokens: list[str] | None
+    try:
+        tokens = sorted(current_tokens(ctx.session))
+    except Exception:  # noqa: BLE001 - a state read must not fail the step
+        tokens = None
+    emit_safely(
+        sink,
+        {
+            "type": "step",
+            "step_id": step_id,
+            "op": step.op,
+            "params": params,
+            "bind": step.bind,
+            "ok": ok,
+            "result": result,
+            "error": error,
+            "error_code": error_code,
+            "recovery_managed": recovery_managed,
+            "duration_s": duration_s,
+            "tokens_after": tokens,
+            "loop_iter": ctx.state.get("loop_iter"),
+            "cancelled": cancelled,
+        },
+    )
 
 
 def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
@@ -794,6 +854,11 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
     env, run_op, session, cfg, cache, out, state = (
         ctx.env, ctx.run_op, ctx.session, ctx.cfg, ctx.cache, ctx.out, ctx.state)
     i = state["i"]
+    state["current_step"] = i
+    started = time.perf_counter()
+    # Kept outside the try so the failure event can still report the declared
+    # params when resolution itself is what raised.
+    params: dict[str, Any] = dict(step.params)
     holding = state["holding"]
     tracked_grasp: _TrackedGraspContext | None = state["tracked_grasp"]
     # Cancellation (GUI-only): checked once per step here, and again inside every
@@ -875,6 +940,15 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
                 tracked_grasp = None
                 sleep_cancellable(max(0.0, cfg.settle_grip_s), token)
         out.append({"i": i, "op": step.op, "ok": True, "result": result})
+        _emit_step(
+            ctx,
+            step,
+            step_id=i,
+            params=params,
+            ok=True,
+            result=result,
+            duration_s=time.perf_counter() - started,
+        )
         logger.info("[runner] step %d ok: %s(%s)", i, step.op, params)
         state["i"] = i + 1
         state["holding"] = holding
@@ -883,14 +957,24 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
     except RunCancelled:
         # User cancellation: do NOT record a failed step or run _safe_retreat
         # (which would issue another home/release motion). Let it unwind to the
-        # GUI, which finalizes the run as "已停止".
+        # GUI, which finalizes the run as "已停止". The episode trace still gets
+        # the interrupted step so the timeline does not silently lose it.
+        _emit_step(
+            ctx,
+            step,
+            step_id=i,
+            params=params,
+            ok=False,
+            error="cancelled",
+            duration_s=time.perf_counter() - started,
+            cancelled=True,
+        )
         raise
     except Exception as exc:  # noqa: BLE001 - surface as structured failure
         logger.warning("[runner] step %d failed: %s(%s): %s", i, step.op, step.params, exc)
-        if isinstance(exc, _StepExecutionError) and exc.recovery_managed:
+        managed = isinstance(exc, _StepExecutionError) and exc.recovery_managed
+        if managed:
             logger.info("[runner] recovery already handled by the ability rail stack")
-        else:
-            _safe_retreat(session)
         # ``reason`` is the human/LLM-facing text; ``error_code`` is the machine
         # one the GUI looks up directly instead of re-deriving it from that text.
         out.append(
@@ -900,11 +984,31 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
                 "ok": False,
                 "reason": f"{type(exc).__name__}: {exc}",
                 "error_code": error_code(exc),
-                "recovery_managed": isinstance(exc, _StepExecutionError)
-                and exc.recovery_managed,
+                "recovery_managed": managed,
             }
         )
         state["i"] = i + 1
+        # The step's duration excludes the retreat; the emitted state is AFTER
+        # the retreat. That is the state the re-planner is about to see: a home
+        # motion can load a bucket that looked empty at the failure instant, and
+        # recording pre-retreat tokens would make the episode contradict the
+        # re-plan reason.
+        duration_s = time.perf_counter() - started
+        try:
+            if not managed:
+                _safe_retreat(session)
+        finally:
+            _emit_step(
+                ctx,
+                step,
+                step_id=i,
+                params=params,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+                error_code=error_code(exc),
+                recovery_managed=managed,
+                duration_s=duration_s,
+            )
         return False
 
 
@@ -916,27 +1020,67 @@ def _run_loop(loop: LoopStep, ctx: _RunContext) -> bool:
     """
     env, run_op, session, out, state = ctx.env, ctx.run_op, ctx.session, ctx.out, ctx.state
     cap = loop.max_iters if loop.max_iters else _LOOP_HARD_CAP
-    for _ in range(cap):
+    # The loop header is not an ActionStep; this synthetic one only exists so the
+    # detect call shows up in the planning-level step timeline too.
+    detect_step = ActionStep(op=loop.detect_op, params=loop.detect_params, bind=loop.bind)
+    for iteration in range(cap):
         i = state["i"]
+        state["current_step"] = i
+        state["loop_iter"] = iteration + 1
+        detect_params = resolve_params(loop.detect_params, env)
         # 1. detect ONE target (single-target detector; ok=False ⇒ none left)
         try:
-            det_res = run_op(loop.detect_op, resolve_params(loop.detect_params, env))
+            det_res = run_op(loop.detect_op, detect_params)
         except RunCancelled:
+            _emit_step(
+                ctx,
+                detect_step,
+                step_id=i,
+                params=detect_params,
+                ok=False,
+                error="cancelled",
+                cancelled=True,
+            )
             raise  # user cancellation: no failed step, no _safe_retreat (see _run_action)
         except Exception as exc:  # noqa: BLE001
-            _safe_retreat(session)
             out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": False, "reason": f"{type(exc).__name__}: {exc}"})
             state["i"] = i + 1
+            _emit_step(
+                ctx,
+                detect_step,
+                step_id=i,
+                params=detect_params,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+                error_code=error_code(exc),
+            )
+            _safe_retreat(session)
             return False
         det = det_res.get("result")
         if not det_res.get("ok") or not (isinstance(det, dict) and det.get("ok")):
             out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": True, "result": {"terminated": "no_more_target"}})
             state["i"] = i + 1
+            _emit_step(
+                ctx,
+                detect_step,
+                step_id=i,
+                params=detect_params,
+                ok=True,
+                result={"terminated": "no_more_target"},
+            )
             return True  # clean termination — the scene is clear
         env[loop.bind] = normalize_detection(det)
         out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": True,
                     "result": {"target": det.get("position") or det.get("center_mm")}})
         state["i"] = i + 1
+        _emit_step(
+            ctx,
+            detect_step,
+            step_id=i,
+            params=detect_params,
+            ok=True,
+            result={"target": det.get("position") or det.get("center_mm")},
+        )
         # 2. process this one target: run the body once
         for bstep in loop.body:
             if not _run_action(bstep, ctx):
@@ -960,8 +1104,13 @@ def _op_contracts(session: Any, action_index: Mapping[str, Callable[..., Any]] |
     return metas
 
 
-def _drift(step: ActionStep, metas: Mapping[str, ToolMeta], session: Any, env: Mapping[str, Any]) -> str | None:
+def _drift(
+    step: ActionStep, metas: Mapping[str, ToolMeta], session: Any, env: Mapping[str, Any]
+) -> tuple[str, str] | None:
     """Why the world contradicts this step's pre-conditions, or ``None``.
+
+    Returns ``(kind, reason)`` where kind is ``"self_state"`` or ``"location"``,
+    so the episode trace can attribute a re-plan without parsing prose.
 
     Two independent pre-conditions, the same two the plan-time validator checks:
     robot self-state, and whether the sensed position the step acts on is still
@@ -971,7 +1120,13 @@ def _drift(step: ActionStep, metas: Mapping[str, ToolMeta], session: Any, env: M
     meta = metas.get(step.op)
     if meta is None:
         return None
-    return _self_state_drift(step, meta, session) or _location_drift(step, meta, session, env)
+    self_drift = _self_state_drift(step, meta, session)
+    if self_drift is not None:
+        return ("self_state", self_drift)
+    location_drift = _location_drift(step, meta, session, env)
+    if location_drift is not None:
+        return ("location", location_drift)
+    return None
 
 
 def _self_state_drift(step: ActionStep, meta: ToolMeta, session: Any) -> str | None:
@@ -1020,27 +1175,86 @@ def _location_drift(step: ActionStep, meta: ToolMeta, session: Any, env: Mapping
     return f"{step.op} acts on a sensed position, but every earlier sensing has been invalidated"
 
 
-def _request_replan(replan: Replanner, session: Any, why: str, out: list[dict], state: dict) -> list | None:
+def _request_replan(
+    replan: Replanner,
+    session: Any,
+    why: str,
+    out: list[dict],
+    state: dict,
+    *,
+    trigger: str,
+    at_step: int | None,
+    pending: list[ActionStep | LoopStep],
+    budget: dict[str, int],
+    trace_sink: TraceSink | None = None,
+) -> list | None:
     """Ask for a replacement remainder and record the event; ``None`` = keep the plan.
 
     Falling back to the original plan when re-planning is unavailable or comes back
     empty is deliberate: the drift check reads a best-effort belief, not a safety
     interlock, so it may add a better plan but must never take away an execution
     that would otherwise have run.
+
+    A ``replan`` event is emitted for every attempt, including the ones that fail,
+    because "the planner could not repair this" is itself a fact the evaluation
+    and self-evolution layers need.
     """
     logger.warning("[runner] the plan no longer fits the world: %s — re-planning", why)
+    old_remaining = [_step_brief(pending_step) for pending_step in pending]
     world = WorldState.snapshot(session)
     try:
         fresh = replan(world, why)
     except Exception as exc:
         logger.warning("[runner] re-planning failed, continuing with the original plan: %s", exc)
+        emit_safely(
+            trace_sink,
+            {
+                "type": "replan",
+                "at_step": at_step,
+                "trigger": trigger,
+                "why": why,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "budget": dict(budget),
+                "old_remaining": old_remaining,
+                "new_steps": [],
+            },
+        )
         return None
     if not fresh:
         logger.warning("[runner] re-planner returned no steps, continuing with the original plan")
+        emit_safely(
+            trace_sink,
+            {
+                "type": "replan",
+                "at_step": at_step,
+                "trigger": trigger,
+                "why": why,
+                "ok": False,
+                "error": "re-planner returned no steps",
+                "budget": dict(budget),
+                "old_remaining": old_remaining,
+                "new_steps": [],
+            },
+        )
         return None
     i = state["i"]
     out.append({"i": i, "op": "<replan>", "ok": True, "result": {"reason": why, "steps": len(fresh)}})
     state["i"] = i + 1
+    emit_safely(
+        trace_sink,
+        {
+            "type": "replan",
+            "at_step": at_step,
+            "trigger": trigger,
+            "why": why,
+            "ok": True,
+            "error": None,
+            "budget": dict(budget),
+            "old_remaining": old_remaining,
+            "new_steps": [_step_brief(step) for step in fresh],
+        },
+    )
     return list(fresh)
 
 
@@ -1053,6 +1267,7 @@ def run_sequence(
     action_index: Mapping[str, Callable[..., Any]] | None = None,
     replan: Replanner | None = None,
     max_replans: int = 2,
+    trace_sink: TraceSink | None = None,
 ) -> dict:
     """Execute an action sequence in order, with no per-step LLM.
 
@@ -1071,33 +1286,48 @@ def run_sequence(
             the drift check is skipped entirely (no cost, today's behaviour).
         max_replans: cap on re-plans per run. Past it, drift is logged and the
             step dispatched anyway — a plan we cannot improve still beats none.
+        trace_sink: optional planning-level trace sink (episode JSONL). Receives
+            ``step`` and ``replan`` event dicts; ``None`` keeps the run exactly as
+            it was before this argument existed.
 
     Returns:
-        ``{ok, steps_done, steps:[{i, op, ok, result|reason}], env_keys}``.
+        ``{ok, steps_done, steps:[{i, op, ok, result|reason}], env_keys, replans}``.
         Stops at the first failing step and reports the structured reason
         (rails/RecoveryRail already handled any safe retreat for real runs). A
         re-plan appears as an ``op: "<replan>"`` record carrying its reason.
     """
     cfg = config or SkillExecConfig()
-    base_run_op: Executor = executor or direct_executor(action_index or session.api)
-    # Cancellation (GUI-only): wrap the executor once so EVERY op — here and in
-    # helpers that receive run_op (e.g. _retry_unconfirmed_grasp) — yields the
-    # worker within one poll on cancel. token is None for CLI/tests → base_run_op
-    # runs unwrapped, exactly as before.
-    token: CancelToken | None = getattr(session, "cancel_token", None)
-    run_op: Executor = base_run_op if token is None else _cancellable_executor(base_run_op, token)
     # The env holds only detection bindings (added as tracking/detection steps run).
     # No seeded constants: working heights come from grasp_z/place_z, and any
     # other offset a skill needs is a literal number in its compiled expression.
     env: dict[str, Any] = {}
+    out: list[dict] = []
+    state: dict = {
+        "holding": False,
+        "i": 0,
+        "tracked_grasp": None,
+        "current_step": None,
+        "loop_iter": None,
+    }  # shared across steps + loop bodies
+    base_run_op: Executor = executor or direct_executor(action_index or session.api)
+    # Cancellation (GUI-only): wrap the executor once so EVERY op — here and in
+    # helpers that receive run_op (e.g. _retry_unconfirmed_grasp) — yields the
+    # worker within one poll on cancel. token is None for CLI/tests → the plain
+    # path runs unwrapped, exactly as before.
+    #
+    # bind_executor must be INSIDE _cancellable_executor: cancellable_call runs
+    # the op on a fresh thread, so the runner-step context has to be set there
+    # for ability_exec's asyncio.run (and TraceRail) to inherit it.
+    step_run_op: Executor = bind_executor(base_run_op, state)
+    token: CancelToken | None = getattr(session, "cancel_token", None)
+    run_op: Executor = step_run_op if token is None else _cancellable_executor(step_run_op, token)
 
     # Eye-in-hand pre-scan before any motion (task-agnostic).
     cache = _prescan(session, steps)
 
-    out: list[dict] = []
-    state: dict = {"holding": False, "i": 0, "tracked_grasp": None}  # shared across steps + loop bodies
-    ctx = _RunContext(env=env, run_op=run_op, session=session, cfg=cfg,
-                      cache=cache, out=out, state=state)
+    ctx = _RunContext(
+        env=env, run_op=run_op, session=session, cfg=cfg, cache=cache, out=out, state=state, trace_sink=trace_sink
+    )
     # Empty without a replanner, which makes _drift a dict lookup that always misses.
     metas = _op_contracts(session, action_index) if replan is not None else {}
     pending: list[ActionStep | LoopStep] = list(steps)
@@ -1105,10 +1335,22 @@ def run_sequence(
     ok_all = True
     while pending:
         step = pending[0]
-        why = _drift(step, metas, session, env) if isinstance(step, ActionStep) else None
-        if why is not None and replans < max_replans:
+        drift = _drift(step, metas, session, env) if isinstance(step, ActionStep) else None
+        if drift is not None and replans < max_replans:
+            kind, why = drift
             # replan is set whenever metas is
-            fresh = _request_replan(replan, session, why, out, state)  # type: ignore[arg-type]
+            fresh = _request_replan(
+                replan,  # type: ignore[arg-type]
+                session,
+                why,
+                out,
+                state,
+                trigger=kind,
+                at_step=state["i"],
+                pending=list(pending),
+                budget={"used": replans + 1, "max": max_replans},
+                trace_sink=trace_sink,
+            )
             if fresh is not None:
                 replans += 1
                 pending = list(fresh)
@@ -1116,11 +1358,13 @@ def run_sequence(
                 # binding it reads; dropping the old ones keeps stale coordinates out.
                 env.clear()
                 continue
-        elif why is not None:
+        elif drift is not None:
+            _kind, why = drift
             logger.warning("[runner] %s; re-plan budget (%d) spent — dispatching anyway", why, max_replans)
         pending.pop(0)
         if isinstance(step, LoopStep):
             ok_all = _run_loop(step, ctx)
+            state["loop_iter"] = None
         else:
             ok_all = _run_action(step, ctx)
         if not ok_all:
@@ -1136,7 +1380,18 @@ def run_sequence(
                 and not failed.get("recovery_managed", False)
             ):
                 why = f"{failed.get('op', 'step')} 失败：{failed.get('reason', '')}"
-                fresh = _request_replan(replan, session, why, out, state)
+                fresh = _request_replan(
+                    replan,
+                    session,
+                    why,
+                    out,
+                    state,
+                    trigger="business_failure",
+                    at_step=failed.get("i"),
+                    pending=list(pending),
+                    budget={"used": replans + 1, "max": max_replans},
+                    trace_sink=trace_sink,
+                )
                 if fresh is not None:
                     replans += 1
                     pending = list(fresh)
@@ -1145,7 +1400,13 @@ def run_sequence(
                     continue
             break
 
-    return {"ok": ok_all, "steps_done": len(out), "steps": out, "env_keys": sorted(env)}
+    return {
+        "ok": ok_all,
+        "steps_done": len(out),
+        "steps": out,
+        "env_keys": sorted(env),
+        "replans": replans,
+    }
 
 
 def _safe_retreat(session: Any) -> None:

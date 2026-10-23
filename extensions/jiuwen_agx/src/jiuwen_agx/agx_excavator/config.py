@@ -102,6 +102,10 @@ class AgxExcavatorConfig(SimMachineConfig):
     approach_gap_m: float = 0.35  # 接近点在目标上方的余量
     bite_m: float = 0.25  # 从大脑给的 dig_z 再向下压的深度
     cut_length_m: float = 1.0  # 拖切沿半径向内的长度
+    # 拖切终点离基座的最近半径（米）：挖点半径 - cut_length_m 必须 >= 这个值。
+    # 0 = 不检查（保持 365 keyframe 行为）。215F 实测：拖到 2.1 m 时 arm 关节已到
+    # 下限 0，IK 会原地卡在 0.45 m；挖点太近时先退底盘或换远点。
+    dig_min_drag_radius_m: float = 0.0
     carry_lift_m: float = 1.0  # 收斗后抬升高度
     # 铲斗角（原生 rad）：入土/拖切时张开（大角），收斗时往机身内侧合拢
     # （小角），卸料时再往外翻（大角）。0.0 是往内翻的一端，不是卸料方向。
@@ -199,6 +203,7 @@ class AgxExcavatorConfig(SimMachineConfig):
             "approach_gap_m",
             "bite_m",
             "cut_length_m",
+            "dig_min_drag_radius_m",
             "carry_lift_m",
             "dig_bucket_open_rad",
             "dig_bucket_curl_rad",
@@ -213,6 +218,11 @@ class AgxExcavatorConfig(SimMachineConfig):
         if cfg.dump_clearance_m < 0:
             raise ValueError(
                 f"{cls.__name__}: dump_clearance_m must be >= 0, got {cfg.dump_clearance_m}"
+            )
+        if cfg.dig_min_drag_radius_m < 0:
+            raise ValueError(
+                f"{cls.__name__}: dig_min_drag_radius_m must be >= 0, "
+                f"got {cfg.dig_min_drag_radius_m}"
             )
         if cfg.dump_tolerance_m < 0:
             raise ValueError(

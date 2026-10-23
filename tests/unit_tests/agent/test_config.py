@@ -110,6 +110,8 @@ class TestTracingAndLoggingConfig:
         assert cfg.trace_save_frames is False
         assert cfg.trace_console is False
         assert cfg.trace_dir is None
+        assert cfg.enable_episode_trace is False
+        assert cfg.episode_dir is None
 
     def test_trace_capture_loggers_default(self):
         cfg = RobotAgentConfig()
@@ -127,12 +129,16 @@ class TestTracingAndLoggingConfig:
             trace_save_frames=True,
             trace_console=True,
             trace_dir="/tmp/x",
+            enable_episode_trace=True,
+            episode_dir="/tmp/episodes",
             log_level="DEBUG",
             log_dir="/tmp/logs",
         )
         assert cfg.enable_tracing is True
         assert cfg.trace_max_entries == 10
         assert cfg.trace_save_frames is True
+        assert cfg.enable_episode_trace is True
+        assert cfg.episode_dir == "/tmp/episodes"
         assert cfg.log_level == "DEBUG"
         assert cfg.log_dir == "/tmp/logs"
 

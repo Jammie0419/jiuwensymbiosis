@@ -68,6 +68,7 @@ def execute_pose_dig_cycle(
     approach_gap_m: float = 0.35,
     bite_m: float = 0.25,
     cut_length_m: float = 1.0,
+    min_drag_radius_m: float = 0.0,
     carry_lift_m: float = 1.0,
     carry: dict[str, float] | None = None,
     dig_bucket_open_native: float = 1.5,
@@ -122,6 +123,21 @@ def execute_pose_dig_cycle(
     if isinstance(surfaces, (list, tuple)) and surfaces and surfaces[0] is None:
         raise ValueError(
             f"dig point ({dig_x:.2f}, {dig_y:.2f}) is outside the terrain grid"
+        )
+
+    # The cut always drags INWARD by cut_length_m. A close dig point therefore
+    # puts the drag endpoint inside the arm's collapsed posture (215F measured:
+    # arm hits its 0 limit and the tip stalls ~0.45 m short). Refuse before the
+    # ready move; the planner can move the undercarriage back and re-read terrain.
+    radius = math.hypot(dig_x, dig_y) or 1e-6
+    drag_endpoint_m = max(radius - float(cut_length_m), 0.6)
+    if min_drag_radius_m > 0 and drag_endpoint_m < float(min_drag_radius_m):
+        raise ValueError(
+            f"dig point at {radius:.2f} m leaves only {drag_endpoint_m:.2f} m after the "
+            f"{float(cut_length_m):.2f} m inward cut; keep the drag endpoint at >= "
+            f"{float(min_drag_radius_m):.2f} m (dig radius >= "
+            f"{float(min_drag_radius_m) + float(cut_length_m):.2f} m) or move the "
+            "undercarriage back and re-read the terrain"
         )
 
     origin = tuple(getattr(ik, "origin_in_base", (0.0, 0.0, 0.0)))
@@ -378,6 +394,42 @@ def execute_pose_dig_cycle(
             tolerance=tolerance,
         )
 
+    def cleanup_after_contact_failure() -> None:
+        """Open the bucket (lifting if possible) after a failed cut.
+
+        The generic recovery cannot release an excavator: it looks for a gripper
+        or suction cup and ``set_end_effector`` refuses a body without those
+        capabilities. Without this cleanup the next re-plan sees
+        ``payload.held`` while ``dig`` requires ``payload.clear`` — a deadlock.
+        Best-effort: never masks the original failure.
+        """
+        logger.warning(
+            "[ik] cycle failed during the cut; opening the bucket before returning"
+        )
+        targets: dict[str, float] = {"bucket": dump_open_native}
+        if carry is not None and "boom" in carry and "arm" in carry:
+            targets = {
+                "boom": float(carry["boom"]),
+                "arm": float(carry["arm"]),
+                "bucket": dump_open_native,
+            }
+        try:
+            driver.move_joints_blocking(targets, timeout_s=10.0)
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning("[ik] cleanup: lift+open failed (%s); opening in place", exc)
+            try:
+                driver.move_joints_blocking(
+                    {"bucket": dump_open_native}, timeout_s=10.0
+                )
+            except Exception as open_exc:  # noqa: BLE001
+                logger.warning("[ik] cleanup: opening the bucket failed: %s", open_exc)
+        if dump_dwell_s > 0:
+            time.sleep(float(dump_dwell_s))
+        try:
+            driver.mark_scoop(False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ik] cleanup: mark_scoop(False) failed: %s", exc)
+
     # Free-space approach: solve the joint target, then play one smooth move.
     q_approach = np.asarray(q, dtype=np.float64).copy()
     for _ in range(int(ik_max_iters)):
@@ -391,21 +443,27 @@ def execute_pose_dig_cycle(
         cut(approach, label="approach", tolerance=ik_tolerance_m)
 
     # Cut with the bucket OPEN: the teeth enter and drag through the soil.
-    cut(entry, label="entry", tolerance=ik_tolerance_m)
-    cut(press, label="press", tolerance=contact_tolerance_m)
-    for step in range(1, 4):
-        alpha = step / 3.0
-        cut(
-            press + (drag - press) * alpha,
-            label=f"drag{step}",
-            tolerance=contact_tolerance_m,
-        )
-    cut(drag, label="drag", tolerance=contact_tolerance_m)
+    # Any failure here happens BEFORE mark_scoop(True), so the generic retreat
+    # would home a bucket that is physically holding soil; clean up in place.
+    try:
+        cut(entry, label="entry", tolerance=ik_tolerance_m)
+        cut(press, label="press", tolerance=contact_tolerance_m)
+        for step in range(1, 4):
+            alpha = step / 3.0
+            cut(
+                press + (drag - press) * alpha,
+                label=f"drag{step}",
+                tolerance=contact_tolerance_m,
+            )
+        cut(drag, label="drag", tolerance=contact_tolerance_m)
 
-    # Curl INWARD (toward the machine) to close the bucket and hold the load.
-    # Increasing the angle here would open it further and spill the soil.
-    driver.move_joints_blocking({"bucket": curl_native})
-    driver.mark_scoop(True)
+        # Curl INWARD (toward the machine) to close the bucket and hold the load.
+        # Increasing the angle here would open it further and spill the soil.
+        driver.move_joints_blocking({"bucket": curl_native})
+        driver.mark_scoop(True)
+    except Exception:
+        cleanup_after_contact_failure()
+        raise
 
     # Carry lift: the calibrated carry boom/arm when available, otherwise the
     # IK solution for the lift point with the bucket open; the bucket itself

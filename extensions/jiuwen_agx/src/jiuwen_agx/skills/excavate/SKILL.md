@@ -32,6 +32,10 @@ invalidates_locations: true
 ## 注意
 
 - **位置失效**：挖掘和行走都会让旧的料堆观察作废，凡是用旧坐标前先重新 `get_terrain`。
+- **挖点不能太近**：`dig` 会从挖点向机身方向拖 `cut_length_m`（默认 1 m），
+  拖切终点半径必须 ≥ `dig_min_drag_radius_m`（215F 默认 3 m），也就是挖点半径
+  至少 4 m。`get_terrain` 给的堆顶如果只有 3 m 左右，先用 `navigate_relative`
+  后退 1 m（或退到半径 ≥ 4 m），再重新 `get_terrain`；不要把近处堆顶直接当挖点。
 - **卸点要“够得着 + 有空间外翻”**：卸点以基座为原点，半径落在可达环带内，同时
   高度/距离要让铲斗能带着料到达，并在那里往外翻。太低太近的点（例如 (3,0,0)）在
   收斗状态下手臂就到不了，`dig` 会报 “cannot be reached while carrying the bucket

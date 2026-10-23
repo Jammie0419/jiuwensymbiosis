@@ -52,6 +52,13 @@ class TestConfig:
             {"motion.joint", "motion.base", "sensing.terrain", "motion.excavator"}
         )
 
+    def test_dig_min_drag_radius_is_validated(self):
+        cfg = AgxExcavatorConfig.from_dict({"dig_min_drag_radius_m": 3.0})
+        assert cfg.dig_min_drag_radius_m == 3.0
+        assert AgxExcavatorConfig().dig_min_drag_radius_m == 0.0  # default: unchecked
+        with pytest.raises(ValueError, match="dig_min_drag_radius_m"):
+            AgxExcavatorConfig.from_dict({"dig_min_drag_radius_m": -0.1})
+
 
 # ============================================================================ work cycle
 class _SpyDriver:
@@ -288,6 +295,21 @@ class TestApi:
         with session:
             piles = session.api.get_terrain()["piles"]
             assert piles and {"name", "x_m", "y_m", "volume_m3"} <= set(piles[0])
+
+    def test_release_effector_opens_the_bucket(self):
+        session = self._built()
+        session.env.cfg.dig_mode = "ik"
+        with session:
+            session.env.driver.mark_scoop(True)
+            result = session.api.release_effector()
+            assert result["ok"] is True
+            assert result["bucket"] == 1.5  # default dig_bucket_open_rad
+            assert session.env.driver.scoop_state() is False
+
+    def test_release_effector_is_keyframe_safe(self):
+        session = self._built()  # default dig_mode="keyframe"
+        with session:
+            assert session.api.release_effector()["ok"] is False
 
 
 class TestJointNamesReachThePlanner:

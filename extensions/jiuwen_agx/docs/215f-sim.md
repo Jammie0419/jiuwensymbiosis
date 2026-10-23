@@ -81,6 +81,12 @@ offset = 0 / +61.8273 / -154.3403 / +216.6141 度
   不可达时 `dig` 返回 `ok:false + error`（业务失败），runner 用原因重规划，
   不会留下满载斗。
 - 收斗后检查 `scoop_state()`；没装上料会直接失败，不再把空斗当成功。
+- 挖点除了落在可达环带内，还要给拖切留空间：`dig_min_drag_radius_m`（默认 3.0）
+  要求 `挖点半径 − cut_length_m ≥ 3.0`，即挖点半径至少 4.0 m。太近时在动土前就
+  返回 `ok:false`，先 `navigate_relative` 退底盘、再 `get_terrain`。
+- 接触段失败会先开斗（必要时抬到 carry 位形）再返回错误；`release_effector()` 也
+  实现了开斗，RecoveryRail 会在 `home` 前先释放，避免失败后 `payload.held` 把
+  下一次 `dig` 锁死。
 - 超差、不可达、或卸完 `scoop_state()` 仍为真 → `ok:false + error`；大脑据此
   移动底盘或换点。自由空间段已走平滑轨迹播放，一斗约 44 s；接触段
   （press/drag）仍逐点闭环。
@@ -107,13 +113,29 @@ start_agx_bridge_215f.bat
 rem 2) 控制端核对
 python extensions\jiuwen_agx\scripts\control\agx_scene_probe.py --bridge --port 9700
 
-rem 3) 真实任务（key 配好后）
-python examples\run_task.py ^
+rem 3) 真实任务（key 配好后）——365 / 215F 共用同一个入口，靠 --config 选机型
+python extensions\jiuwen_agx\scripts\run\run_task.py ^
   --config extensions\jiuwen_agx\configs\agx_excavator\agx_excavator.215f.yaml ^
   --query "把土堆挖一斗倒旁边"
 
-rem Windows 上 run_task 被 fcntl 卡住时，用同一条后端/同一个 dig 动作的验收脚本
+rem 只想验一斗、不经过 LLM 时，用同一个后端的验收脚本
 python extensions\jiuwen_agx\scripts\control\agx_215f_dig_smoke.py
+```
+
+运行产物统一落在 `extensions/jiuwen_agx/runtime/`（YAML 的 `agent.workspace` /
+`episode_dir` / `trace_dir` / `log_dir` 指向这里）：
+
+```text
+runtime/agent/       # openjiuwen workspace（AGENT.md、memory/ ...）
+runtime/episodes/    # 规划级 *.jsonl
+runtime/traces/      # 工具级 *.json
+runtime/logs/        # jiuwensymbiosis.log + openjiuwen/
+```
+
+查看一次运行的规划时间线：
+
+```bash
+.venv\Scripts\python.exe -m jiuwensymbiosis.cli_episode extensions\jiuwen_agx\runtime\episodes\<最新>.jsonl
 ```
 
 探针应看到：`machine_name = excavator215f`、4 个关节、单位 rad、载料约 0、

@@ -29,12 +29,20 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 import uuid
 from collections.abc import Mapping
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any
 
-from jiuwensymbiosis.agent.builder import build_robot_agent
+from jiuwensymbiosis.agent.builder import build_robot_agent, resolve_workspace
 from jiuwensymbiosis.agent.config import RobotAgentConfig
+from jiuwensymbiosis.agent.episode_trace import (
+    EpisodeRecorder,
+    NullEpisodeRecorder,
+    episode_path,
+)
 from jiuwensymbiosis.agent.fast.sequence import TRACK_DETECT, TRACK_GRASP, qualifiers_for
 from jiuwensymbiosis.agent.session import RobotSession
 from jiuwensymbiosis.api.state import CONTAINMENT_RELATIONS
@@ -380,6 +388,31 @@ def _resolve_fast_special_ops(
     return frozenset()
 
 
+def _package_version() -> str | None:
+    """Installed jiuwensymbiosis version, for the episode header."""
+    try:
+        return version("jiuwensymbiosis")
+    except PackageNotFoundError:
+        return None
+
+
+def _cerebellum_name(session: Any) -> str | None:
+    """Best-effort name of the body's work-cycle implementation.
+
+    The core cannot import an adapter, so it reads the two conventions the
+    config already exposes: a learned policy name, else the dig mode
+    (``ik`` / ``keyframe``). Absent on bodies that have neither.
+    """
+    cfg = getattr(getattr(session, "env", None), "cfg", None)
+    policy = getattr(cfg, "policy", None)
+    if isinstance(policy, Mapping) and policy.get("name"):
+        return f"policy:{policy['name']}"
+    dig_mode = getattr(cfg, "dig_mode", None)
+    if isinstance(dig_mode, str) and dig_mode:
+        return f"dig:{dig_mode}"
+    return None
+
+
 def run_fast_task(
     session: RobotSession,
     query: str,
@@ -387,6 +420,66 @@ def run_fast_task(
     *,
     conversation_id: str | None = None,
     cancel_token: Any = None,
+) -> dict:
+    """Run one task on the fast path, optionally recording a planning-level trace.
+
+    The episode recorder is opened before planning so the intent, the world
+    snapshot and every plan attempt land in the JSONL. It is strictly
+    best-effort: if the directory cannot be created or the file cannot be
+    opened, the run continues with a no-op recorder.
+    """
+    conv_id = conversation_id or f"task-{uuid.uuid4().hex[:8]}"
+    path: Path | None = None
+    episode: EpisodeRecorder | NullEpisodeRecorder = NullEpisodeRecorder()
+    if config.enable_episode_trace:
+        try:
+            workspace = resolve_workspace(session, config.workspace)
+            path = episode_path(workspace, config.episode_dir, conv_id)
+            spec = config.model_spec
+            versions: dict[str, Any] = {
+                "package": _package_version(),
+                "model": spec.model_name if spec is not None else None,
+                "exec_mode": config.exec_mode,
+                "harness": "v0",
+            }
+            cerebellum = _cerebellum_name(session)
+            if cerebellum:
+                versions["cerebellum"] = cerebellum
+            episode = EpisodeRecorder(
+                path,
+                episode_id=conv_id,
+                query=query,
+                robot=getattr(session, "name", None),
+                mode="fastagent",
+                workspace=workspace,
+                versions=versions,
+                capabilities=getattr(getattr(session, "env", None), "capabilities", ()) or (),
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("[fast] episode trace disabled: %s", exc)
+            path = None
+            episode = NullEpisodeRecorder()
+    with episode:
+        result = _run_fast_task_impl(
+            session,
+            query,
+            config,
+            conv_id=conv_id,
+            cancel_token=cancel_token,
+            episode=episode,
+        )
+    result["episode_path"] = str(path) if path is not None else None
+    return result
+
+
+def _run_fast_task_impl(
+    session: RobotSession,
+    query: str,
+    config: RobotAgentConfig,
+    *,
+    conv_id: str,
+    cancel_token: Any,
+    episode: EpisodeRecorder | NullEpisodeRecorder,
 ) -> dict:
     """Fast path: plan the task into an action sequence, then run it through the
     SAME agent + rails the slow path uses — no per-step LLM.
@@ -402,17 +495,22 @@ def run_fast_task(
     ``ability_manager`` with the precompiled sequence instead of looping the LLM.
     SafetyRail / VisualFeedbackRail / RecoveryRail therefore all apply.
 
-    ``conversation_id`` seeds the trace's run token (its JSON filename + frames
-    subdir) the same way the agent path's ``invoke`` does. The fast path skips
+    ``conv_id`` seeds the trace's run token (its JSON filename + frames subdir) the
+    same way the agent path's ``invoke`` does. The fast path skips
     ``agent.invoke()`` (no per-step LLM), so it manually primes the rails
     (``_prime_fast_agent``) and fires the invoke lifecycle
     (``_fire_invoke_event`` BEFORE/AFTER) so TraceRail records each discrete
     sequence step and persists a trace JSON — exactly the trace the agent path
     produces, with zero overhead when tracing is off.
+
+    ``episode`` is the planning-level recorder opened by :func:`run_fast_task`
+    (a no-op recorder when the feature is off).
     """
+    run_started = time.perf_counter()
     # Imported lazily so the slow path never pulls in the realtime stack.
     from jiuwensymbiosis.agent.fast import (
         DEFAULT_REGISTRY,
+        ActionStep,
         SkillExecConfig,
         parse_sequence,
         plan_task,
@@ -425,6 +523,7 @@ def run_fast_task(
 
     spec = config.model_spec
     if spec is None:
+        episode.outcome(ok=False, error="no_model_spec")
         return {"ok": False, "reason": "no_model_spec", "query": query}
 
     exec_cfg = config.exec_config or SkillExecConfig()
@@ -443,6 +542,7 @@ def run_fast_task(
     # perception (far → move first; multiple targets → a loop). Both steps are
     # best-effort: if the parser/detector is unavailable, we fall back to a
     # scene-blind compile (backward compatible).
+    intent_started = time.perf_counter()
     try:
         intent = parse_task(
             query,
@@ -454,7 +554,18 @@ def run_fast_task(
         )
     except Exception as exc:  # noqa: BLE001 - parser is best-effort
         logger.warning("[fast] task parse failed (scene-blind compile): %s", exc)
+        episode.intent(
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+            duration_s=time.perf_counter() - intent_started,
+        )
         intent = {"targets": []}
+    else:
+        episode.intent(
+            ok=True,
+            intent=intent,
+            duration_s=time.perf_counter() - intent_started,
+        )
     scene = _perceive_scene(
         session, intent.get("targets") or [], intent.get("references") or [], intent.get("grounding") or {}
     )
@@ -487,6 +598,8 @@ def run_fast_task(
     }
 
     world = WorldState.snapshot(session)
+    episode.world(world.describe())
+    plan_started = time.perf_counter()
     try:
         planned = plan_task(
             query,
@@ -496,11 +609,40 @@ def run_fast_task(
         )
     except RuntimeError as exc:
         logger.error("[fast] planning failed: %s", exc)
+        episode.plan_attempt(
+            trigger="initial",
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+            duration_s=time.perf_counter() - plan_started,
+        )
+        episode.outcome(ok=False, error=f"compile_failed: {exc}")
         return {"ok": False, "reason": f"compile_failed: {exc}", "query": query}
 
     raw = planned.sequence
-    steps = parse_sequence(
-        raw, allowed_ops=action_index, special_ops=special_ops, blocked_access=plan_kwargs["blocked_access"]
+    try:
+        steps = parse_sequence(
+            raw, allowed_ops=action_index, special_ops=special_ops, blocked_access=plan_kwargs["blocked_access"]
+        )
+    except Exception as exc:
+        episode.plan_attempt(
+            trigger="initial",
+            tier=planned.tier,
+            skills=planned.skills,
+            reason=planned.reason,
+            raw=raw,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+            duration_s=time.perf_counter() - plan_started,
+        )
+        raise
+    episode.plan_attempt(
+        trigger="initial",
+        tier=planned.tier,
+        skills=planned.skills,
+        reason=planned.reason,
+        raw=raw,
+        validated_steps=[step.op if isinstance(step, ActionStep) else f"loop:{step.detect_op}" for step in steps],
+        duration_s=time.perf_counter() - plan_started,
     )
     logger.info("[fast] %s-tier plan → %d steps for task=%r", planned.tier, len(steps), query)
 
@@ -531,24 +673,55 @@ def run_fast_task(
         else:
             fresh_kwargs["scene"] = scene_now
             fresh_kwargs["blocked_access"] = _blocked_access(scene_now, intent.get("grounding") or {})
-        again = plan_task(
-            f"{query}\n\n（执行中断：{why}。请依据【当前状态】重新规划剩余动作。）",
-            world_block=measured.as_prompt_block(),
-            world_tokens=sorted(measured.tokens) or None,
-            **fresh_kwargs,
-        )
+        replan_started = time.perf_counter()
+        try:
+            again = plan_task(
+                f"{query}\n\n（执行中断：{why}。请依据【当前状态】重新规划剩余动作。）",
+                world_block=measured.as_prompt_block(),
+                world_tokens=sorted(measured.tokens) or None,
+                **fresh_kwargs,
+            )
+        except Exception as exc:
+            episode.plan_attempt(
+                trigger="replan",
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+                duration_s=time.perf_counter() - replan_started,
+            )
+            raise
         logger.info("[fast] re-planned at %s-tier → %d steps", again.tier, len(again.sequence))
-        return parse_sequence(
-            again.sequence,
-            allowed_ops=action_index,
-            special_ops=special_ops,
-            blocked_access=plan_kwargs["blocked_access"],
+        try:
+            fresh = parse_sequence(
+                again.sequence,
+                allowed_ops=action_index,
+                special_ops=special_ops,
+                blocked_access=plan_kwargs["blocked_access"],
+            )
+        except Exception as exc:
+            episode.plan_attempt(
+                trigger="replan",
+                tier=again.tier,
+                skills=again.skills,
+                reason=again.reason,
+                raw=again.sequence,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+                duration_s=time.perf_counter() - replan_started,
+            )
+            raise
+        episode.plan_attempt(
+            trigger="replan",
+            tier=again.tier,
+            skills=again.skills,
+            reason=again.reason,
+            raw=again.sequence,
+            validated_steps=[step.op if isinstance(step, ActionStep) else f"loop:{step.detect_op}" for step in fresh],
+            duration_s=time.perf_counter() - replan_started,
         )
+        return fresh
 
-    # The trace run token (JSON filename + frames subdir) derives from this; the
-    # dispatch site in run_robot_task always supplies one, default here if called
-    # directly so the trace is never written under a "noinv" placeholder.
-    conv_id = conversation_id or f"task-{uuid.uuid4().hex[:8]}"
+    # The trace run token (JSON filename + frames subdir) derives from conv_id;
+    # run_robot_task and the wrapper above always supply one.
 
     # Build the agent (same rails as agent mode) and run the sequence through its
     # ability_manager so every op passes the rail stack — no LLM in the loop.
@@ -567,7 +740,7 @@ def run_fast_task(
             query=query,
         )
     executor = build_ability_executor(agent)
-    result = run_sequence(session, steps, config=exec_cfg, executor=executor, replan=replan)
+    result = run_sequence(session, steps, config=exec_cfg, executor=executor, replan=replan, trace_sink=episode.emit)
     if config.enable_tracing:
         _fire_invoke_event(
             agent,
@@ -575,6 +748,27 @@ def run_fast_task(
             conversation_id=conv_id,
             query=query,
         )
+    rail = getattr(session, "_trace_rail", None)
+    last_trace_path = getattr(rail, "last_trace_path", None)
+    failures = [
+        {
+            "step_id": record.get("i"),
+            "op": record.get("op"),
+            "error": record.get("reason"),
+        }
+        for record in result.get("steps", [])
+        if not record.get("ok", True)
+    ]
+    episode.outcome(
+        ok=bool(result.get("ok")),
+        steps_done=result.get("steps_done"),
+        replans=result.get("replans", 0),
+        attempts=episode.plan_attempts,
+        final_tier=episode.last_plan_tier,
+        duration_s=time.perf_counter() - run_started,
+        trace_path=str(last_trace_path) if last_trace_path is not None else None,
+        failure_summary=failures,
+    )
     result["sequence"] = raw
     # How the sequence was planned — a successful "action"-tier run is a candidate
     # for distillation into a new skill, and there is no other way to tell.

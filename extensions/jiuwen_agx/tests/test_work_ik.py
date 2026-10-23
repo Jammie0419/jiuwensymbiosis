@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -47,21 +49,36 @@ class _FakeDriver:
 
     joint_names = _JOINTS
 
-    def __init__(self, ik: ExcavatorIk, *, stuck_load: bool = False) -> None:
+    def __init__(
+        self,
+        ik: ExcavatorIk,
+        *,
+        stuck_load: bool = False,
+        fail_when_tip_near: tuple[float, float, float] | None = None,
+    ) -> None:
         self._ik = ik
         self._stuck_load = stuck_load
         self._loaded = False
+        self.fail_when_tip_near = fail_when_tip_near
+        self.calls: list[dict[str, float]] = []
         self.q = ik.native_to_policy(
-            dict(zip(_JOINTS, (0.0, -0.670305, 0.678116, 1.992748)))
+            dict(zip(_JOINTS, (0.0, -0.670305, 0.678116, 1.992748), strict=True))
         )
 
     def get_joint_positions(self) -> dict[str, float]:
         return self._ik.policy_to_native(self.q)
 
     def move_joints_blocking(self, targets, **_kwargs):
+        self.calls.append({str(k): float(v) for k, v in targets.items()})
         native = self._ik.policy_to_native(self.q)
         native.update({str(k): float(v) for k, v in targets.items()})
-        self.q = self._ik.native_to_policy(native)
+        next_q = self._ik.native_to_policy(native)
+        if self.fail_when_tip_near is not None:
+            tip = np.asarray(self._ik.forward(next_q), dtype=float)
+            target = np.asarray(self.fail_when_tip_near, dtype=float)
+            if float(np.linalg.norm(tip - target)) < 0.05:
+                raise ValueError("drag3: simulated stall")
+        self.q = next_q
         return native
 
     def snapshot(self, points=None):
@@ -83,19 +100,23 @@ def _run(
     dump,
     *,
     dump_tolerance_m: float = 0.25,
+    dig=(5.0, 2.0, 1.339),
+    min_drag_radius_m: float = 0.0,
 ):
     return execute_pose_dig_cycle(
         driver,
         ik=ik,
-        dig_pose=(5.0, 2.0, 1.339),
+        dig_pose=dig,
         dump_pose=dump,
         tuning=_TUNING,
         approach_gap_m=0.35,
         bite_m=0.25,
         cut_length_m=1.0,
+        min_drag_radius_m=min_drag_radius_m,
         carry_lift_m=1.0,
         dig_bucket_open_native=1.5,
         dig_bucket_curl_native=0.1,
+        dump_bucket_open_native=2.0,
         ik_tolerance_m=0.05,
         dump_tolerance_m=dump_tolerance_m,
         ik_max_iters=80,
@@ -126,3 +147,39 @@ def test_bucket_still_loaded_after_open_is_refused():
     ik = _ik()
     with pytest.raises(ValueError, match="still loaded"):
         _run(ik, _FakeDriver(ik, stuck_load=True), (5.0, -1.0, 3.5))
+
+
+def test_near_dig_point_is_refused_before_any_motion():
+    ik = _ik()
+    driver = _FakeDriver(ik)
+
+    with pytest.raises(ValueError, match="inward cut"):
+        _run(
+            ik,
+            driver,
+            (5.0, -1.0, 3.5),
+            dig=(3.0, 0.72, 1.339),
+            min_drag_radius_m=3.0,
+        )
+
+    assert driver.calls == [], "the drag-radius check must run before the ready move"
+
+
+def test_contact_failure_opens_the_bucket_before_raising():
+    ik = _ik()
+    origin = getattr(ik, "origin_in_base", (0.0, 0.0, 0.0))
+    radius = math.hypot(5.0, 2.0)
+    scaled = max(radius - 1.0, 0.6) / radius
+    drag_tip = (
+        5.0 * scaled - origin[0],
+        2.0 * scaled - origin[1],
+        1.339 - 0.25 + 0.05 - origin[2],
+    )
+    driver = _FakeDriver(ik, fail_when_tip_near=drag_tip)
+
+    with pytest.raises(ValueError, match="simulated stall"):
+        _run(ik, driver, (5.0, -1.0, 3.5))
+
+    # The failure itself, then the cleanup opens the bucket in place.
+    assert driver.calls[-1] == {"bucket": 2.0}
+    assert driver._loaded is False

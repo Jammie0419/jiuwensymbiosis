@@ -97,6 +97,9 @@ env:
       approach_gap_m: 0.35
       bite_m: 0.25
       cut_length_m: 1.0
+      # 拖切终点离基座的最近半径：挖点半径 - cut_length_m 必须 >= 这个值。
+      # 太近时 arm 会到 0 限位、IK 卡住；先退底盘再重读地形。
+      dig_min_drag_radius_m: 3.0
       carry_lift_m: 1.0
       # 铲斗角（原生 rad）：入土/拖切时张开 1.5，收斗时往机身内侧合到 0.1，
       # 卸料时再往外翻到 2.0。0.0 是往内翻的一端，不是卸料方向。
@@ -151,8 +154,17 @@ model:
 
 agent:
   log_level: INFO
-  log_dir: ./logs
+  # 运行产物统一收口到 extensions/jiuwen_agx/runtime/（相对仓库根；
+  # scripts/run/run_task.py 会按仓库根解析，examples/run_task.py 按 cwd 解析）。
+  workspace: "extensions/jiuwen_agx/runtime/agent"
+  episode_dir: "extensions/jiuwen_agx/runtime/episodes"
+  trace_dir: "extensions/jiuwen_agx/runtime/traces"
+  log_dir: "extensions/jiuwen_agx/runtime/logs"
   exec_mode: fastagent
   enable_skill: true
+  # 工具级 trace（traces/*.json，每步工具调用）
+  enable_tracing: true
+  # 规划级 trace（episodes/*.jsonl，plan/replan/outcome）
+  enable_episode_trace: true
   # GLM-5 这类推理模型实测 60 s 会被读超时打断三次；给慢端点留足时间。
   intent_timeout_s: 120.0
