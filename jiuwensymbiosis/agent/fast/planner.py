@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -397,7 +398,7 @@ def parse_task(
         max_tokens=256,
     )
     parsed = _validate_parsed(_extract_json_object(text))
-    logger.info("[parser] task=%r → intent=%s", query, parsed)
+    logger.debug("[parser] task=%r → intent=%s", query, parsed)
     return parsed
 
 
@@ -441,6 +442,7 @@ def _chat(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    logger.debug("[planner] LLM request model=%s messages=%s", model_name, payload["messages"])
     last_exc: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         if cancel_token is not None:
@@ -449,10 +451,15 @@ def _chat(
             client_kwargs: dict[str, Any] = {"timeout": timeout_s}
             if proxy:
                 client_kwargs["proxy"] = proxy
+            started = time.monotonic()
+            logger.info("[planner] LLM request model=%s attempt=%d/%d", model_name, attempt, max(1, attempts))
             with httpx.Client(**client_kwargs) as client:
                 resp = _post(client, url, payload, headers, cancel_token)
             resp.raise_for_status()
-            return cast(str, resp.json()["choices"][0]["message"]["content"])
+            reply = cast(str, resp.json()["choices"][0]["message"]["content"])
+            logger.info("[planner] LLM response model=%s duration=%.2fs", model_name, time.monotonic() - started)
+            logger.debug("[planner] LLM response content: %s", reply)
+            return reply
         except RunCancelled:
             raise
         except Exception as exc:  # noqa: BLE001 - retry on transient LLM/HTTP failure
@@ -628,7 +635,10 @@ def _strip_frontmatter(md: str) -> str:
     if end == -1:
         return md
     nl = md.find("\n", end + 4)
-    return md[nl + 1 :] if nl != -1 else ""
+    if nl == -1:
+        return ""
+    start = nl + 1
+    return md[start:]
 
 
 def _format_skills_md(skills_md: Sequence[Mapping[str, Any]]) -> str:
@@ -745,7 +755,8 @@ def _compile_loop(
             continue
         data = _extract_json_array(text)
         if data is None:
-            last_err = f"no JSON array in reply: {text[:200]!r}"
+            last_err = "no JSON array in reply"
+            logger.debug("[%s] invalid reply: %s", label, text)
             logger.warning("[%s] attempt %d: %s", label, attempt, last_err)
             correction = "\n\n上次回复没有包含合法的 JSON 数组。请只输出一个 JSON 数组，不要任何解释或 markdown。"
             continue
@@ -771,7 +782,8 @@ def _compile_loop(
             logger.warning("[%s] attempt %d: invalid sequence: %s", label, attempt, exc)
             correction = _sequence_correction(exc)
             continue
-        logger.info("[%s] → %d steps: %s", label, len(data), data)
+        logger.info("[%s] → %d steps", label, len(data))
+        logger.debug("[%s] sequence: %s", label, data)
         return data
     raise RuntimeError(f"{label} produced no valid sequence after {attempts} attempts: {last_err}")
 

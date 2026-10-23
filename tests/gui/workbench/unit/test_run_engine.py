@@ -36,7 +36,7 @@ class Binding:
     resources: tuple = ("device:fake",)
 
     def config_data(self):
-        return {"agent": {"exec_mode": "stepagent", "enable_tracing": False}}
+        return {"agent": {"execution": {"mode": "stepagent"}, "modules": {"tracing": {"enabled": False}}}}
 
     def build_session(self):
         return self.session
@@ -129,10 +129,10 @@ def test_step_frame_reference_is_rendered(running_engine):
 
 def test_rerun_with_keeps_body_and_task_but_takes_the_given_config(tmp_path):
     task = registry.get_task("pick_box")
-    config = {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"mode": "tool"}}
+    config = {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"execution": {"stepagent": {"mode": "tool"}}}}
     engine = RunEngine(task, config, workspace=str(tmp_path), body_key="piper")
 
-    edited = {"env": {"cfg": {"prompt": "改过的指令"}}, "agent": {"mode": "tool"}}
+    edited = {"env": {"cfg": {"prompt": "改过的指令"}}, "agent": {"execution": {"stepagent": {"mode": "tool"}}}}
     twin = engine.rerun_with(edited, config_source=engine.config_source)
 
     assert twin is not engine
@@ -168,6 +168,17 @@ def test_strip_vision_services_removes_detector_and_camera():
     assert "camera_serial" not in out["env"]["cfg"]["low_level"]  # 相机不打开
     assert out["env"]["cfg"]["low_level"]["port"] == "/dev/ttyUSB0"  # 非视觉字段保留
     assert "api_servers" in cfg  # 深拷贝:原配置不动
+
+
+def test_strip_vision_overrides_remote_and_nested_legacy_detector():
+    cfg = {
+        "detector": {"mode": "remote", "endpoint": {"url": "https://inference.invalid"}},
+        "env": {"cfg": {"api_servers": [{"_target_": "x.grounding_dino"}]}},
+    }
+    out = strip_vision_services(cfg)
+    assert out["detector"] == {"mode": "disabled"}
+    assert "api_servers" not in out["env"]["cfg"]
+    assert cfg["detector"]["mode"] == "remote"
 
 
 def test_disable_vision_strips_real_session_config(tmp_path):
@@ -206,3 +217,33 @@ def test_queue_log_handler_enqueues_and_keeps_tail():
     assert payload["level"] == "WARNING"
     assert "视觉检测未就绪" in payload["msg"]
     assert "视觉检测未就绪" in handler.log_tail()
+
+
+def test_applied_model_reaches_frozen_binding_and_is_redacted(tmp_path):
+    from jiuwensymbiosis.agent.config import ModelSpec
+    from jiuwensymbiosis.runtime import prepare_binding
+
+    source = tmp_path / "config.yaml"
+    source.write_text("adapter: piper\ncan_port: isolated-test\n", encoding="utf-8")
+    config = {"adapter": "piper", "can_port": "isolated-test"}
+    spec = ModelSpec(api_base="https://test.example/v1", api_key="runtime-test-secret", max_tokens=321)
+    engine = RunEngine(
+        registry.get_task("pick_box"),
+        config,
+        workspace=str(tmp_path),
+        body_key="piper",
+        config_source=source,
+        model_spec=spec,
+    )
+    spec.api_key = "later-change"
+    snapshot = engine._real_session_config()
+    binding = prepare_binding(source, config_snapshot=snapshot, include_sidecars=False)
+    agent = worker.build_agent_config(binding, {})
+    assert agent.model_spec.api_key == "runtime-test-secret"
+    assert agent.model_spec.max_tokens == 321
+    assert worker.Sanitizer(binding.config_data())("failure: runtime-test-secret") == "failure: [redacted]"
+    snapshot["model"]["api_key"] = "snapshot-change"
+    assert worker.build_agent_config(binding, {}).model_spec.api_key == "runtime-test-secret"
+    assert "model" not in config
+    assert "secret" not in source.read_text()
+    assert "secret" not in engine._config.to_yaml()

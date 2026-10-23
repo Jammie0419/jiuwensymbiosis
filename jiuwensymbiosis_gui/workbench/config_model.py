@@ -13,7 +13,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
 
 import yaml
@@ -52,7 +53,7 @@ class FieldSpec:
             ``min`` / ``max`` —— 上下箭头步进不会越界(如温度限 [0, 2])。
         step: 数字类字段每次步进的增量(缺省走控件默认 1;如温度用 0.1)。
         on_value / off_value: ``kind="bool"`` 时若给出,复选框存的不是 True/False
-            而是这两个值(如 exec_mode 的 ``"fastagent"`` / ``"stepagent"``)。
+            而是这两个值(如 execution.mode 的 ``"fastagent"`` / ``"stepagent"``)。
     """
 
     path: str
@@ -76,7 +77,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
     FieldSpec("env.cfg.prompt", "任务指令", "text", "基础", help="留空则用内置默认指令。"),
     # -- 执行方式 --
     FieldSpec(
-        "agent.mode",
+        "agent.execution.stepagent.mode",
         "智能体模式",
         "choice",
         "执行方式",
@@ -88,10 +89,16 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default="hybrid",
     ),
     FieldSpec(
-        "agent.max_iterations", "最大步数", "int", "执行方式", help="智能体循环的上限步数。", default=15, min_value=1
+        "agent.execution.stepagent.max_iterations",
+        "最大步数",
+        "int",
+        "执行方式",
+        help="智能体循环的上限步数。",
+        default=15,
+        min_value=1,
     ),
     FieldSpec(
-        "agent.enable_skill",
+        "agent.modules.skills.enabled",
         "启用技能工作流",
         "bool",
         "执行方式",
@@ -99,7 +106,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=False,
     ),
     FieldSpec(
-        "agent.exec_mode",
+        "agent.execution.mode",
         "快速模式(fastagent)",
         "bool",
         "执行方式",
@@ -110,7 +117,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
     ),
     # -- 安全与反馈 --
     FieldSpec(
-        "agent.enable_safety",
+        "agent.modules.safety.enabled",
         "运动前边界检查",
         "bool",
         "安全与反馈",
@@ -118,7 +125,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=True,
     ),
     FieldSpec(
-        "agent.enable_recovery",
+        "agent.modules.recovery.enabled",
         "失败自动回零",
         "bool",
         "安全与反馈",
@@ -126,7 +133,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=True,
     ),
     FieldSpec(
-        "agent.enable_visual_feedback",
+        "agent.modules.visual_feedback.enabled",
         "每步拍照校验",
         "bool",
         "安全与反馈",
@@ -134,7 +141,7 @@ FIELD_GROUPS: tuple[FieldSpec, ...] = (
         default=True,
     ),
     FieldSpec(
-        "agent.enable_tracing",
+        "agent.modules.tracing.enabled",
         "记录执行轨迹",
         "bool",
         "安全与反馈",
@@ -268,17 +275,56 @@ DETECTOR_FIELDS: tuple[FieldSpec, ...] = (
     ),
 )
 
+DETECTOR_MODE_FIELD = FieldSpec(
+    "detector.mode",
+    "视觉服务模式",
+    "choice",
+    "视觉服务",
+    choices=(("disabled", "关闭"), ("remote", "远程 HTTP"), ("local", "本地模型（可选）")),
+    default="disabled",
+)
+REMOTE_DETECTOR_FIELDS = (
+    FieldSpec("detector.endpoint.url", "服务地址", "str", "视觉服务", default="http://127.0.0.1:8114"),
+    FieldSpec(
+        "detector.endpoint.request_timeout_s", "请求总超时（秒）", "float", "视觉服务", default=30.0, min_value=0.1
+    ),
+)
+LOCAL_DETECTOR_FIELDS = DETECTOR_FIELDS + (
+    FieldSpec("detector.device", "推理设备", "str", "视觉服务", default="cuda"),
+    FieldSpec("detector.port", "本地服务端口", "int", "视觉服务", default=8114, min_value=1, max_value=65535),
+    FieldSpec("detector.startup_timeout_s", "模型启动超时（秒）", "float", "视觉服务", default=300.0, min_value=0.1),
+)
+
 
 def field_groups_for_body(body_key: str) -> tuple[FieldSpec, ...]:
     """返回某本体配置页的完整字段:共享组 + 该本体的「机器人参数」组(未知本体则只有共享组)。"""
     return FIELD_GROUPS + ROBOT_PARAM_FIELDS.get(body_key, ())
 
 
+def _fast_agent_field_visible(spec: FieldSpec, model: ConfigModel) -> bool:
+    """fastagent 模式下隐藏 stepagent 专属字段;visual_feedback 仅在显式开启时保留。"""
+    if spec.path.startswith("agent.execution.stepagent."):
+        return False
+    if spec.path == "agent.modules.visual_feedback.enabled":
+        return model.get(spec.path) is True
+    return True
+
+
 def field_groups_for_config(body_key: str, model: ConfigModel) -> tuple[FieldSpec, ...]:
     """本体字段组;仅当配置含检测器项时追加「视觉服务」组(纯运动任务不显示模型项)。"""
-    fields = field_groups_for_body(body_key)
-    if model.has_detector():
-        fields = fields + DETECTOR_FIELDS
+    fields = field_groups_for_body(body_key) + (DETECTOR_MODE_FIELD,)
+    if model.detector_mode() == "remote":
+        fields += REMOTE_DETECTOR_FIELDS
+    elif model.detector_mode() == "local":
+        fields += (
+            tuple(
+                replace(spec, path=spec.path.replace("detector.", "detector.local.")) for spec in LOCAL_DETECTOR_FIELDS
+            )
+            if "detector" in model.data
+            else LOCAL_DETECTOR_FIELDS
+        )
+    if model.get("agent.execution.mode", "fastagent") == "fastagent":
+        fields = tuple(spec for spec in fields if _fast_agent_field_visible(spec, model))
     return fields
 
 
@@ -293,19 +339,25 @@ class ConfigModel:
     ``to_yaml()`` / ``replace_from_yaml()``。两者共享同一个 ``data``。
     """
 
-    def __init__(self, data: dict[str, Any] | None = None) -> None:
-        """用一个配置 dict 初始化(浅拷贝顶层引用,直接持有传入结构)。"""
-        self.data: dict[str, Any] = data if isinstance(data, dict) else {}
+    def __init__(self, data: dict[str, Any] | None = None, *, agent_defaults: dict[str, Any] | None = None) -> None:
+        """初始化配置;提供任务默认值时,先合并再校验 Agent 设置。"""
+        self.data: dict[str, Any] = dict(data) if isinstance(data, dict) else {}
+        if agent_defaults is not None:
+            self.apply_agent_defaults(agent_defaults)
+        elif "agent" in self.data:
+            from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+            RobotAgentConfig.from_dict(self.data["agent"])
 
     # ------------------------------------------------------------- 构造
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> ConfigModel:
+    def from_dict(cls, data: dict[str, Any] | None, *, agent_defaults: dict[str, Any] | None = None) -> ConfigModel:
         """从内存 dict 构造。"""
-        return cls(dict(data) if isinstance(data, dict) else {})
+        return cls(data, agent_defaults=agent_defaults)
 
     @classmethod
-    def from_yaml_text(cls, text: str) -> ConfigModel:
-        """从 YAML 文本构造;非法 YAML 或顶层非映射时抛 ``ValueError``。"""
+    def from_yaml_text(cls, text: str, *, agent_defaults: dict[str, Any] | None = None) -> ConfigModel:
+        """从 YAML 构造并合并任务默认值;格式或 Agent 配置无效时抛 ``ValueError``。"""
         try:
             parsed = yaml.safe_load(text)
         except yaml.YAMLError as exc:
@@ -314,7 +366,10 @@ class ConfigModel:
             parsed = {}
         if not isinstance(parsed, dict):
             raise ValueError("配置顶层必须是一个映射(键值对),而不是列表或标量。")
-        return cls(parsed)
+        try:
+            return cls(parsed, agent_defaults=agent_defaults)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Agent 配置无效：{exc}") from exc
 
     # ------------------------------------------------------------- 点分路径读写
     def get(self, path: str, default: Any = None) -> Any:
@@ -323,10 +378,14 @@ class ConfigModel:
         ``detector.<字段>`` 是虚拟路径,路由到 ``api_servers`` 里的检测器项(按 ``_target_``
         识别),让表单能读列表内嵌的检测器字段而不暴露列表下标。
         """
-        if path.startswith(_DETECTOR_PREFIX):
+        if path == "detector.mode":
+            return self.detector_mode()
+        if path.startswith(_DETECTOR_PREFIX) and "detector" not in self.data:
             entry = self._detector_entry()
             if entry is None:
                 return default
+            if path == "detector.endpoint.url":
+                return entry.get("url") or f"http://{entry.get('host', '127.0.0.1')}:{entry.get('port', 8114)}"
             return entry.get(path.removeprefix(_DETECTOR_PREFIX), default)
         node: Any = self.data
         for key in path.split("."):
@@ -341,7 +400,12 @@ class ConfigModel:
         ``detector.<字段>`` 虚拟路径写进 ``api_servers`` 检测器项(复用 ``patch_detector``);
         检测器项不存在时为无操作(表单仅在存在时才渲染这些字段)。
         """
-        if path.startswith(_DETECTOR_PREFIX):
+        if path == "detector.mode":
+            self._set_detector_mode(value)
+            return
+        if path.startswith("detector.endpoint.") and "detector" not in self.data:
+            self._set_detector_mode("remote")
+        if path.startswith(_DETECTOR_PREFIX) and "detector" not in self.data:
             self.patch_detector(**{path.removeprefix(_DETECTOR_PREFIX): value})
             return
         keys = path.split(".")
@@ -354,39 +418,113 @@ class ConfigModel:
             node = child
         node[keys[-1]] = value
 
+    def apply_agent_defaults(self, defaults: dict[str, Any]) -> None:
+        """Fill missing leaves, validate the combined settings, then publish them.
+
+        Each source may provide only part of a module dependency. Keep explicit
+        values (including null) and leave the original untouched on failure.
+        """
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        if not isinstance(defaults, dict):
+            raise TypeError("agent_defaults must be a mapping")
+        candidate = copy.deepcopy(self.data)
+
+        def fill(target: dict[str, Any], fallback: dict[str, Any]) -> None:
+            for key, value in fallback.items():
+                if key not in target:
+                    target[key] = copy.deepcopy(value)
+                elif isinstance(target[key], dict) and isinstance(value, dict):
+                    fill(target[key], value)
+
+        if defaults:
+            fill(candidate, {"agent": defaults})
+        RobotAgentConfig.from_dict(candidate.get("agent"))
+        self.data = candidate
+
     def patch_detector(self, **fields: Any) -> bool:
         """把检测器字段(如 ``gdino_model_id`` / ``hf_endpoint``)写进 ``api_servers`` 里的检测器项。
 
         供运行页的一键修复把改动**沉淀进配置**(便于导出 / 另存为新任务);运行期本身另由
         环境变量立即生效。检测器项按 ``_target_`` 含 ``gdino`` 识别。返回是否写入成功。
         """
-        servers = self.data.get("api_servers")
-        if not isinstance(servers, list):
+        canonical = self.data.get("detector")
+        if isinstance(canonical, dict):
+            if canonical.get("mode") != "local":
+                return False
+            canonical.setdefault("local", {}).update(
+                {key: value for key, value in fields.items() if key != "hf_endpoint"}
+            )
+            return True
+        entry = self._detector_entry()
+        if entry is None:
             return False
-        for server in servers:
-            # 与 piper 配置识别检测器项的方式一致(_target_ 含 grounding_dino 或 gdino)。
-            target = str(server.get("_target_", "")).lower() if isinstance(server, dict) else ""
-            if "grounding_dino" in target or "gdino" in target:
-                server.update(fields)
-                return True
-        return False
+        entry.update(fields)
+        return True
 
     def _detector_entry(self) -> dict[str, Any] | None:
         """定位 ``api_servers`` 里的检测器项(按 ``_target_`` 含 grounding_dino/gdino 识别)。"""
-        servers = self.data.get("api_servers")
-        if not isinstance(servers, list):
-            return None
-        for server in servers:
-            if not isinstance(server, dict):
+        return next((entry for _, entry in self._detector_entries()), None)
+
+    def _detector_entries(self) -> list[tuple[list[Any], dict[str, Any]]]:
+        """Locate legacy detectors together with their owning service lists."""
+        env = self.data.get("env")
+        cfg = env.get("cfg") if isinstance(env, dict) else None
+        nested_servers = cfg.get("api_servers") if isinstance(cfg, dict) else None
+        found = []
+        for servers in (self.data.get("api_servers"), nested_servers):
+            if not isinstance(servers, list):
                 continue
-            target = str(server.get("_target_", "")).lower()
-            if "grounding_dino" in target or "gdino" in target:
-                return server
-        return None
+            for entry in servers:
+                target = str(entry.get("_target_", "")).lower() if isinstance(entry, dict) else ""
+                if "grounding_dino" in target or "gdino" in target:
+                    found.append((servers, entry))
+        return found
 
     def has_detector(self) -> bool:
         """配置是否含检测器项(决定配置页是否显示「视觉服务」组)。"""
-        return self._detector_entry() is not None
+        return self.detector_mode() != "disabled"
+
+    def detector_mode(self) -> str:
+        """Read deployment intent without constructing clients or probing models."""
+        canonical = self.data.get("detector")
+        if isinstance(canonical, dict):
+            return str(canonical.get("mode", "disabled"))
+        legacy = self._detector_entry()
+        if legacy is None:
+            return "disabled"
+        return "local" if legacy.get("spawn", True) else "remote"
+
+    def local_detector(self) -> dict[str, Any] | None:
+        """Mutable local model settings; remote configurations never expose these."""
+        if self.detector_mode() != "local":
+            return None
+        canonical = self.data.get("detector")
+        if isinstance(canonical, dict):
+            local = canonical.setdefault("local", {})
+            return local if isinstance(local, dict) else None
+        return self._detector_entry()
+
+    def _set_detector_mode(self, mode: str) -> None:
+        if mode not in {"disabled", "remote", "local"}:
+            raise ValueError("视觉服务模式必须为 disabled、remote 或 local")
+        canonical = self.data.get("detector")
+        if not isinstance(canonical, dict):
+            from jiuwensymbiosis.perception.config import parse_detector_config
+
+            canonical = asdict(parse_detector_config(self.data))
+            for servers, legacy in self._detector_entries():
+                servers.remove(legacy)
+        new: dict[str, Any] = {"mode": mode}
+        if "max_frame_age_s" in canonical:
+            new["max_frame_age_s"] = canonical["max_frame_age_s"]
+        if mode == "remote":
+            new["endpoint"] = canonical.get("endpoint") or {
+                "url": "http://127.0.0.1:8114",
+            }
+        elif mode == "local":
+            new["local"] = canonical.get("local") or {}
+        self.data["detector"] = new
 
     # ------------------------------------------------------------- YAML 视图
     def to_yaml(self) -> str:
@@ -403,13 +541,41 @@ class ConfigModel:
         """取某个表单字段当前值,缺失时回落到 ``spec.default``。"""
         val = self.get(spec.path, _MISSING)
         if val is _MISSING:
+            if spec.path.startswith("agent."):
+                from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+                try:
+                    effective = RobotAgentConfig.from_dict(self.data.get("agent")).to_dict()
+                    node = effective
+                    for key in spec.path.removeprefix("agent.").split("."):
+                        node = node[key]
+                    return node
+                except (KeyError, TypeError, ValueError):
+                    return spec.default
             return spec.default
         return val
 
     # ------------------------------------------------------------- 校验
+    def validate_agent(self) -> None:
+        """Reject invalid agent settings before any execution or connection."""
+        from jiuwensymbiosis.agent.config import RobotAgentConfig
+
+        RobotAgentConfig.from_dict(self.data.get("agent")).validate(for_execution=True)
+
     def validate(self) -> list[str]:
         """返回一组人类可读的告警(不阻断运行,供界面提示)。"""
         warnings: list[str] = []
+        try:
+            self.validate_agent()
+        except (TypeError, ValueError) as exc:
+            warnings.append(f"Agent 配置无效：{exc}")
+        if "detector" in self.data or self._detector_entry() is not None:
+            from jiuwensymbiosis.perception.config import parse_detector_config
+
+            try:
+                parse_detector_config(self.data)
+            except (TypeError, ValueError) as exc:
+                warnings.append(f"视觉服务配置无效：{exc}")
         speed = self.get("env.cfg.low_level.move_speed")
         if isinstance(speed, int | float) and not (0 < speed <= 100):
             warnings.append(f"运动速度 {speed} 超出常规范围 (0, 100]。")

@@ -42,6 +42,19 @@ def test_reveal_field_reports_paths_the_form_does_not_expose(page):
     assert not page.view.reveal_field("env.cfg.low_level.not_a_form_field")
 
 
+def test_switching_detector_mode_rebuilds_only_relevant_fields(page):
+    page.view._set("detector.mode", "remote")
+    assert {path for path in page.view._controls if path.startswith("detector.endpoint.")} == {
+        "detector.endpoint.url",
+        "detector.endpoint.request_timeout_s",
+    }
+    assert not any("model_id" in path for path in page.view._controls)
+    page.view._set("detector.mode", "local")
+    assert "detector.local.gdino_model_id" in page.view._controls
+    assert "detector.local.startup_timeout_s" in page.view._controls
+    assert "detector.endpoint.url" not in page.view._controls
+
+
 def test_save_dialog_prefills_local_name_and_warns_on_overwrite(page):
     page.view._open_save()
     assert page.view._save_name.value == f"{page.body_key}.local"
@@ -85,3 +98,36 @@ def test_download_sends_editor_text_and_skips_invalid_yaml(page, monkeypatch):
     page.view._yaml.value = "a: ["
     page.view._download_yaml()
     assert len(calls) == 1  # 非法 YAML 不下载
+
+
+def test_execution_mode_refreshes_fields_and_unset_defaults(page):
+    view = page.view
+    mode = "agent.execution.stepagent.mode"
+    skills = "agent.modules.skills.enabled"
+    feedback = "agent.modules.visual_feedback.enabled"
+    assert mode not in view._controls
+    assert view._controls[skills].value is True
+    view._set("agent.execution.mode", "stepagent")
+    assert mode in view._controls
+    assert view._controls[skills].value is False
+    assert view._controls[feedback].value is True
+    view._set(mode, "tool")
+    view._set("agent.execution.mode", "fastagent")
+    assert mode not in view._controls
+    assert feedback not in view._controls
+    view._set("agent.execution.mode", "stepagent")
+    assert view._controls[mode].value == "tool"
+
+
+def test_fast_mode_keeps_explicit_feedback_visible_until_disabled(page):
+    view = page.view
+    feedback = "agent.modules.visual_feedback.enabled"
+    view._set("agent.execution.mode", "stepagent")
+    view._set(feedback, True)
+    view._set("agent.execution.mode", "fastagent")
+    assert feedback in view._controls
+    assert not view._run_button.enabled
+    assert "only supported by stepagent" in view._warn.text
+    view._set(feedback, False)
+    assert feedback not in view._controls
+    assert view._run_button.enabled

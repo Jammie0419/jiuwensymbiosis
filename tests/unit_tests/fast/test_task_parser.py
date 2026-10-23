@@ -46,7 +46,7 @@ def test_default_timeout_suits_a_reasoning_model(monkeypatch):
 
     实测（glm-5，2026-09-21）：默认 20 s 时连续两次 `attempt N/3 failed: The read
     operation timed out`，第三次才回——白等 40 s 还只是意图解析。慢端点可以在
-    YAML 里调 agent.intent_timeout_s。
+    YAML 里调 agent.execution.fastagent.intent_timeout_s。
     """
     seen: dict = {}
 

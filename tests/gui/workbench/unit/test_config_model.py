@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from jiuwensymbiosis_gui.workbench.config_model import (
@@ -26,16 +28,99 @@ def test_get_set_nested_paths():
 
 
 def test_yaml_roundtrip_preserves_values_and_chinese():
-    cm = ConfigModel.from_dict({"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"mode": "tool"}})
+    cm = ConfigModel.from_dict(
+        {"env": {"cfg": {"prompt": "把黑盒放到白盒上"}}, "agent": {"execution": {"stepagent": {"mode": "tool"}}}}
+    )
     text = cm.to_yaml()
     back = ConfigModel.from_yaml_text(text)
     assert back.get("env.cfg.prompt") == "把黑盒放到白盒上"
-    assert back.get("agent.mode") == "tool"
+    assert back.get("agent.execution.stepagent.mode") == "tool"
+
+
+def test_agent_edit_serializes_grouped_values():
+    cm = ConfigModel.from_dict({"agent": {"modules": {"tracing": {"enabled": True, "max_frames": 7}}}})
+    cm.set("agent.modules.tracing.max_frames", 4)
+    cm.set("agent.modules.tracing.console", True)
+    back = ConfigModel.from_yaml_text(cm.to_yaml())
+    assert back.data["agent"] == {"modules": {"tracing": {"enabled": True, "max_frames": 4, "console": True}}}
+
+
+def test_grouped_task_defaults_fill_missing_leaves_without_replacing_user_values():
+    cm = ConfigModel.from_dict({"agent": {"modules": {"skills": {"enabled": False}}, "logging": {"dir": None}}})
+    cm.apply_agent_defaults(
+        {"modules": {"tracing": {"enabled": True}, "skills": {"enabled": True}}, "logging": {"dir": "./logs"}}
+    )
+    assert cm.get("agent.modules.skills.enabled") is False
+    assert cm.get("agent.modules.tracing.enabled") is True
+    assert cm.get("agent.logging.dir") is None
+
+
+def test_task_diagnosis_default_uses_tracing_from_existing_agent_config():
+    cm = ConfigModel.from_dict(
+        {"agent": {"execution": {"mode": "stepagent"}, "modules": {"tracing": {"enabled": True}}}}
+    )
+    cm.apply_agent_defaults({"modules": {"diagnosis": {"enabled": True}}})
+    cm.validate_agent()
+    assert cm.get("agent.modules.diagnosis.enabled") is True
+
+
+def test_explicit_disabled_diagnosis_overrides_task_default_without_requiring_tracing():
+    cm = ConfigModel.from_dict({"agent": {"modules": {"diagnosis": {"enabled": False}}}})
+    cm.apply_agent_defaults({"modules": {"diagnosis": {"enabled": True}}})
+    cm.validate_agent()
+    assert cm.get("agent.modules.diagnosis.enabled") is False
+    assert cm.get("agent.modules.tracing.enabled") is None
+
+
+@pytest.mark.parametrize(
+    "defaults",
+    [
+        {"modules": {"diagnosis": {"enabled": True}, "tracing": {"enabled": True}}},
+        {"modules": {"skills": {"enabled": "false"}}},
+        {"modules": {"unknown": {"enabled": True}}},
+        {"execution": {"stepagent": {"max_iterations": 0}}},
+    ],
+    ids=["dependency-conflict", "wrong-type", "unknown-module", "out-of-range"],
+)
+def test_invalid_merged_task_defaults_leave_original_config_unchanged(defaults):
+    cm = ConfigModel.from_dict(
+        {"agent": {"execution": {"mode": "stepagent"}, "modules": {"tracing": {"enabled": False}}}}
+    )
+    before = copy.deepcopy(cm.data)
+    with pytest.raises((TypeError, ValueError)):
+        cm.apply_agent_defaults(defaults)
+    assert cm.data == before
+
+
+@pytest.mark.parametrize("mode, skills, feedback", [("fastagent", True, False), ("stepagent", False, True)])
+def test_agent_form_defaults_match_execution_mode(mode, skills, feedback):
+    cm = ConfigModel.from_dict({"agent": {"execution": {"mode": mode}}})
+    for path, expected in (("skills", skills), ("visual_feedback", feedback)):
+        spec = next(s for s in FIELD_GROUPS if s.path == f"agent.modules.{path}.enabled")
+        assert cm.field_value(spec) is expected
+
+
+@pytest.mark.parametrize("limit", [None, 10.0])
+def test_frame_age_setting_survives_yaml_and_mode_changes(limit):
+    from jiuwensymbiosis.perception.config import parse_detector_config
+
+    cm = ConfigModel.from_dict({"detector": {"mode": "local", "max_frame_age_s": limit}})
+    for mode in ("remote", "local"):
+        cm.set("detector.mode", mode)
+        cm = ConfigModel.from_yaml_text(cm.to_yaml())
+        assert cm.validate() == []
+        assert "max_frame_age_s" in cm.data["detector"]
+        assert parse_detector_config(cm.data).max_frame_age_s == limit
 
 
 def test_from_yaml_text_rejects_non_mapping():
     with pytest.raises(ValueError):
         ConfigModel.from_yaml_text("- just\n- a\n- list")
+
+
+def test_from_yaml_text_reports_invalid_agent_mapping_as_edit_error():
+    with pytest.raises(ValueError, match="Agent 配置无效"):
+        ConfigModel.from_yaml_text("agent: [invalid]")
 
 
 def test_from_yaml_text_rejects_invalid_yaml():
@@ -44,17 +129,17 @@ def test_from_yaml_text_rejects_invalid_yaml():
 
 
 def test_replace_from_yaml_keeps_old_data_on_error():
-    cm = ConfigModel.from_dict({"agent": {"mode": "tool"}})
+    cm = ConfigModel.from_dict({"agent": {"execution": {"stepagent": {"mode": "tool"}}}})
     with pytest.raises(ValueError):
         cm.replace_from_yaml("not: [valid")
-    assert cm.get("agent.mode") == "tool"
+    assert cm.get("agent.execution.stepagent.mode") == "tool"
 
 
 def test_field_value_falls_back_to_default():
     cm = ConfigModel.from_dict({})
-    spec = next(s for s in FIELD_GROUPS if s.path == "agent.mode")
+    spec = next(s for s in FIELD_GROUPS if s.path == "agent.execution.stepagent.mode")
     # 未设置时返回 spec.default(此处为 None),设置后返回实际值
-    cm.set("agent.mode", "hybrid")
+    cm.set("agent.execution.stepagent.mode", "hybrid")
     assert cm.field_value(spec) == "hybrid"
 
 
@@ -135,6 +220,93 @@ def test_patch_detector_writes_into_gdino_server_entry():
 def test_patch_detector_no_detector_entry_returns_false():
     cm = ConfigModel.from_dict({"model": {}})
     assert cm.patch_detector(gdino_model_id="/x") is False
+
+
+def test_remote_detector_fields_edit_endpoint_without_local_weights():
+    cm = ConfigModel.from_dict({"detector": {"mode": "remote", "endpoint": {"url": "https://gpu/vision"}}})
+    paths = {field.path for field in field_groups_for_config("piper", cm)}
+    assert "detector.endpoint.url" in paths
+    assert not any("model_id" in path for path in paths)
+    cm.set("detector.endpoint.url", "https://other/vision")
+    assert cm.get("detector.endpoint.url") == "https://other/vision"
+    assert cm.patch_detector(gdino_model_id="/local") is False
+    assert cm.local_detector() is None
+
+
+def test_detector_mode_switch_normalizes_config_and_drops_conflicting_fields():
+    cm = ConfigModel.from_dict({"api_servers": [{"_target_": "x.grounding_dino", "port": 8114}]})
+    cm.set("detector.mode", "remote")
+    assert cm.data["api_servers"] == []
+    assert "local" not in cm.data["detector"]
+    assert cm.get("detector.mode") == "remote"
+    assert cm.data["detector"]["endpoint"] == {"url": "http://127.0.0.1:8114"}
+    assert ConfigModel.from_yaml_text(cm.to_yaml()).validate() == []
+    cm.set("detector.mode", "local")
+    assert "endpoint" not in cm.data["detector"]
+    cm.patch_detector(gdino_model_id="/models/dino")
+    assert cm.get("detector.local.gdino_model_id") == "/models/dino"
+    cm.set("detector.mode", "disabled")
+    assert cm.has_detector() is False
+    assert "local" not in cm.data["detector"]
+
+
+@pytest.mark.parametrize("top_servers", [[], [{"_target_": "other.top_service", "port": 9000}]])
+def test_nested_legacy_detector_migrates_without_removing_other_services(top_servers):
+    from jiuwensymbiosis.perception.config import parse_detector_config
+
+    nested_other = {"_target_": "other.nested_service", "port": 9001}
+    cm = ConfigModel.from_dict(
+        {
+            "api_servers": top_servers,
+            "env": {
+                "cfg": {
+                    "api_servers": [
+                        nested_other,
+                        {"_target_": "x.grounding_dino", "spawn": False, "url": "https://gpu/old"},
+                    ]
+                }
+            },
+        }
+    )
+    assert cm.detector_mode() == parse_detector_config(cm.data).mode == "remote"
+    assert cm.get("detector.endpoint.url") == "https://gpu/old"
+    cm.set("detector.endpoint.url", "https://gpu/new")
+    restored = ConfigModel.from_yaml_text(cm.to_yaml())
+    parsed = parse_detector_config(restored.data)
+    assert parsed.endpoint.url == "https://gpu/new"
+    assert restored.data["api_servers"] == top_servers
+    assert restored.data["env"]["cfg"]["api_servers"] == [nested_other]
+    assert restored.validate() == []
+
+
+def test_nested_legacy_local_detector_can_be_prepared_and_disabled():
+    cm = ConfigModel.from_dict(
+        {
+            "api_servers": [{"_target_": "other.service"}],
+            "env": {"cfg": {"api_servers": [{"_target_": "x.gdino", "spawn": True}]}},
+        }
+    )
+    assert cm.detector_mode() == "local"
+    assert cm.patch_detector(gdino_model_id="/models/dino") is True
+    assert cm.local_detector()["gdino_model_id"] == "/models/dino"
+    cm.set("detector.mode", "disabled")
+    assert cm.data["env"]["cfg"]["api_servers"] == []
+    assert cm.data["api_servers"] == [{"_target_": "other.service"}]
+    assert cm.validate() == []
+
+
+def test_duplicate_legacy_detectors_are_rejected_without_partial_migration():
+    cm = ConfigModel.from_dict(
+        {
+            "api_servers": [{"_target_": "x.gdino"}],
+            "env": {"cfg": {"api_servers": [{"_target_": "x.grounding_dino"}]}},
+        }
+    )
+    before = cm.to_yaml()
+    assert any("multiple legacy" in warning for warning in cm.validate())
+    with pytest.raises(ValueError, match="multiple legacy"):
+        cm.set("detector.mode", "remote")
+    assert cm.to_yaml() == before
 
 
 def test_detector_virtual_path_reads_and_writes_api_servers_entry():

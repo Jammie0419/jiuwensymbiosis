@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from jiuwensymbiosis_gui.workbench import registry
 from jiuwensymbiosis_gui.workbench.config_model import GROUP_ORDER, ConfigModel, FieldSpec, field_groups_for_config
@@ -48,7 +48,7 @@ class ConfigView:
             with ui.row().classes("w-full items-center gap-2"):
                 ui.button("← 返回主页", on_click=lambda: on_back()).props("flat")
                 ui.space()
-                ui.button("▶ 用当前配置运行", on_click=lambda: on_run()).props("color=primary")
+                self._run_button = ui.button("▶ 用当前配置运行", on_click=lambda: on_run()).props("color=primary")
             self._save_dialog, self._save_name, self._save_hint = self._build_save_dialog()
 
     # ------------------------------------------------------------------ API
@@ -60,6 +60,17 @@ class ConfigView:
         self._title.set_text(f"配置:{title}")
         self._build_form()
         self._refresh_warnings()
+
+    def show_load_error(self, error: Exception) -> None:
+        """Clear stale controls when the selected source cannot be read."""
+        self._model = ConfigModel()
+        self._fields = ()
+        self._controls.clear()
+        self._form_host.clear()
+        self._yaml = None
+        self._title.set_text("配置加载失败")
+        self._warn.set_text(str(error))
+        self._run_button.disable()
 
     def reveal_field(self, path: str) -> bool:
         """切到某字段所在的分组并聚焦它;该字段不在本体表单里(只能走原始 YAML)则返回 False。"""
@@ -102,11 +113,43 @@ class ConfigView:
                         ui.button("存储为可选配置", on_click=self._open_save)
 
     def _build_group(self, group: str) -> None:
+        if group == "模型":
+            ui.label("模型连接和 API Key 请在顶部「模型」页设置；已应用的设置优先，未应用时使用任务 YAML。")
         for spec in [s for s in self._fields if s.group == group]:
+            if spec.path in {
+                "model.provider",
+                "model.api_base",
+                "model.api_key",
+                "model.model_name",
+                "model.verify_ssl",
+            }:
+                continue
             control = self._make_control(spec)
             self._controls[spec.path] = control
             if spec.help:
                 control.tooltip(spec.help)
+        if group == "视觉服务" and self._model.detector_mode() == "remote":
+            status = ui.label("尚未检查远程服务；连接本体时不会自动发送推理请求。")
+
+            async def check_service() -> None:
+                from jiuwensymbiosis.perception.config import parse_detector_config
+                from jiuwensymbiosis.perception.detector_client import create_detector_client
+
+                status.set_text("正在检查远程服务…")
+                try:
+                    config = parse_detector_config(self._model.data)
+
+                    def probe():
+                        with create_detector_client(config) as client:
+                            return client.readiness()
+
+                    await run.io_bound(probe)
+                except Exception as exc:
+                    status.set_text(f"服务检查失败：{exc}")
+                else:
+                    status.set_text("远程服务已就绪。")
+
+            ui.button("检查远程服务", on_click=check_service).props("flat")
 
     def _make_control(self, spec: FieldSpec) -> Any:
         value = self._model.field_value(spec)
@@ -152,10 +195,19 @@ class ConfigView:
 
     def _set(self, path: str, value: Any) -> None:
         self._model.set(path, value)
+        if path in ("detector.mode", "agent.execution.mode", "agent.modules.visual_feedback.enabled"):
+            self._fields = field_groups_for_config(self._body_key, self._model)
+            self._build_form(active="视觉服务" if path == "detector.mode" else "执行方式")
         self._refresh_warnings()
 
     def _refresh_warnings(self) -> None:
         self._warn.set_text("  ".join(f"⚠ {w}" for w in self._model.validate()))
+        try:
+            self._model.validate_agent()
+        except (TypeError, ValueError):
+            self._run_button.disable()
+        else:
+            self._run_button.enable()
 
     # ------------------------------------------------------------------ YAML 同步
     def _on_tab(self, e: Any) -> None:
@@ -168,6 +220,7 @@ class ConfigView:
         except ValueError as exc:
             ui.notify(f"YAML 无效:{exc}", type="negative")
             return
+        self._fields = field_groups_for_config(self._body_key, self._model)
         self._build_form(active=_YAML_TAB)  # 应用后仍停在原始 YAML,便于接着改
         self._refresh_warnings()
         ui.notify("已应用到表单", type="positive", timeout=1500)

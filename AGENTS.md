@@ -21,18 +21,22 @@ make check        # ruff format --check + ruff check + mypy on staged files (myp
 make fix          # ruff format + ruff check --fix on staged files
 make test-core    # pytest tests/unit_tests/ (core; no hardware/GPU)
 make test-gui     # pytest tests/gui/ (GUI extras required; no hardware/GPU)
-make test         # test-core + test-gui
-make test-all     # pytest (incl. integration)
+make test         # test-core (requires only .[dev])
+make test-all     # pytest (incl. GUI + integration; requires their dependencies)
 # Use COMMITS=N to check files changed in the last N commits instead of staged.
 
 # Install in editable mode
 pip install -e ".[dev]"                                    # core + test deps
 pip install -e ".[dev,gui]"                               # tests for GUI pages and components
+pip install -e ".[remote]"                                # HTTP vision/speech clients, no model runtime
+pip install -e ".[remote,camera,voice-io]"                 # optional host camera/audio capture and playback
+pip install -e ".[vision-server]"                         # optional local/remote vision server; choose Torch wheels for host
+pip install -e ".[speech-server,voice-local]"             # optional FunASR server; ChatTTS uses chattts-server
 pip install -e ".[full]" --extra-index-url https://download.pytorch.org/whl/cu128  # + vision/GPU deps
 pip install -e ".[piper]"                                  # + piper hardware SDK
 pip install -e ".[gui]"                                    # + 图形界面 (NiceGUI, 浏览器模式)
 
-# Run tests (make test runs both no-hardware suites)
+# Run tests (make test defaults to core; GUI tests are selected explicitly)
 pytest tests/unit_tests/                                   # core/domain tests (no hardware/GPU)
 pytest tests/gui/                                          # GUI tests (install .[dev,gui]; no hardware)
 pytest -m integration                                      # integration tests (needs hardware/GPU)
@@ -92,10 +96,11 @@ mypy jiuwensymbiosis/
 
 `jiuwensymbiosis.utils.logging` provides one choke point for all logging:
 
-- `configure_logging(level="INFO", *, log_dir=None)` — idempotent root-logger setup: one `StreamHandler` with a uniform format (`%(asctime)s %(levelname)s %(name)s: %(message)s`) plus an optional `RotatingFileHandler` (`<log_dir>/jiuwensymbiosis.log`, 5 MB / 3 backups). `build_robot_agent` calls it with `RobotAgentConfig.log_level` / `log_dir`.
-- `get_logger(name=None)` — thin alias over `logging.getLogger`; new code should use it. Legacy `logging.getLogger(__name__)` calls remain valid.
-- The Piper driver's per-run `commands.log` (`_attach_cmd_log_handler`) now routes through `configure_logging` + a tagged `FileHandler` with the same format. Disable with `JIUWEN_PIPER_CMD_LOG=0`; override dir with `JIUWEN_PIPER_CMD_LOG_DIR`.
-- `TraceLogHandler` — a `logging.Handler` that forwards `WARNING`+ records from `RobotAgentConfig.trace_capture_loggers` (default `["jiuwensymbiosis"]`) into the active execution trace, so rail warnings / detector failures land in the trace with no business-code changes.
+- `configure_logging(level="INFO", *, log_dir=None, openjiuwen_level=None)` — idempotent setup on `jiuwensymbiosis` and `jiuwensymbiosis_gui`, sharing one stderr handler and one optional rotating `<log_dir>/jiuwensymbiosis.log` (5 MB / 3 backups). Both namespace roots have `propagate=False`; logger and handler thresholds enforce Symbiosis severity. Root level/handlers and foreign handlers remain untouched. Collectors (including pytest `caplog`) attach directly to the framework namespaces. File preparation failure preserves prior policy; old-file cleanup errors are reported after the new configuration is active and retried on the next call. An explicit upstream level also configures the plain `openjiuwen.*` namespace and its separate console fallback; omitted/null settings leave them untouched.
+- `RobotAgentConfig.logging.configure()` applies both levels; official hosts call it before connection/planning via `prepare_session`, with builder/fast-runner fallbacks. `logging.level` defaults to INFO; `logging.openjiuwen_level` defaults to None: omission/null preserves current upstream policy, including host configuration or a prior explicit override. Importing the package does not apply an upstream logging policy. An explicit level controls upstream console and files together, after entry-point configuration; NOTSET is an explicit level, not a request to leave upstream untouched. `_openjiuwen_logging.py` uses only public `get_log_config_snapshot()` / `configure_log_config()` APIs, unifying logger and sink levels while preserving backend, formats, destinations and rotation. A changed upstream configuration may reopen its files; identical settings skip the reset. Later explicit upstream configuration wins until an explicit upstream level is reapplied through Symbiosis. The former console-only `openjiuwen_console_level` field is no longer accepted.
+- `get_logger(name=None)` is a thin alias over `logging.getLogger`; new code should use it. Existing `logging.getLogger(__name__)` inside either framework namespace already reaches the shared handlers; business code must not invoke handlers directly or configure root. Standalone entry points use stable namespace names instead of `__main__`. Calibration loggers use `jiuwensymbiosis.calibration.*`, task CLI uses `jiuwensymbiosis.cli.run_task`. Context, full plans, tool parameters/results and servo ticks belong at DEBUG; INFO carries progress summaries. CLI `--debug` only changes Symbiosis verbosity. CLI checks for a missing query before initializing logging; adapter import failures still reach the configured log file. Successful fastagent results without text produce a stdout step-count summary; voice commands print/speak it once. Compatibility notes are in the [English logging guide](docs/en/how-to/configure-logging.md#compatibility-and-migration) and [Chinese logging guide](docs/zh/how-to/configure-logging.md#兼容性与迁移).
+- Piper `commands.log` has its own shared DEBUG FileHandler, released by the last owning driver on close. It restores its logger-level override without overwriting subsequent external changes; failed cleanup is retained for retry. The driver must not reconfigure root. `JIUWEN_PIPER_CMD_LOG=0` also detaches an existing command handler; directory comes from `agent.logging.motion_dir` (default `./jiuwen_motion_log`).
+- `TraceLogHandler` forwards WARNING+ from `modules.tracing.capture_loggers` (default `["jiuwensymbiosis"]`) into the active execution trace. Trace console summaries use normal logging; structured trace payloads remain independent of text-log verbosity.
 
 ## Architecture: Layered Capability-Gated Design
 
@@ -127,12 +132,12 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 
 **Two Tool Strategies** (can coexist):
 - `build_robot_tools(api)` — each `@implements` method becomes a separate LLM tool (good for few tools)
-- `RobotControlTool(api)` — single `robot_control` entry point with `action`/`params` dispatch (good for SKILL.md workflows); appended by `build_robot_agent` only when `RobotAgentConfig.enable_skill=True`
+- `RobotControlTool(api)` — single `robot_control` entry point with `action`/`params` dispatch (good for SKILL.md workflows); always registered for fastagent, and registered for stepagent when `modules.skills.enabled=True`. Disabling skills in fastagent selects action composition without removing its action dispatcher.
 - `InProcessCodeTool` — in-process Python execution (available in "code" and "hybrid" modes)
 
 **Safety rails unwrap robot_control**: When RobotControlTool is used, rails transparently unpack `action`/`params` to apply safety checks on the actual motion command.
 
-**RobotSession Lifecycle**: `RobotSession` is a context manager — `__enter__` calls `connect()` (env + sidecars), `__exit__` calls `disconnect()`. Both are idempotent. Sidecars (e.g., detection subprocess) are started/stopped automatically.
+**RobotSession Lifecycle**: `RobotSession` is a context manager — `__enter__` calls `connect()` (Env + registered resources), `__exit__` calls `disconnect()`. Both are idempotent. The Session owns its HTTP clients and any explicitly enabled local subprocesses (sidecars); it never starts or stops externally managed inference servers, including manually started localhost services. The internal `sidecar_starters` name also covers client contexts and cleanup callbacks.
 
 **Known Capabilities** (defined in `env/base.py:KNOWN_CAPABILITIES`):
 - arm — `motion.cartesian`, `motion.joint`, `motion.servo`, `motion.dual_arm` (two arms acting in coordination)
@@ -146,14 +151,26 @@ There is no second decorator for "a tool only this body has". Both agent paths b
 1. **SafetyRail** — Pre-motion boundary check, with the watch set **derived from declared capabilities** rather than hard-coded: `motion.cartesian` → Z floor (`z_min_safe`) + XY workspace bounds on `goto_xyzr`/`goto_pose`; `motion.joint` → joint soft limits on `move_joint(q)` (`joint_limits`, unit = env's `move_joint` convention); `motion.base` → per-command translation/turn caps (`base_step_limits`) on `navigate_relative`/`rotate_base`/`drive_arc`; `motion.lift` → `lift_limits` on `set_lift_pose`; `motion.waist` → `waist_step_limit_rad` on `turn_waist`. Every envelope property defaults to `None` = **no range check** (type/finite checks still run), so declaring a capability never invents a limit the hardware never stated. Rejects with `ValueError` (per-failure message: missing q / wrong type / length mismatch / non-finite / out of range) so LLM can self-correct.
 2. **RecoveryRail** — On motion/grasp failure, auto-homes + releases end-effector to return to safe state. The release step goes through a generic `release_effector()` hook, and homing consults `env.holding_payload` first — a body still carrying a payload must not be homed blindly (that would drop it).
 3. **VisualFeedbackRail** — Captures camera frame after every motion/grasp, injects into agent context for VLM result verification.
-4. **DiagnosisRail** — Online failure-feedback (Trace Feedback Loop P1): after a failed step, stages a compact diagnosis (current params + relevant recent history + system state) and flushes it into the next LLM turn via `before_model_call`; gated by `enable_diagnosis` (requires `enable_tracing`). Lives in `jiuwensymbiosis/rails/diagnosis.py`.
-5. **SkillUseRail** — Loads built-in `SKILL.md` docs and appends `RobotControlTool`; attached only when `RobotAgentConfig.enable_skill=True`. (`rails/__init__.py` re-exports SafetyRail / RecoveryRail / VisualFeedbackRail / DiagnosisRail; `SkillUseRail` comes from openjiuwen, re-exported via `agent/abstractions.py` and attached in `agent/builder.py`.)
+4. **DiagnosisRail** — Online failure-feedback (Trace Feedback Loop P1): after a failed step, stages a compact diagnosis (current params + relevant recent history + system state) and flushes it into the next LLM turn via `before_model_call`; gated by `modules.diagnosis.enabled` (requires `modules.tracing.enabled`). Lives in `jiuwensymbiosis/rails/diagnosis.py`.
+5. **SkillUseRail** — Loads built-in `SKILL.md` docs and appends `RobotControlTool`; attached only when `RobotAgentConfig.modules.skills.enabled=True`. (`rails/__init__.py` re-exports SafetyRail / RecoveryRail / VisualFeedbackRail / DiagnosisRail; `SkillUseRail` comes from openjiuwen, re-exported via `agent/abstractions.py` and attached in `agent/builder.py`.)
 
-Note: `TraceRail` (see "Execution Trace & Replay" below) is another parallel rail that lives in `jiuwensymbiosis/agent/trace.py` — **not** under `rails/` — and is gated by `enable_tracing` rather than a safety flag.
+Note: `TraceRail` (see "Execution Trace & Replay" below) is another parallel rail that lives in `jiuwensymbiosis/agent/trace.py` — **not** under `rails/` — and is gated by `modules.tracing.enabled` rather than a safety flag.
 
 Rails are enabled/disabled via `RobotAgentConfig` flags and gated by session capabilities (e.g., VisualFeedbackRail requires `vision.camera`; SafetyRail attaches when **any** of `motion.cartesian` / `motion.joint` / `motion.base` / `motion.lift` / `motion.waist` is present, so joint-only arms and gripperless mobile bodies both get a pre-check).
 
-### Two-Tier Autonomous Planning (`exec_mode: fastagent`)
+**Agent configuration** uses `execution`, `modules`, and `logging` blocks. Module switches are
+`modules.{skills,safety,recovery,visual_feedback,diagnosis,tracing}.enabled`; fast tracking lives under
+`execution.fastagent.tracking`. Only the grouped schema is accepted; old flat fields and Python aliases have been removed.
+CLI, Runtime and workbench share defaults and merge explicit overrides by leaf. Fastagent defaults to skills on
+and visual feedback off; stepagent defaults to skills off and visual feedback on. Diagnosis requires tracing;
+diagnosis and visual feedback are stepagent-only at task dispatch. Recovery's switch also controls fast-runner
+failure retreat. Apply `config.prepare_session(session)` before connecting for strict capabilities and motion logs.
+`build_robot_agent` and `build_robot_agent_config` default to the stepagent profile when config is omitted;
+explicit configs must set `execution.mode="stepagent"`. Passing `RobotAgentConfig()` (fastagent by default)
+raises before building models or tools. Builders preserve explicit module switches; use `run_robot_task` for mode dispatch.
+Full fields and mode restrictions: [Agent configuration](docs/zh/reference/agent-config.md).
+
+### Two-Tier Autonomous Planning (`execution.mode: fastagent`)
 
 `agent/fast/planner.py:plan_task` turns a task into one flat action sequence, then `run_sequence` executes it with **no per-step LLM call**:
 
@@ -166,15 +183,15 @@ Distilling a successful Tier 2 sequence back into a SKILL.md is **not implemente
 
 ### Execution Trace & Replay
 
-`TraceRail` (`jiuwensymbiosis/agent/trace.py`) is an optional parallel rail (enabled via `RobotAgentConfig.enable_tracing`, default **off** for zero overhead) that records each `agent.invoke()` as a structured `ExecutionTrace`:
+`TraceRail` (`jiuwensymbiosis/agent/trace.py`) is an optional parallel rail (enabled via `RobotAgentConfig.modules.tracing.enabled`, default **off** for zero overhead) that records each `agent.invoke()` as a structured `ExecutionTrace`:
 
 - Per tool-call step: `tool_name`, `input_params`, `output_summary`, `success`/`error`, `duration_s`, an `observation` snapshot (pose/joints/extra, no raw arrays), and an optional saved `frame_path`.
 - Rail events pushed via the `TraceEventSink` interface: SafetyRail rejections, RecoveryRail recovery (with real `home_ok`/`released_ok`), VisualFeedbackRail frame injections.
-- `WARNING`+ log lines from `trace_capture_loggers` (default `["jiuwensymbiosis"]`) captured via `TraceLogHandler` — no business-code changes.
+- `WARNING`+ log lines from `modules.tracing.capture_loggers` (default `["jiuwensymbiosis"]`) captured via `TraceLogHandler` — no business-code changes.
 
-The trace JSON is persisted to `<workspace>/traces/{conversation_id}_{timestamp}_{pid}.json` on invoke completion (one write per run); JPEG frames go to `<workspace>/traces/frames/{run_token}/` (one subdir per invoke, so `step_NNN.jpg` never collides across runs) when `trace_save_frames=True`. Override the output dir with `trace_dir` (default `<workspace>/traces`). Cap with `trace_max_entries` / `trace_max_frames`. Full config: `enable_tracing` / `trace_max_entries` / `trace_max_frames` / `trace_save_frames` / `trace_console` / `trace_dir` / `trace_capture_loggers`.
+The trace JSON is persisted to `<workspace>/traces/{conversation_id}_{timestamp}_{pid}.json` on invoke completion (one write per run); JPEG frames go to `<workspace>/traces/frames/{run_token}/` (one subdir per invoke, so `step_NNN.jpg` never collides across runs) when `modules.tracing.save_frames=True`. Override the output dir with `modules.tracing.dir` (default `<workspace>/traces`). Cap with `modules.tracing.max_entries` / `modules.tracing.max_frames`. Full config: `modules.tracing.enabled` / `modules.tracing.max_entries` / `modules.tracing.max_frames` / `modules.tracing.save_frames` / `modules.tracing.console` / `modules.tracing.dir` / `modules.tracing.capture_loggers`.
 
-`jiuwensymbiosis-replay <trace.json>` prints a text timeline of steps, rail events, log events, and frame paths. Set `trace_console=True` for a live one-line-per-step dashboard during the run.
+`jiuwensymbiosis-replay <trace.json>` prints a text timeline of steps, rail events, log events, and frame paths. Set `modules.tracing.console=True` for a live one-line-per-step dashboard during the run.
 
 ### Hardware Adapter Pattern (7 files)
 
@@ -184,7 +201,7 @@ New robot types follow this pattern under `jiuwensymbiosis/adapters/<name>/`:
 3. `env.py` — `BaseRobotEnv` subclass: `capabilities` frozenset, `connect`/`disconnect`/`get_observation`, expose `home_pose`/`tool_offset_mm` plus whichever SafetyRail envelopes the hardware can actually state (`z_min_safe`/`workspace_bounds`/`joint_limits`/`base_step_limits`/`lift_limits`/`waist_step_limit_rad`; each defaults to `None` = unchecked), and `holding_payload` if the body can carry something
 4. `api.py` — Subclasses `BaseRobotApi` (the mixin layer is gone); every action is an explicit `@implements(SPEC)` method, forwarding to `api/defaults.py` where the body adds nothing; overrides geometry-specific methods, implements vision methods
 5. `calibration.py` — Optional hand-eye calibration wrapper exposing `CALIBRATION_ADAPTER_SPEC` (see the calibration section)
-6. `session.py` — `make_builder(cfg_cls, env_cls, api_cls, ...)` one-liner; `api_kwargs_from_cfg` accepts a declarative list (`["cfg_attr"` or `"cfg_attr:api_kwarg"`, dotted paths OK) so same/near-named cfg→Api field mapping needs no hand-written extractor, and `make_detector_sidecar()` provides the standard detection-server sidecar
+6. `session.py` — `make_builder(cfg_cls, env_cls, api_cls, ...)` one-liner; `api_kwargs_from_cfg` accepts a declarative list (`["cfg_attr"` or `"cfg_attr:api_kwarg"`, dotted paths OK) so same/near-named cfg→Api field mapping needs no hand-written extractor. `managed_detector=True` injects a Session-owned HTTP client; `make_detector_sidecar()` provides a managed local model subprocess only for `detector.mode: local`.
    For Runtime/official CLI admission, pass `resource_keys(cfg)` identifying the physical command endpoint. The builder exposes `.config_factory` and `.resource_keys`; common admission adds cameras and spawned detectors. An explicit `physical_device_id` supplements derived identities. Builders do not acquire locks themselves. Drivers/Env must propagate cleanup errors and retain failed handles; constructors with unconfirmed rollback raise `HardwareCleanupError` (`agent.lifecycle`).
 7. `config_template.yaml` — YAML template with Chinese annotations
 
@@ -241,7 +258,31 @@ and calibration-time limit relaxations.
 
 ### Visual Perception Pipeline
 
-Detection runs as a subprocess (GroundingDINO + SAM2) via `perception/detector_sidecar.py`. `RobotSession` manages lifecycle. The body-agnostic `perception/` package provides the shared pipeline: `detector_client.init_detector()`, `vision.detect_and_centroid()`, `vision.apply_xy_correction()`, `object_geometry` (mask → 3D extent), and `scene3d` (the detect → centroid → project → correct → geometry chain behind `api/defaults.py`'s sensing forwarders).
+Detection deployment is explicit in `perception/config.py`: `detector.mode` is `remote`,
+`local`, or `disabled` (default). Remote mode calls the configured HTTP service and
+never loads model weights or spawns a process. Local mode optionally starts
+GroundingDINO + SAM2 through `perception/detector_sidecar.py`. Use “HTTP inference service”
+for the service in general; “sidecar” means only the Session-owned local subprocess.
+A manually started localhost server is externally managed and uses remote mode. Official adapter builders
+inject one managed callable detector client per `RobotSession`; the session owns its
+cleanup and any local process, never the external server. Maintenance with
+`include_sidecars=False` registers only client cleanup: no model startup, credentials
+resolution or network call until an explicit inference request.
+
+The body-agnostic `perception/` package provides `create_detector_client()`,
+`vision.detect_and_centroid()`, `vision.apply_xy_correction()`, `object_geometry`
+(mask → 3D extent), and `scene3d` (detect → centroid → project → correct → geometry).
+The legacy `init_detector(url)` and old `api_servers` configuration remain migration
+entry points. Inference failures carry stable error codes and must never become an
+empty successful detection. Capture age is checked across remote inference.
+
+Speech uses independent `voice.asr` and `voice.tts` backend settings: remote HTTP,
+explicit optional FunASR/ChatTTS, or disabled/null defaults. Capture and playback stay
+on the Agent host. This host need not be on the robot: hardware adapters keep their
+serial/USB/CAN/ROS/HTTP links. Remote client extras do not require model Torch; the
+optional SO-101 LeRobot dependency still does. See
+[remote inference](docs/zh/how-to/remote-inference.md) and
+[server deployment](deploy/inference/README.md). MCP is outside this implementation.
 
 ### Workspace Resolution
 
@@ -269,7 +310,7 @@ jiuwensymbiosis/          # Main package
     so101/                # SO-101 5-DoF arm (gripper + eye-to-hand camera)
     cruzr/                # Cruzr mobile dual-arm (base + lifter + waist + paddle grasp)
     _common/              # Shared adapter building blocks (builder, capability_spec, geometry,
-                          #   joint_transport, kinematic_driver, kinematics, lerobot_backend, safety)
+                          #   joint_transport, kinematic_driver, kinematics, lerobot_backend)
   calibration/            # Body-agnostic hand-eye calibration subsystem (see above)
   runtime/
     bindings.py           # Immutable source-aware config and adapter resource identities
