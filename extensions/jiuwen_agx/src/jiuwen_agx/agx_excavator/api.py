@@ -152,6 +152,11 @@ class AgxExcavatorApi(SimMachineApi):
                 )
             except SnapshotUnavailable as exc:
                 logger.warning("[dig] %s — 回落到 keyframe 循环", exc)
+            except ValueError as exc:
+                # A business failure (unreachable pose, stall, empty bucket), not
+                # a framework exception: return it so the runner can re-plan with
+                # the exact reason instead of marking it recovery-managed.
+                return {"ok": False, "error": str(exc)}
             else:
                 return {"ok": True, **result}
         try:

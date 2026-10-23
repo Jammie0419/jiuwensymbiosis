@@ -336,6 +336,37 @@ def execute_pose_dig_cycle(
         dump_x, dump_y, dump_z + approach_gap_m, origin
     )
 
+    # Early 3D feasibility gate: reject an unreachable dump BEFORE moving soil.
+    # The later check uses the actual carry pose; this one runs while the bucket
+    # is still empty, so a bad brain point does not leave a loaded bucket that
+    # the next plan then refuses to dig with.
+    if carry is not None and "boom" in carry and "arm" in carry:
+        seed_native = {
+            "swing": 0.0,
+            "boom": float(carry["boom"]),
+            "arm": float(carry["arm"]),
+            "bucket": curl_native,
+        }
+    else:
+        seed_native = {
+            "swing": 0.0,
+            "boom": float(t["ready_boom_deg"]),
+            "arm": float(t["ready_arm_deg"]),
+            "bucket": curl_native,
+        }
+    q_seed = ik.native_to_policy(seed_native)
+    q_seed[0] = math.atan2(dump_y, dump_x)
+    for _ in range(int(ik_max_iters)):
+        q_seed = ik.step_ik_fixed(q_seed, dump, 3, curl_value, 0.35)
+    seed_error = float(np.linalg.norm(ik.forward(q_seed) - dump))
+    if seed_error > float(dump_tolerance_m):
+        raise ValueError(
+            f"dump pose ({dump_x:.2f}, {dump_y:.2f}, {dump_z:.2f}) cannot be "
+            f"reached while carrying the bucket closed ({seed_error:.2f} m "
+            "short). Keep the dump point at radius ~4.5-5.5 m and z ~3-4 m "
+            "(for example (5,-1,3.5)); do not push it toward the machine."
+        )
+
     def cut(target: np.ndarray, *, label: str, tolerance: float) -> float:
         if dig_pitch is not None:
             return goto(target, pitch=dig_pitch, label=label, tolerance=tolerance)
