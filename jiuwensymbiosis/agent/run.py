@@ -588,6 +588,10 @@ def _run_fast_task_impl(
         # one and drops it, so "the apple in the drawer" cannot compile into a call that
         # would grasp whichever apple the detector happens to rank first.
         "grounding": intent.get("grounding") or {},
+        # 用户声明的卸料方向（"倒到左边"）——结构化进两层规划提示，并在编译循环里
+        # 做确定性校验：方向错只会花一次编译重试，不会花一次物理挖掘。
+        "destination_side": intent.get("destination_side"),
+        "destination_distance_m": intent.get("destination_distance_m"),
         # What the look found in the way of what (shut container, crate stacked on top), so a
         # plan that reaches through it is rejected with the barrier named instead of running.
         "blocked_access": _blocked_access(scene, intent.get("grounding") or {}),

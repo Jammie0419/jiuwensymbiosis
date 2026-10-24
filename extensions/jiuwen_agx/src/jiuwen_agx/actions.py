@@ -38,7 +38,8 @@ DIG = ActionSpec(
     name="dig",
     description=(
         "Execute one excavator dig-and-dump cycle. The dig/dump points are bucket-tip poses "
-        "in the base frame, in METRES (REP-103). x/y are required; z is optional — a body "
+        "in the base frame, in METRES (REP-103: +x is the machine's forward, +y its left, "
+        "-y its right). x/y are required; z is optional — a body "
         "with an IK work cycle uses it as the bucket-tip height, while a keyframe-only body "
         "uses its calibrated depth and ignores z. dig_pitch_deg/dump_pitch_deg are optional "
         "tool pitches; yaw follows atan2(y, x). The cut runs with the bucket open and curls "

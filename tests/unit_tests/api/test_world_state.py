@@ -217,6 +217,15 @@ def test_prompt_block_names_what_is_known():
     assert "【当前状态】" in block and "crate" in block
 
 
+def test_prompt_block_states_the_base_frame_axes():
+    """“倒到左边”只有在提示词说明了 +Y 是左之后才可回答。"""
+    block = WorldState(joints=[1.5], joint_units="rad").as_prompt_block()
+    assert "REP-103" in block
+    assert "+Y 机身左侧" in block and "−Y 机身右侧" in block
+    # Static knowledge must not break the empty-state invariant.
+    assert WorldState().as_prompt_block() == ""
+
+
 # --------------------------------------------------------------------------- #
 # Both dispatch paths must record identically
 # --------------------------------------------------------------------------- #

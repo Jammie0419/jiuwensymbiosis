@@ -224,6 +224,111 @@ def _format_blocked(blocked: Mapping[str, str] | None) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# User-stated destination direction ("倒到左边3米处"). Parsed deterministically
+# from the free-text destination LLM① produced, rendered as a hard constraint
+# into both planning tiers, and checked over the compiled sequence — a wrong
+# side costs a compile retry, not a physical dig.
+# --------------------------------------------------------------------------- #
+
+# Substring → side, matched on the lowercased destination phrase (LLM① may keep
+# it Chinese or normalize it to English: "倒到左边3米处" → "left 3 meters").
+_DESTINATION_SIDE_WORDS: dict[str, tuple[str, ...]] = {
+    "left": ("left", "左"),
+    "right": ("right", "右"),
+    "ahead": ("ahead", "front", "前方", "前面"),
+    "behind": ("behind", "back", "后方", "后面", "身后"),
+}
+# Only left/right can be proven against a lateral (y) offset; ahead/behind skip.
+_DESTINATION_AXIS_SIGN: dict[str, int] = {"left": 1, "right": -1}
+_DESTINATION_DISTANCE_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:meters?|metres?|米|m\b)", re.IGNORECASE
+)
+_DESTINATION_SIDE_LABELS: dict[str, str] = {
+    "left": "机身左侧（基座系 +Y，卸点 dump_y_m > 0）",
+    "right": "机身右侧（基座系 −Y，卸点 dump_y_m < 0）",
+    "ahead": "机身正前方（+X）",
+    "behind": "机身正后方（−X）",
+}
+
+
+def _parse_destination_side(dest: str | None) -> str | None:
+    """Map a free-text destination phrase onto left/right/ahead/behind (None if unstated)."""
+    if not dest:
+        return None
+    text = dest.lower()
+    for side, words in _DESTINATION_SIDE_WORDS.items():
+        if any(word in text for word in words):
+            return side
+    return None
+
+
+def _parse_destination_distance(dest: str | None) -> float | None:
+    """The stated lateral offset in metres ("left 3 meters" → 3.0), if any."""
+    if not dest:
+        return None
+    match = _DESTINATION_DISTANCE_RE.search(dest)
+    if match is None:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:  # pragma: no cover - the regex only matches digits
+        return None
+    return value if value > 0 else None
+
+
+def _format_destination_constraint(side: str | None, distance_m: Any = None) -> str:
+    """Render the user's stated drop-off direction as a constraint block ('' if unstated)."""
+    label = _DESTINATION_SIDE_LABELS.get(side or "")
+    if label is None:
+        return ""
+    text = f"【用户方向约束】放置/卸料位置在{label}"
+    if isinstance(distance_m, (int, float)) and not isinstance(distance_m, bool) and distance_m > 0:
+        text += f"，侧向偏移约 {distance_m:g} m"
+    text += "。所选坐标必须满足该方向，违者会被校验拒绝。"
+    return text + "\n"
+
+
+def _check_destination_side(data: list, side: str | None) -> str | None:
+    """Deterministic destination-direction check over a compiled sequence.
+
+    The digging family shares one drop-off coordinate — ``dump_y_m``, declared
+    identically by ``dig`` and ``act_exec`` — in the base frame where REP-103
+    puts +y on the machine's left. Only a literal numeric param can be proven
+    wrong: a binding (``terrain.piles[0].y_m``) resolves at execution time and
+    is skipped. Returns the violation text (fed back as the compiler's
+    correction) or ``None``.
+    """
+    sign = _DESTINATION_AXIS_SIGN.get(side or "")
+    if sign is None:
+        return None
+    for index, step in enumerate(data):
+        if not isinstance(step, dict):
+            continue
+        params = step.get("params") or {}
+        y = params.get("dump_y_m")
+        if isinstance(y, bool) or not isinstance(y, (int, float)):
+            continue
+        if (y > 0) != (sign > 0):
+            want = "左侧（y > 0）" if sign > 0 else "右侧（y < 0）"
+            have = "y > 0" if y > 0 else "y < 0"
+            return (
+                f"step {index}: 用户要求卸到机身{want}，但计划的卸点 dump_y_m={y:g} 是 {have}。"
+                "请把卸点移到用户要求的侧向（保持卸点在可达包络内）"
+            )
+    return None
+
+
+def _destination_correction(side: str | None, distance_m: Any = None) -> str:
+    """The correction appended to the compiler prompt after a side violation."""
+    label = _DESTINATION_SIDE_LABELS.get(side or "", "用户指定的方向")
+    text = f"\n\n上次计划的卸点方向不满足用户约束（{label}）。"
+    if isinstance(distance_m, (int, float)) and not isinstance(distance_m, bool) and distance_m > 0:
+        text += f"用户要求的侧向偏移约 {distance_m:g} m。"
+    text += "请调整卸点坐标满足方向后，重新输出完整 JSON 数组。"
+    return text
+
+
 def _extract_json_array(text: str) -> list | None:
     """Best-effort parse of a JSON array from an LLM reply (tolerates fences/prose)."""
     if not text:
@@ -349,6 +454,19 @@ def _validate_parsed(data: dict | None) -> dict[str, Any]:
         count = None
     dest = d.get("destination")
     dest = dest if isinstance(dest, str) and dest.strip() else None
+    # Direction is too easy for an LLM to drop ("倒到左边" planned as a dump at y=0):
+    # normalize it deterministically here so the compiler prompt states it and the
+    # compile loop can enforce it. An explicit LLM field wins if one is ever provided.
+    dest_side = d.get("destination_side")
+    if dest_side not in _DESTINATION_SIDE_WORDS:
+        dest_side = _parse_destination_side(dest)
+    dest_distance = d.get("destination_distance_m")
+    if (
+        isinstance(dest_distance, bool)
+        or not isinstance(dest_distance, (int, float))
+        or dest_distance <= 0
+    ):
+        dest_distance = _parse_destination_distance(dest)
     intent = (
         d.get("intent") if d.get("intent") in ("pick", "pick_place", "carry") else ("pick_place" if dest else "pick")
     )
@@ -357,6 +475,8 @@ def _validate_parsed(data: dict | None) -> dict[str, Any]:
         "references": refs,
         "grounding": grounding,
         "destination": dest,
+        "destination_side": dest_side,
+        "destination_distance_m": dest_distance,
         "mode": mode,
         "count": count,
         "intent": intent,
@@ -705,6 +825,8 @@ def _compile_loop(
     allow_decline: bool = False,
     thinking_mode: str | None = "disabled",
     cancel_token: CancelToken | None = None,
+    destination_side: str | None = None,
+    destination_distance_m: float | None = None,
 ) -> list[dict[str, Any]]:
     """Sample an action sequence until one validates, feeding each failure back.
 
@@ -778,6 +900,12 @@ def _compile_loop(
             logger.warning("[%s] attempt %d: invalid sequence: %s", label, attempt, exc)
             correction = _sequence_correction(exc)
             continue
+        destination_error = _check_destination_side(data, destination_side)
+        if destination_error is not None:
+            last_err = destination_error
+            logger.warning("[%s] attempt %d: %s", label, attempt, destination_error)
+            correction = _destination_correction(destination_side, destination_distance_m)
+            continue
         logger.info("[%s] → %d steps: %s", label, len(data), data)
         return data
     raise RuntimeError(f"{label} produced no valid sequence after {attempts} attempts: {last_err}")
@@ -805,6 +933,8 @@ def compose_actions(
     reason: str = "",
     thinking_mode: str | None = "disabled",
     cancel_token: CancelToken | None = None,
+    destination_side: str | None = None,
+    destination_distance_m: float | None = None,
 ) -> list[dict[str, Any]]:
     """Tier 2 — derive an action sequence from the contracts alone, with no SKILL.md.
 
@@ -835,6 +965,7 @@ def compose_actions(
         f"{_format_scene(scene)}"
         f"{_format_grounding(grounding)}"
         f"{_format_blocked(blocked_access)}"
+        f"{_format_destination_constraint(destination_side, destination_distance_m)}"
         f"【可用动作】(括号内为参数名，? = 可省略；-> 后是该动作的返回字段)：\n"
         f"{format_action_contracts(action_index)}\n\n"
         f"【特殊动作】：{special_text}\n\n"
@@ -858,6 +989,8 @@ def compose_actions(
         label="composer",
         thinking_mode=thinking_mode,
         cancel_token=cancel_token,
+        destination_side=destination_side,
+        destination_distance_m=destination_distance_m,
     )
 
 
@@ -885,6 +1018,8 @@ def compile_sequence(
     blocked_access: Mapping[str, str] | None = None,
     thinking_mode: str | None = "disabled",
     cancel_token: CancelToken | None = None,
+    destination_side: str | None = None,
+    destination_distance_m: float | None = None,
 ) -> list[dict[str, Any]]:
     """Tier 1 — pick the skills that fit and expand their workflows, in one inference.
 
@@ -944,6 +1079,7 @@ def compile_sequence(
         f"{_format_scene(scene)}"
         f"{_format_grounding(grounding)}"
         f"{_format_blocked(blocked_access)}"
+        f"{_format_destination_constraint(destination_side, destination_distance_m)}"
         f"【可用技能】(SKILL.md)：\n{_format_skills_md(skills_md)}\n\n"
         f"【可用动作】{vocab_block}\n"
         f"【特殊动作】：{special_text}\n\n"
@@ -970,6 +1106,8 @@ def compile_sequence(
         allow_decline=True,
         thinking_mode=thinking_mode,
         cancel_token=cancel_token,
+        destination_side=destination_side,
+        destination_distance_m=destination_distance_m,
     )
 
 
@@ -1017,6 +1155,8 @@ def plan_task(
     blocked_access: Mapping[str, str] | None = None,
     thinking_mode: str | None = "disabled",
     cancel_token: CancelToken | None = None,
+    destination_side: str | None = None,
+    destination_distance_m: float | None = None,
 ) -> PlanResult:
     """Plan a task with the skill library first, falling back to the action contracts.
 
@@ -1057,6 +1197,8 @@ def plan_task(
         "attempts": attempts,
         "thinking_mode": thinking_mode,
         "cancel_token": cancel_token,
+        "destination_side": destination_side,
+        "destination_distance_m": destination_distance_m,
     }
     usable_md = _filter_skills_md_by_capability(skills_md, api_capabilities)
 

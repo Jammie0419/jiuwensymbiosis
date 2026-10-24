@@ -324,4 +324,8 @@ class WorldState:
             lines.append(f"已感知 {loc['referent']}：{pos_s}（{loc['sensed_by']}，{loc['age_s']}s 前{reach_s}）")
         if not lines:
             return ""
+        # The base-frame convention is static knowledge, but it only matters when
+        # there is something to ground: state it beside the numbers it interprets.
+        # Without it, "倒到左边" has no answer — nothing says which sign is left.
+        lines.insert(0, "坐标系：基座系（REP-103）——+X 机身正前方，+Y 机身左侧，−Y 机身右侧，+Z 向上")
         return "【当前状态】\n" + "\n".join(f"  {line}" for line in lines) + "\n\n"

@@ -379,8 +379,9 @@ def execute_pose_dig_cycle(
         raise ValueError(
             f"dump pose ({dump_x:.2f}, {dump_y:.2f}, {dump_z:.2f}) cannot be "
             f"reached while carrying the bucket closed ({seed_error:.2f} m "
-            "short). Keep the dump point at radius ~4.5-5.5 m and z ~3-4 m "
-            "(for example (5,-1,3.5)); do not push it toward the machine."
+            "short). Keep the dump point at radius ~4.5-5.5 m and z ~3-4 m, "
+            "offset sideways toward the side the task asks for (base frame "
+            "+y is the machine's left); do not push it toward the machine."
         )
 
     def cut(target: np.ndarray, *, label: str, tolerance: float) -> float:
