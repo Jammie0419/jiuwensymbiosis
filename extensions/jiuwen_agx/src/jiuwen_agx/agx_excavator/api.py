@@ -20,11 +20,28 @@ from typing import Any
 
 from jiuwensymbiosis.api.actions import implements
 
-from jiuwen_agx.actions import ACT_EXECUTE, DIG
+from jiuwen_agx.actions import ACT_EXECUTE, DIG, DIG_SOIL, DUMP_SOIL
 from jiuwen_agx.agx_excavator.config import AgxExcavatorConfig
-from jiuwen_agx.agx_excavator.work import check_cycle_preconditions, execute_dig_cycle
-from jiuwen_agx.agx_excavator.work_ik import SnapshotUnavailable, execute_pose_dig_cycle
-from jiuwen_agx.contracts import ActFailure, ActResult, DigFailure, DigResult
+from jiuwen_agx.agx_excavator.work import (
+    check_cycle_preconditions,
+    execute_dig_cycle,
+    execute_dig_phase,
+    execute_dump_phase,
+)
+from jiuwen_agx.agx_excavator.work_ik import (
+    SnapshotUnavailable,
+    execute_pose_dig_cycle,
+    execute_pose_dig_phase,
+    execute_pose_dump_phase,
+)
+from jiuwen_agx.contracts import (
+    ActFailure,
+    ActResult,
+    DigFailure,
+    DigResult,
+    DigSoilResult,
+    DumpSoilResult,
+)
 from jiuwen_agx.sim.api import SimMachineApi
 from jiuwen_agx.sim.env import SimMachineEnv
 
@@ -183,6 +200,181 @@ class AgxExcavatorApi(SimMachineApi):
             "volume_m3": result["volume_m3"],
             "cycle_s": result["cycle_s"],
         }
+
+    # ------------------------------------------------------------------ split cycle
+    @implements(DIG_SOIL)
+    def dig_soil(
+        self,
+        dig_x_m: float,
+        dig_y_m: float,
+        dig_z_m: float | None = None,
+        dig_pitch_deg: float | None = None,
+    ) -> DigSoilResult | DigFailure:
+        """Dig ONE bucket at the dig point — the DIG half, no dumping.
+
+        Ends with the bucket loaded at the carry posture (``payload.held``);
+        follow with ``dump_soil`` — possibly after driving the loaded machine
+        into range of the dump target. The split exists so a plan can
+        reposition between digging and dumping, which the one-call ``dig``
+        cannot express. Same reach/drag rules and refusals as ``dig``.
+        """
+        env = self.env
+        if not isinstance(env, SimMachineEnv) or not isinstance(
+            getattr(env, "cfg", None), AgxExcavatorConfig
+        ):
+            raise RuntimeError(
+                "AgxExcavatorApi requires an env built from AgxExcavatorConfig"
+            )
+        cfg: AgxExcavatorConfig = env.cfg  # type: ignore[assignment]
+        if cfg.dig_mode == "ik":
+            try:
+                dig_z = float(dig_z_m) if dig_z_m is not None else None
+                if dig_z is None:
+                    snap = env.driver.snapshot(
+                        points=[[float(dig_x_m), float(dig_y_m)]]
+                    )
+                    surfaces = (snap or {}).get("surface_m") or []
+                    if surfaces and surfaces[0] is not None:
+                        dig_z = float(surfaces[0])
+                    if dig_z is None:
+                        raise SnapshotUnavailable(
+                            "dig_z_m missing and no surface height at the dig point"
+                        )
+                result = execute_pose_dig_phase(
+                    env.driver,
+                    ik=self._get_ik(cfg.dig_ik_machine or ""),
+                    dig_pose=(float(dig_x_m), float(dig_y_m), dig_z),
+                    dig_pitch=(
+                        math.radians(float(dig_pitch_deg))
+                        if dig_pitch_deg is not None
+                        else None
+                    ),
+                    tuning=cfg.dig_cycle_tuning,
+                    reach_min_m=cfg.reach_min_m,
+                    reach_max_m=cfg.reach_max_m,
+                    reach_z_min_m=cfg.reach_z_min_m,
+                    reach_z_max_m=cfg.reach_z_max_m,
+                    approach_gap_m=cfg.approach_gap_m,
+                    bite_m=cfg.bite_m,
+                    cut_length_m=cfg.cut_length_m,
+                    min_drag_radius_m=cfg.dig_min_drag_radius_m,
+                    carry_lift_m=cfg.carry_lift_m,
+                    carry=cfg.dig_carry,
+                    dig_bucket_open_native=cfg.dig_bucket_open_rad,
+                    dig_bucket_curl_native=cfg.dig_bucket_curl_rad,
+                    dump_bucket_open_native=cfg.dump_bucket_open_rad,
+                    ik_tolerance_m=cfg.ik_tolerance_m,
+                    contact_tolerance_m=cfg.contact_tolerance_m,
+                    ik_max_iters=cfg.ik_max_iters,
+                    ik_stall_iters=cfg.ik_stall_iters,
+                    dump_dwell_s=cfg.dig_dump_dwell_s,
+                )
+            except SnapshotUnavailable as exc:
+                logger.warning("[dig_soil] %s — 回落到 keyframe 相位", exc)
+            except ValueError as exc:
+                # 业务失败（不可达/拖切受限/空斗）：返回原因供大脑重规划
+                return {"ok": False, "error": str(exc)}
+            else:
+                return {"ok": True, **result}
+        try:
+            result = execute_dig_phase(
+                env.driver,
+                dig_x_m=float(dig_x_m),
+                dig_y_m=float(dig_y_m),
+                tuning=cfg.dig_cycle_tuning,
+                reach_min_m=cfg.reach_min_m,
+                reach_max_m=cfg.reach_max_m,
+                swing_unit=cfg.swing_unit,
+                travel=cfg.dig_travel,
+                cut_path=cfg.dig_cut_path,
+                carry=cfg.dig_carry,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, **result}
+
+    @implements(DUMP_SOIL)
+    def dump_soil(
+        self,
+        dump_x_m: float,
+        dump_y_m: float,
+        dump_z_m: float | None = None,
+        dump_pitch_deg: float | None = None,
+    ) -> DumpSoilResult | DigFailure:
+        """Dump the loaded bucket at the dump point — the DUMP half.
+
+        Requires the bucket to be loaded (``dig_soil`` first — an empty bucket
+        has nothing to dump). The machine may drive to the dump target LOADED
+        before this call; the dump point is expressed in the current base
+        frame. If ``dump_z_m`` is omitted it falls back to the terrain height
+        there plus the configured clearance. Ends with the bucket curled.
+        """
+        env = self.env
+        if not isinstance(env, SimMachineEnv) or not isinstance(
+            getattr(env, "cfg", None), AgxExcavatorConfig
+        ):
+            raise RuntimeError(
+                "AgxExcavatorApi requires an env built from AgxExcavatorConfig"
+            )
+        cfg: AgxExcavatorConfig = env.cfg  # type: ignore[assignment]
+        if cfg.dig_mode == "ik":
+            try:
+                dump_z = float(dump_z_m) if dump_z_m is not None else None
+                if dump_z is None:
+                    snap = env.driver.snapshot(
+                        points=[[float(dump_x_m), float(dump_y_m)]]
+                    )
+                    surfaces = (snap or {}).get("surface_m") or []
+                    if surfaces and surfaces[0] is not None:
+                        dump_z = float(surfaces[0]) + float(cfg.dump_clearance_m)
+                    if dump_z is None:
+                        raise SnapshotUnavailable(
+                            "dump_z_m missing and no surface height at the dump point"
+                        )
+                result = execute_pose_dump_phase(
+                    env.driver,
+                    ik=self._get_ik(cfg.dig_ik_machine or ""),
+                    dump_pose=(float(dump_x_m), float(dump_y_m), dump_z),
+                    dump_pitch=(
+                        math.radians(float(dump_pitch_deg))
+                        if dump_pitch_deg is not None
+                        else None
+                    ),
+                    tuning=cfg.dig_cycle_tuning,
+                    reach_min_m=cfg.reach_min_m,
+                    reach_max_m=cfg.reach_max_m,
+                    reach_z_min_m=cfg.reach_z_min_m,
+                    reach_z_max_m=cfg.reach_z_max_m,
+                    approach_gap_m=cfg.approach_gap_m,
+                    carry=cfg.dig_carry,
+                    dig_bucket_curl_native=cfg.dig_bucket_curl_rad,
+                    dump_bucket_open_native=cfg.dump_bucket_open_rad,
+                    ik_tolerance_m=cfg.ik_tolerance_m,
+                    dump_tolerance_m=cfg.dump_tolerance_m,
+                    ik_max_iters=cfg.ik_max_iters,
+                    ik_stall_iters=cfg.ik_stall_iters,
+                    dump_dwell_s=cfg.dig_dump_dwell_s,
+                )
+            except SnapshotUnavailable as exc:
+                logger.warning("[dump_soil] %s — 回落到 keyframe 相位", exc)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            else:
+                return {"ok": True, **result}
+        try:
+            result = execute_dump_phase(
+                env.driver,
+                dump_x_m=float(dump_x_m),
+                dump_y_m=float(dump_y_m),
+                tuning=cfg.dig_cycle_tuning,
+                reach_min_m=cfg.reach_min_m,
+                reach_max_m=cfg.reach_max_m,
+                swing_unit=cfg.swing_unit,
+                dump_dwell_s=cfg.dig_dump_dwell_s,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, **result}
 
     def release_effector(self) -> dict:
         """Open the bucket so a failed cycle does not leave ``payload.held``.

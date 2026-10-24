@@ -88,6 +88,25 @@ def test_act_exec_contract_intact():
     assert "volume_m3" not in fields
 
 
+def test_split_spec_contracts_form_the_payload_handoff():
+    """dig_soil 结束于斗满、dump_soil 要求斗满——payload 链必须闭合。"""
+    soil = ACTIONS["dig_soil"]
+    dump = ACTIONS["dump_soil"]
+    assert soil.required_params == ("dig_x_m", "dig_y_m")
+    assert dump.required_params == ("dump_x_m", "dump_y_m")
+    assert soil.requires == ("payload.clear",)
+    assert soil.provides == ("payload.held",)
+    assert dump.requires == ("payload.held",)
+    assert dump.provides == ("payload.clear",)
+    assert soil.capability == dump.capability == "motion.excavator"
+    assert soil.invalidates_locations is True and dump.invalidates_locations is True
+    soil_fields = soil.result_schema().get("properties", {})
+    assert {"ok", "loaded", "cycle_s", "error"} <= set(soil_fields)
+    assert "volume_m3" not in soil_fields  # 没卸土就没有体积可言
+    dump_fields = dump.result_schema().get("properties", {})
+    assert {"ok", "volume_m3", "cycle_s", "error"} <= set(dump_fields)
+
+
 def test_resource_keys_identify_the_command_endpoint():
     """Runtime admission needs the endpoint identity (upstream contract)."""
     from jiuwen_agx.agx_excavator.session import _agx_resource_keys

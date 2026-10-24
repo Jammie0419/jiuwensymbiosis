@@ -87,6 +87,9 @@ offset = 0 / +61.8273 / -154.3403 / +216.6141 度
 - 接触段失败会先开斗（必要时抬到 carry 位形）再返回错误；`release_effector()` 也
   实现了开斗，RecoveryRail 会在 `home` 前先释放，避免失败后 `payload.held` 把
   下一次 `dig` 锁死。
+- 拆分动作：`dig_soil`（只挖，结束于带载 carry 姿态、payload.held）与
+  `dump_soil`（只卸，要求斗满、结束收斗）——挖点/卸点需要不同站位（带载行走）
+  时用；复合 `dig` = 两相位串联，行为不变（结尾多一步收斗，防摆回 home 时舀料）。
 - 超差、不可达、或卸完 `scoop_state()` 仍为真 → `ok:false + error`；大脑据此
   移动底盘或换点。自由空间段已走平滑轨迹播放，一斗约 44 s；接触段
   （press/drag）仍逐点闭环。

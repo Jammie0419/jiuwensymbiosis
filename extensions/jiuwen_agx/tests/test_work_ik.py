@@ -10,7 +10,11 @@ import math
 import numpy as np
 import pytest
 
-from jiuwen_agx.agx_excavator.work_ik import execute_pose_dig_cycle
+from jiuwen_agx.agx_excavator.work_ik import (
+    execute_pose_dig_cycle,
+    execute_pose_dig_phase,
+    execute_pose_dump_phase,
+)
 from jiuwen_agx.excavator_ik import ExcavatorIk, machine_file_path
 
 _JOINTS = ("swing", "boom", "arm", "bucket")
@@ -183,3 +187,162 @@ def test_contact_failure_opens_the_bucket_before_raising():
     # The failure itself, then the cleanup opens the bucket in place.
     assert driver.calls[-1] == {"bucket": 2.0}
     assert driver._loaded is False
+
+
+_CARRY = {"boom": -0.280293, "arm": 0.917791}
+
+
+def _compound_kwargs() -> dict:
+    return {
+        "tuning": _TUNING,
+        "approach_gap_m": 0.35,
+        "bite_m": 0.25,
+        "cut_length_m": 1.0,
+        "carry_lift_m": 1.0,
+        "carry": _CARRY,
+        "dig_bucket_open_native": 1.5,
+        "dig_bucket_curl_native": 0.1,
+        "dump_bucket_open_native": 2.0,
+        "ik_tolerance_m": 0.05,
+        "dump_tolerance_m": 0.25,
+        "contact_tolerance_m": 0.25,
+        "ik_max_iters": 80,
+        "ik_stall_iters": 8,
+        "dump_dwell_s": 0.0,
+    }
+
+
+def test_split_phases_reproduce_the_compound_call_sequence():
+    """复合 dig = dig 相位 + dump 相位：同一假驱动上调用序列逐位一致。"""
+    ik = _ik()
+    compound_driver = _FakeDriver(ik)
+    compound = execute_pose_dig_cycle(
+        compound_driver,
+        ik=ik,
+        dig_pose=(5.0, 2.0, 1.339),
+        dump_pose=(5.0, -1.0, 3.5),
+        **_compound_kwargs(),
+    )
+
+    split_driver = _FakeDriver(ik)
+    dug = execute_pose_dig_phase(
+        split_driver,
+        ik=ik,
+        dig_pose=(5.0, 2.0, 1.339),
+        **{
+            k: v
+            for k, v in _compound_kwargs().items()
+            if k not in ("dump_tolerance_m", "contact_tolerance_m")
+        },
+        contact_tolerance_m=0.25,
+    )
+    dumped = execute_pose_dump_phase(
+        split_driver,
+        ik=ik,
+        dump_pose=(5.0, -1.0, 3.5),
+        **{
+            k: v
+            for k, v in _compound_kwargs().items()
+            if k
+            not in (
+                "contact_tolerance_m",
+                "dig_bucket_open_native",
+                "bite_m",
+                "cut_length_m",
+                "min_drag_radius_m",
+                "carry_lift_m",
+            )
+        },
+    )
+
+    assert split_driver.calls == compound_driver.calls
+    assert compound["volume_m3"] == dumped["volume_m3"]
+    assert dug["loaded"] is True
+    assert split_driver.scoop_state() is False  # dump 相位收尾：卸完即收斗
+
+
+def test_dig_phase_ends_loaded_at_carry():
+    ik = _ik()
+    driver = _FakeDriver(ik)
+
+    result = execute_pose_dig_phase(
+        driver,
+        ik=ik,
+        dig_pose=(5.0, 2.0, 1.339),
+        tuning=_TUNING,
+        approach_gap_m=0.35,
+        bite_m=0.25,
+        cut_length_m=1.0,
+        carry_lift_m=1.0,
+        carry=_CARRY,
+        dig_bucket_open_native=1.5,
+        dig_bucket_curl_native=0.1,
+        ik_tolerance_m=0.05,
+        contact_tolerance_m=0.25,
+        ik_max_iters=80,
+        ik_stall_iters=8,
+    )
+
+    assert result["loaded"] is True
+    assert driver.scoop_state() is True
+
+
+def test_dump_phase_refuses_an_empty_bucket():
+    ik = _ik()
+    driver = _FakeDriver(ik)  # scoop truth: empty
+
+    with pytest.raises(ValueError, match="nothing to dump"):
+        execute_pose_dump_phase(
+            driver,
+            ik=ik,
+            dump_pose=(5.0, -1.0, 3.5),
+            tuning=_TUNING,
+            approach_gap_m=0.35,
+            dig_bucket_curl_native=0.1,
+            dump_bucket_open_native=2.0,
+            ik_tolerance_m=0.05,
+            dump_tolerance_m=0.25,
+            ik_max_iters=80,
+            ik_stall_iters=8,
+        )
+
+
+def test_dump_phase_ends_curled_and_empty():
+    ik = _ik()
+    driver = _FakeDriver(ik)
+    execute_pose_dig_phase(
+        driver,
+        ik=ik,
+        dig_pose=(5.0, 2.0, 1.339),
+        tuning=_TUNING,
+        approach_gap_m=0.35,
+        bite_m=0.25,
+        cut_length_m=1.0,
+        carry_lift_m=1.0,
+        carry=_CARRY,
+        dig_bucket_open_native=1.5,
+        dig_bucket_curl_native=0.1,
+        ik_tolerance_m=0.05,
+        contact_tolerance_m=0.25,
+        ik_max_iters=80,
+        ik_stall_iters=8,
+    )
+    assert driver.scoop_state() is True
+
+    execute_pose_dump_phase(
+        driver,
+        ik=ik,
+        dump_pose=(5.0, -1.0, 3.5),
+        tuning=_TUNING,
+        approach_gap_m=0.35,
+        carry=_CARRY,
+        dig_bucket_curl_native=0.1,
+        dump_bucket_open_native=2.0,
+        ik_tolerance_m=0.05,
+        dump_tolerance_m=0.25,
+        ik_max_iters=80,
+        ik_stall_iters=8,
+    )
+
+    assert driver.calls[-1] == {"bucket": 0.1}  # 收斗到 carry 角
+    assert driver.scoop_state() is False

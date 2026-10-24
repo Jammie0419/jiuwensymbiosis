@@ -311,6 +311,53 @@ class TestApi:
         with session:
             assert session.api.release_effector()["ok"] is False
 
+    def test_split_actions_chain_on_mock(self):
+        session = self._built()
+        with session:
+            dug = session.api.dig_soil(dig_x_m=-2.0, dig_y_m=1.0)
+            assert dug["ok"] is True
+            assert dug["loaded"] is True
+            dumped = session.api.dump_soil(dump_x_m=3.0, dump_y_m=0.5)
+            assert dumped["ok"] is True
+            # 卸完斗空：复合 dig 立即可用（payload 链闭合）
+            assert session.api.dig(-2.0, 1.0, 3.0, 0.5)["ok"] is True
+
+    def test_dump_soil_requires_a_loaded_bucket(self):
+        session = self._built()
+        with session:
+            bad = session.api.dump_soil(dump_x_m=3.0, dump_y_m=0.5)
+            assert bad["ok"] is False
+            assert "nothing to dump" in bad["error"]
+
+    def test_split_plan_chain_validates_and_mix_is_rejected(self):
+        from jiuwensymbiosis.agent.fast.sequence import SequenceError, parse_sequence
+        from jiuwensymbiosis.tools.robot_control_tool import _build_action_index
+
+        session = self._built()
+        index = _build_action_index(session.api)
+        chain = [
+            {"op": "dig_soil", "params": {"dig_x_m": 4.0, "dig_y_m": 1.0}},
+            {"op": "dump_soil", "params": {"dump_x_m": 5.0, "dump_y_m": -1.0}},
+        ]
+        steps = parse_sequence(chain, allowed_ops=index, initial_state={"payload.clear"})
+        assert [s.op for s in steps] == ["dig_soil", "dump_soil"]
+
+        mixed = [
+            {
+                "op": "dig",
+                "params": {
+                    "dig_x_m": 4.0,
+                    "dig_y_m": 1.0,
+                    "dump_x_m": 5.0,
+                    "dump_y_m": -1.0,
+                },
+            },
+            {"op": "dump_soil", "params": {"dump_x_m": 5.0, "dump_y_m": -1.0}},
+        ]
+        # 复合 dig 结束时斗是空的，dump_soil 要求斗满——契约链自动拒绝混用
+        with pytest.raises(SequenceError):
+            parse_sequence(mixed, allowed_ops=index, initial_state={"payload.clear"})
+
 
 class TestJointNamesReachThePlanner:
     """世界状态要把关节名报出来，否则规划器只能自己编（实测编成了 joint_1..4）。"""

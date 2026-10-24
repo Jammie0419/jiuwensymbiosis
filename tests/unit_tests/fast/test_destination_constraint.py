@@ -86,6 +86,20 @@ def test_bindings_and_unprovable_sides_are_skipped():
     assert planner._check_destination_side([], "left") is None
 
 
+def test_plans_that_rotate_the_base_skip_the_sign_check():
+    """站点式移动会转整车：转向后"左"的参考系已变，最终帧符号证明不了方向。
+
+    目标在左 10 m 的正确计划是 rotate(+90°) → 前进 → 卸点 ≈ (5, 0)（正前方），
+    符号校验若照查会误杀；参考系锚定留给后续，v1 先跳过。
+    """
+    rotated = [
+        {"op": "rotate_base", "params": {"dyaw_rad": 1.5708}},
+        {"op": "navigate_relative", "params": {"dx_m": 1.0}},
+        {"op": "dig", "params": {"dump_y_m": 0.0}},
+    ]
+    assert planner._check_destination_side(rotated, "left") is None
+
+
 # --------------------------------------------------------------------------- loop
 def _dig_index():
     return {"dig": lambda **kwargs: None}

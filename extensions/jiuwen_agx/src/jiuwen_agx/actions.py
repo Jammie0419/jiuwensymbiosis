@@ -24,10 +24,12 @@ from jiuwen_agx.contracts import (
     ActResult,
     DigFailure,
     DigResult,
+    DigSoilResult,
+    DumpSoilResult,
     TerrainScan,
 )
 
-__all__ = ["ACT_EXECUTE", "DIG", "GET_TERRAIN"]
+__all__ = ["ACT_EXECUTE", "DIG", "DIG_SOIL", "DUMP_SOIL", "GET_TERRAIN"]
 
 # NOTE: registering the capabilities these specs gate happens in jiuwen_agx/__init__.py
 # BEFORE this module is imported (ActionSpec validates capability membership at
@@ -51,7 +53,10 @@ DIG = ActionSpec(
         "(roughly 4.5-5.5 m out and 3-4 m high); a low/near point is refused with a readable "
         "error. If dump_z_m is omitted the body uses the terrain height there plus its "
         "configured dump clearance. The points must be reachable; if a spot is out of reach, "
-        "move the undercarriage (navigate_relative) first, re-read get_terrain, then dig. "
+        "move the undercarriage (navigate_relative) first, re-read get_terrain, then dig. When "
+        "the dig point and the dump point need different machine positions (e.g. a dump target "
+        "beyond the reach envelope), use dig_soil and dump_soil instead so the machine can "
+        "drive between them loaded. "
         "Refuses while the bucket is still loaded; dump or home first. Read get_terrain for "
         "where the material actually is — never guess coordinates."
     ),
@@ -106,6 +111,102 @@ DIG = ActionSpec(
     invalidates=("body.home",),
     invalidates_locations=True,  # digging reshapes the terrain: prior pile observations go stale
     result=DigResult | DigFailure,
+    tags=("motion",),
+)
+
+DIG_SOIL = ActionSpec(
+    name="dig_soil",
+    description=(
+        "Excavate ONE bucket of material at the dig point — the DIG half of the cycle, "
+        "without dumping. The dig point is a bucket-tip pose in the base frame, in METRES "
+        "(REP-103: +x is the machine's forward, +y its left); the same reach/drag rules as "
+        "dig apply (dig radius >= about 4 m so the 1 m inward drag stays reachable). Ends "
+        "with the bucket LOADED at the carry posture (payload.held): follow with dump_soil — "
+        "possibly after navigate_relative/rotate_base to drive the loaded machine into range "
+        "of the dump target — to unload. Use this split form when the dig point and the dump "
+        "point need different machine positions (e.g. a dump target beyond the reach "
+        "envelope); when one station serves both points, prefer the one-call dig. Refuses "
+        "while the bucket is loaded, and refuses to return with an empty bucket."
+    ),
+    capability="motion.excavator",
+    params=(
+        "dig_x_m",
+        "dig_y_m",
+        "dig_z_m",
+        "dig_pitch_deg",
+    ),
+    required_params=("dig_x_m", "dig_y_m"),
+    param_schema={
+        "dig_x_m": {
+            "type": "number",
+            "description": "dig bucket-tip X in base frame (metres)",
+        },
+        "dig_y_m": {
+            "type": "number",
+            "description": "dig bucket-tip Y in base frame (metres)",
+        },
+        "dig_z_m": {
+            "type": "number",
+            "description": "dig bucket-tip Z in base frame (metres); optional for keyframe-only bodies",
+        },
+        "dig_pitch_deg": {
+            "type": "number",
+            "description": "dig tool pitch in degrees; optional, defaults to flat",
+        },
+    },
+    requires=("payload.clear",),
+    provides=("payload.held",),
+    invalidates=("body.home",),
+    invalidates_locations=True,  # digging reshapes the terrain: prior pile observations go stale
+    result=DigSoilResult | DigFailure,
+    tags=("motion",),
+)
+
+DUMP_SOIL = ActionSpec(
+    name="dump_soil",
+    description=(
+        "Dump the loaded bucket at the dump point — the DUMP half of the cycle. The dump "
+        "point is a bucket-tip pose in the base frame, in METRES (REP-103: +x is the "
+        "machine's forward, +y its left); the machine may drive there LOADED first "
+        "(rotate_base to face the target, then navigate_relative — recomputing the point in "
+        "the new base frame), and the swing joint aims at any bearing automatically, so only "
+        "the radius matters for reachability: roughly 4.5-5.5 m out and 3-4 m high. Requires "
+        "the bucket to be loaded (dig_soil first — an empty bucket has nothing to dump). "
+        "Ends with the bucket curled for travel. If dump_z_m is omitted the body uses the "
+        "terrain height there plus its configured dump clearance. Read get_terrain for "
+        "where the material actually is — never guess coordinates."
+    ),
+    capability="motion.excavator",
+    params=(
+        "dump_x_m",
+        "dump_y_m",
+        "dump_z_m",
+        "dump_pitch_deg",
+    ),
+    required_params=("dump_x_m", "dump_y_m"),
+    param_schema={
+        "dump_x_m": {
+            "type": "number",
+            "description": "dump bucket-tip X in base frame (metres)",
+        },
+        "dump_y_m": {
+            "type": "number",
+            "description": "dump bucket-tip Y in base frame (metres)",
+        },
+        "dump_z_m": {
+            "type": "number",
+            "description": "dump bucket-tip Z in base frame (metres); optional",
+        },
+        "dump_pitch_deg": {
+            "type": "number",
+            "description": "dump tool pitch in degrees; optional, defaults to a downward dump",
+        },
+    },
+    requires=("payload.held",),
+    provides=("payload.clear",),
+    invalidates=("body.home",),
+    invalidates_locations=True,  # dumping reshapes the terrain: prior pile observations go stale
+    result=DumpSoilResult | DigFailure,
     tags=("motion",),
 )
 

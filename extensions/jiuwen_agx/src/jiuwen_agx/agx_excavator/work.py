@@ -24,7 +24,11 @@ __all__ = [
     "DEFAULT_DIG_TUNING",
     "REQUIRED_JOINTS",
     "check_cycle_preconditions",
+    "check_dig_preconditions",
+    "check_dump_preconditions",
     "execute_dig_cycle",
+    "execute_dig_phase",
+    "execute_dump_phase",
 ]
 
 # The four joints a dig cycle needs, by conventional name (config joint_names).
@@ -69,6 +73,73 @@ def _normalise_swing_rad(angle_rad: float) -> float:
     return (angle_rad + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def _check_point_finite_annulus(
+    label: str, x_m: float, y_m: float, reach_min_m: float, reach_max_m: float
+) -> None:
+    if not (math.isfinite(x_m) and math.isfinite(y_m)):
+        raise ValueError(f"{label} point is not finite: ({x_m}, {y_m})")
+    radius = math.hypot(x_m, y_m)
+    if not (reach_min_m <= radius <= reach_max_m):
+        raise ValueError(
+            f"{label} point at {radius:.2f} m is outside the reachable annulus "
+            f"[{reach_min_m:.2f}, {reach_max_m:.2f}] m — navigate_relative the "
+            "undercarriage closer, then dig."
+        )
+
+
+def _check_work_joints(driver: Any) -> None:
+    available = set(driver.joint_names)
+    missing = [name for name in REQUIRED_JOINTS if name not in available]
+    if missing:
+        raise ValueError(
+            f"dig cycle needs joints {REQUIRED_JOINTS}; this body lacks {missing}"
+        )
+
+
+def check_dig_preconditions(
+    driver: Any,
+    *,
+    dig_x_m: float,
+    dig_y_m: float,
+    reach_min_m: float,
+    reach_max_m: float,
+) -> None:
+    """Dig-side preconditions: dig point finite/in annulus, joints present, bucket EMPTY.
+
+    Shared by ``dig_soil`` and the compound ``dig``. The empty-bucket rule is the
+    dig contract: a loaded bucket must be dumped (or homed) first.
+    """
+    _check_point_finite_annulus(
+        "dig", float(dig_x_m), float(dig_y_m), reach_min_m, reach_max_m
+    )
+    _check_work_joints(driver)
+    if driver.scoop_state():
+        raise ValueError(
+            "bucket is still loaded — dump it (or home) before digging again"
+        )
+
+
+def check_dump_preconditions(
+    driver: Any,
+    *,
+    dump_x_m: float,
+    dump_y_m: float,
+    reach_min_m: float,
+    reach_max_m: float,
+) -> None:
+    """Dump-side preconditions: dump point finite/in annulus, joints present, bucket LOADED.
+
+    The loaded rule is the dump contract: an empty bucket has nothing to
+    release — ``dump_soil`` follows ``dig_soil``.
+    """
+    _check_point_finite_annulus(
+        "dump", float(dump_x_m), float(dump_y_m), reach_min_m, reach_max_m
+    )
+    _check_work_joints(driver)
+    if not driver.scoop_state():
+        raise ValueError("bucket is empty — nothing to dump (dig first)")
+
+
 def check_cycle_preconditions(
     driver: Any,
     *,
@@ -79,39 +150,153 @@ def check_cycle_preconditions(
     reach_min_m: float = 1.0,
     reach_max_m: float = 6.0,
 ) -> None:
-    """Shared goal/estate validation for every digging-family work cycle.
+    """Compound-cycle preconditions: BOTH points valid and the bucket EMPTY.
 
-    Raises ValueError (surfaced by the api as a failure dict) when a ground
-    point is non-finite or outside the reachable annulus, a required joint is
-    missing, or the bucket is still loaded from a previous cycle. ``dig`` and
-    ``act_exec`` both run this before any motion so their refusals read alike.
+    Composed of the two split checks minus the loaded rule (the compound starts
+    empty and ends empty); ``dig_soil``/``dump_soil`` use their own halves.
     """
-    points = (
-        ("dig", float(dig_x_m), float(dig_y_m)),
-        ("dump", float(dump_x_m), float(dump_y_m)),
+    _check_point_finite_annulus(
+        "dig", float(dig_x_m), float(dig_y_m), reach_min_m, reach_max_m
     )
-    for label, x, y in points:
-        if not (math.isfinite(x) and math.isfinite(y)):
-            raise ValueError(f"{label} point is not finite: ({x}, {y})")
-        radius = math.hypot(x, y)
-        if not (reach_min_m <= radius <= reach_max_m):
-            raise ValueError(
-                f"{label} point at {radius:.2f} m is outside the reachable annulus "
-                f"[{reach_min_m:.2f}, {reach_max_m:.2f}] m — navigate_relative the "
-                "undercarriage closer, then dig."
-            )
-
-    available = set(driver.joint_names)
-    missing = [name for name in REQUIRED_JOINTS if name not in available]
-    if missing:
-        raise ValueError(
-            f"dig cycle needs joints {REQUIRED_JOINTS}; this body lacks {missing}"
-        )
-
+    _check_point_finite_annulus(
+        "dump", float(dump_x_m), float(dump_y_m), reach_min_m, reach_max_m
+    )
+    _check_work_joints(driver)
     if driver.scoop_state():
         raise ValueError(
             "bucket is still loaded — dump it (or home) before digging again"
         )
+
+
+def _work_tuning(tuning: dict[str, float] | None) -> dict[str, float]:
+    return {**DEFAULT_DIG_TUNING, **(tuning or {})}
+
+
+def _frame(t: dict[str, float], prefix: str) -> dict[str, float]:
+    """One boom/arm/bucket keyframe (named `*_deg` for history, native units)."""
+    return {
+        "boom": t[f"{prefix}_boom_deg"],
+        "arm": t[f"{prefix}_arm_deg"],
+        "bucket": t[f"{prefix}_bucket_deg"],
+    }
+
+
+def _swing_for(t: dict[str, float], x_m: float, y_m: float, swing_unit: str) -> float:
+    """The swing-joint target that aims the upper body at a ground point."""
+    bearing = math.atan2(y_m, x_m)
+    if "swing_offset" in t:
+        offset = t["swing_offset"]
+    else:
+        offset = (
+            t["swing_offset_deg"]
+            if swing_unit == "deg"
+            else math.radians(t["swing_offset_deg"])
+        )
+    if swing_unit == "deg":
+        return _normalise_swing(math.degrees(bearing) + offset)
+    return _normalise_swing_rad(bearing + offset)
+
+
+def execute_dig_phase(
+    driver: Any,
+    *,
+    dig_x_m: float,
+    dig_y_m: float,
+    tuning: dict[str, float] | None = None,
+    reach_min_m: float = 1.0,
+    reach_max_m: float = 6.0,
+    swing_unit: str = "deg",
+    depth_scale: float = 1.0,
+    travel: dict[str, float] | None = None,
+    cut_path: list[dict[str, float]] | None = None,
+    carry: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Dig half of the keyframe cycle: travel → swing → ready → cut → scoop(True) → carry.
+
+    Ends with the bucket LOADED at the carry posture (or at the curl frame when
+    no carry keyframe is configured). Raises the dig-side preconditions.
+    """
+    if not (0.0 <= depth_scale <= 1.0):
+        raise ValueError(f"depth_scale must be within [0, 1], got {depth_scale!r}")
+    check_dig_preconditions(
+        driver,
+        dig_x_m=dig_x_m,
+        dig_y_m=dig_y_m,
+        reach_min_m=reach_min_m,
+        reach_max_m=reach_max_m,
+    )
+    t = _work_tuning(tuning)
+    swing_dig = _swing_for(t, dig_x_m, dig_y_m, swing_unit)
+    ready = _frame(t, "ready")
+    dig = {
+        joint: ready[joint] + depth_scale * (value - ready[joint])
+        for joint, value in _frame(t, "dig").items()
+    }
+    curl = {
+        joint: ready[joint] + depth_scale * (value - ready[joint])
+        for joint, value in _frame(t, "curl").items()
+    }
+    started = time.perf_counter()
+    if travel is not None:
+        driver.move_joints_blocking(dict(travel))
+    driver.move_joints_blocking({"swing": swing_dig})
+    driver.move_joints_blocking(dict(ready))
+    if cut_path:
+        for frame in cut_path:
+            scaled = {
+                joint: (
+                    ready[joint] + depth_scale * (value - ready[joint])
+                    if joint in ready
+                    else value
+                )
+                for joint, value in frame.items()
+            }
+            driver.move_joints_blocking(scaled)
+    else:
+        driver.move_joints_blocking(dig)
+        driver.move_joints_blocking(curl)
+    driver.mark_scoop(True)
+    if carry is not None:
+        driver.move_joints_blocking(dict(carry))
+    return {"loaded": True, "cycle_s": time.perf_counter() - started}
+
+
+def execute_dump_phase(
+    driver: Any,
+    *,
+    dump_x_m: float,
+    dump_y_m: float,
+    tuning: dict[str, float] | None = None,
+    reach_min_m: float = 1.0,
+    reach_max_m: float = 6.0,
+    swing_unit: str = "deg",
+    dump_dwell_s: float = 0.0,
+) -> dict[str, Any]:
+    """Dump half of the keyframe cycle: swing to the dump bearing → dump → scoop(False).
+
+    Requires a LOADED bucket (the dump contract); ends unloaded.
+    """
+    if dump_dwell_s < 0:
+        raise ValueError(f"dump_dwell_s must be >= 0, got {dump_dwell_s!r}")
+    check_dump_preconditions(
+        driver,
+        dump_x_m=dump_x_m,
+        dump_y_m=dump_y_m,
+        reach_min_m=reach_min_m,
+        reach_max_m=reach_max_m,
+    )
+    t = _work_tuning(tuning)
+    swing_dump = _swing_for(t, dump_x_m, dump_y_m, swing_unit)
+    started = time.perf_counter()
+    driver.move_joints_blocking({"swing": swing_dump})
+    driver.move_joints_blocking(_frame(t, "dump"))
+    if dump_dwell_s > 0:
+        time.sleep(float(dump_dwell_s))
+    driver.mark_scoop(False)
+    return {
+        "volume_m3": float(t["bucket_volume_m3"]),
+        "cycle_s": time.perf_counter() - started,
+    }
 
 
 def execute_dig_cycle(
@@ -132,6 +317,10 @@ def execute_dig_cycle(
     dump_dwell_s: float = 0.0,
 ) -> dict[str, float]:
     """Run one dig-and-dump cycle on ``driver``; return {volume_m3, cycle_s}.
+
+    The compound cycle — exactly :func:`execute_dig_phase` followed by
+    :func:`execute_dump_phase` — kept as a single call for the common case
+    where one machine position serves both the dig point and the dump point.
 
     ``swing_unit`` — the swing joint's angle unit ("deg" or "rad"); keyframes
     for boom/arm/bucket are always in that joint's NATIVE unit (a hydraulic
@@ -169,75 +358,32 @@ def execute_dig_cycle(
         reach_min_m=reach_min_m,
         reach_max_m=reach_max_m,
     )
-
-    t = {**DEFAULT_DIG_TUNING, **(tuning or {})}
-    # swing 目标单位跟随 swing_unit；偏移键兼容旧名 swing_offset_deg（deg）
-    if "swing_offset" in t:
-        offset = t["swing_offset"]
-    else:
-        offset = (
-            t["swing_offset_deg"]
-            if swing_unit == "deg"
-            else math.radians(t["swing_offset_deg"])
-        )
-    bearing_dig = math.atan2(dig_y_m, dig_x_m)
-    bearing_dump = math.atan2(dump_y_m, dump_x_m)
-    if swing_unit == "deg":
-        swing_dig = _normalise_swing(math.degrees(bearing_dig) + offset)
-        swing_dump = _normalise_swing(math.degrees(bearing_dump) + offset)
-    else:
-        swing_dig = _normalise_swing_rad(bearing_dig + offset)
-        swing_dump = _normalise_swing_rad(bearing_dump + offset)
-
-    def _frame(prefix: str) -> dict[str, float]:
-        return {
-            "boom": t[f"{prefix}_boom_deg"],
-            "arm": t[f"{prefix}_arm_deg"],
-            "bucket": t[f"{prefix}_bucket_deg"],
-        }
-
-    ready = _frame("ready")
-    # 下铲/收斗向就位姿态插值：depth_scale=1 完全咬深，<1 浅咬（远挖浅咬）
-    dig = {
-        joint: ready[joint] + depth_scale * (value - ready[joint])
-        for joint, value in _frame("dig").items()
-    }
-    curl = {
-        joint: ready[joint] + depth_scale * (value - ready[joint])
-        for joint, value in _frame("curl").items()
-    }
-
     started = time.perf_counter()
-    # 抬升 → 对准 → 就位 → 拖切/收斗 → 举升 → 摆转 → 卸料(驻留)
-    if travel is not None:
-        driver.move_joints_blocking(dict(travel))
-    driver.move_joints_blocking({"swing": swing_dig})
-    driver.move_joints_blocking(dict(ready))
-    if cut_path:
-        for frame in cut_path:
-            scaled = {
-                joint: (
-                    ready[joint] + depth_scale * (value - ready[joint])
-                    if joint in ready
-                    else value
-                )
-                for joint, value in frame.items()
-            }
-            driver.move_joints_blocking(scaled)
-    else:
-        driver.move_joints_blocking(dig)
-        driver.move_joints_blocking(curl)
-    driver.mark_scoop(True)
-    if carry is not None:
-        driver.move_joints_blocking(dict(carry))
-    driver.move_joints_blocking({"swing": swing_dump})
-    driver.move_joints_blocking(_frame("dump"))
-    if dump_dwell_s > 0:
-        time.sleep(float(dump_dwell_s))
-    driver.mark_scoop(False)
-    cycle_s = time.perf_counter() - started
-
+    execute_dig_phase(
+        driver,
+        dig_x_m=dig_x_m,
+        dig_y_m=dig_y_m,
+        tuning=tuning,
+        reach_min_m=reach_min_m,
+        reach_max_m=reach_max_m,
+        swing_unit=swing_unit,
+        depth_scale=depth_scale,
+        travel=travel,
+        cut_path=cut_path,
+        carry=carry,
+    )
+    execute_dump_phase(
+        driver,
+        dump_x_m=dump_x_m,
+        dump_y_m=dump_y_m,
+        tuning=tuning,
+        reach_min_m=reach_min_m,
+        reach_max_m=reach_max_m,
+        swing_unit=swing_unit,
+        dump_dwell_s=dump_dwell_s,
+    )
+    t = _work_tuning(tuning)
     return {
         "volume_m3": float(t["bucket_volume_m3"]) * depth_scale,
-        "cycle_s": float(cycle_s),
+        "cycle_s": time.perf_counter() - started,
     }

@@ -302,6 +302,13 @@ def _check_destination_side(data: list, side: str | None) -> str | None:
     sign = _DESTINATION_AXIS_SIGN.get(side or "")
     if sign is None:
         return None
+    # 站点式移动会旋转整机（rotate_base 到「当前位置→站点」连线方向）：转向之后
+    # "左"的参考系已变，最终基座系里的 dump_y 符号证明不了方向——跳过，由
+    # SKILL.md 的站点教学保证（站点相对用户方位的选取在规划提示里说明）。
+    if any(
+        isinstance(step, dict) and step.get("op") == "rotate_base" for step in data
+    ):
+        return None
     for index, step in enumerate(data):
         if not isinstance(step, dict):
             continue

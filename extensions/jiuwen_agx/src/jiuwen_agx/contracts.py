@@ -17,6 +17,8 @@ __all__ = [
     "ActResult",
     "DigFailure",
     "DigResult",
+    "DigSoilResult",
+    "DumpSoilResult",
     "PileInfo",
     "TerrainScan",
 ]
@@ -70,6 +72,37 @@ class DigResult(TypedDict, total=False):
     # Which work cycle actually ran, and the worst IK residual when the body
     # executed a 3D bucket-tip pose. Both optional: a keyframe/older backend
     # omits them.
+    mode: Literal["keyframe", "ik"]
+    tip_error_m: float
+
+
+class DigSoilResult(TypedDict, total=False):
+    """Success shape returned by ``dig_soil`` — the dig half of the cycle.
+
+    Ends with the bucket LOADED at the carry posture: ``loaded`` is the scoop
+    truth (the same measured mass threshold the compound cycle checks), and the
+    field is required because "dug but empty" is the failure this action must
+    never disguise. No ``volume_m3``: nothing has been dumped yet.
+    """
+
+    ok: Literal[True]
+    loaded: bool
+    cycle_s: float
+    mode: Literal["keyframe", "ik"]
+    tip_error_m: float
+
+
+class DumpSoilResult(TypedDict, total=False):
+    """Success shape returned by ``dump_soil`` — the dump half of the cycle.
+
+    Requires a loaded bucket (``requires=("payload.held",)``); ``volume_m3``
+    is the nominal/simulated moved volume, ``total=False`` for backends that
+    cannot measure it.
+    """
+
+    ok: Literal[True]
+    volume_m3: float
+    cycle_s: float
     mode: Literal["keyframe", "ik"]
     tip_error_m: float
 

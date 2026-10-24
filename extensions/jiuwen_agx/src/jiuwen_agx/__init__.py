@@ -32,7 +32,9 @@ from jiuwensymbiosis.env.base import register_capability
 register_capability("motion.excavator")
 register_capability("sensing.terrain")
 register_capability("policy.act")
-register_capability_spec("motion.excavator", actions=["dig"])
+register_capability_spec(
+    "motion.excavator", actions=["dig", "dig_soil", "dump_soil"]
+)
 register_capability_spec(
     "sensing.terrain", actions=["get_terrain"], driver_members=["read_terrain"]
 )
@@ -44,13 +46,15 @@ from jiuwen_agx.contracts import (  # noqa: F401, I001
     ActResult,
     DigFailure,
     DigResult,
+    DigSoilResult,
+    DumpSoilResult,
     PileInfo,
     TerrainScan,
 )
-from jiuwen_agx.actions import ACT_EXECUTE, DIG, GET_TERRAIN
+from jiuwen_agx.actions import ACT_EXECUTE, DIG, DIG_SOIL, DUMP_SOIL, GET_TERRAIN
 from jiuwensymbiosis.api.actions import register_actions
 
-register_actions(DIG, GET_TERRAIN, ACT_EXECUTE)
+register_actions(DIG, DIG_SOIL, DUMP_SOIL, GET_TERRAIN, ACT_EXECUTE)
 
 # -- 4. Policy 接缝（注册表即装即用；torch/lerobot 只在构造 ActPolicy 时导入）
 # -- 5. 仿真底座（Env/Api 类定义在此触发；动作绑定 GET_TERRAIN 来自上面已注册的词表）
@@ -80,6 +84,8 @@ except Exception:  # pragma: no cover - 目录已被注册（模块重复导入�
 __all__ = [
     "ACT_EXECUTE",
     "DIG",
+    "DIG_SOIL",
+    "DUMP_SOIL",
     "GET_TERRAIN",
     "AgxExcavatorApi",
     "AgxExcavatorConfig",
