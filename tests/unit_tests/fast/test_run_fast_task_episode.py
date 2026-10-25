@@ -116,6 +116,50 @@ def test_episode_records_a_replan_attempt(tmp_path, monkeypatch):
     assert doc.outcome["final_tier"] == "action"
 
 
+def test_failed_run_homes_as_cleanup(tmp_path, monkeypatch):
+    """失败收场兜底：任务失败后尽力 home，别把 carry 位形留给下一条任务。"""
+    session = _make_session()
+    cfg = _cfg(tmp_path)
+
+    def boom_goto(*_args, **_kwargs):
+        raise ValueError("out of reach")
+
+    monkeypatch.setattr(session.api, "goto_xyzr", boom_goto, raising=False)
+    # One plan, returned for every re-plan too: the run must end in failure.
+    plan = PlanResult(sequence=_FIXED_SEQUENCE, tier="skill", skills=("visual_pick",))
+
+    result = _run(monkeypatch, session, cfg, plan=plan)
+
+    assert result["ok"] is False
+    assert result["cleanup"] == "home_ok"
+    doc = load_episode(_episode_files(tmp_path)[0])
+    cleanup_steps = [step for step in doc.steps if step.get("cleanup")]
+    assert len(cleanup_steps) == 1
+    assert cleanup_steps[0]["op"] == "home" and cleanup_steps[0]["ok"] is True
+    assert doc.outcome["cleanup"] == "home_ok"
+    assert doc.outcome["failed_replans"] >= 0  # reported for traceability
+
+
+def test_cleanup_home_skipped_while_holding_payload(tmp_path, monkeypatch):
+    session = _make_session()
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(session.env, "holding_payload", True, raising=False)
+
+    def boom_goto(*_args, **_kwargs):
+        raise ValueError("out of reach")
+
+    monkeypatch.setattr(session.api, "goto_xyzr", boom_goto, raising=False)
+    plan = PlanResult(sequence=_FIXED_SEQUENCE, tier="skill", skills=("visual_pick",))
+
+    result = _run(monkeypatch, session, cfg, plan=plan)
+
+    assert result["ok"] is False
+    # 带载不盲收（直接 home 会把料洒在机器上）。
+    assert result["cleanup"] == "skipped_holding_payload"
+    doc = load_episode(_episode_files(tmp_path)[0])
+    assert not [step for step in doc.steps if step.get("cleanup")]
+
+
 def test_no_episode_file_when_disabled(tmp_path, monkeypatch):
     session = _make_session()
     cfg = _cfg(tmp_path, enable_episode_trace=False)

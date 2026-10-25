@@ -414,6 +414,26 @@ class TestReachEnvelopeReachesThePlanner:
         d = WorldState(base_step_limits=(1.0, 0.7)).describe()
         assert d["base_step_limits"] == [1.0, 0.7]
 
+
+class TestBasePoseReachesThePrompt:
+    """A re-plan without odometry guesses the rotation from scratch — observed
+    live as 15×rotate_base(0.7) ≈ 611°. The base's world pose travels through
+    the observation extras into the prompt, with the shortest-turn rule stated
+    beside the numbers that interpret it."""
+
+    def test_base_pose_renders_with_the_shortest_turn_rule(self):
+        block = WorldState(extra={"base_pose": {"x_m": 1.25, "y_m": -0.5, "yaw_rad": 0.7}}).as_prompt_block()
+        assert "底盘位姿" in block
+        assert "x=1.25m" in block and "y=-0.50m" in block and "yaw=0.700rad" in block
+        assert "最短方向" in block and "≤ π" in block
+
+    def test_absent_base_pose_renders_nothing(self):
+        assert "底盘位姿" not in WorldState().as_prompt_block()
+
+    def test_partial_base_pose_is_omitted_not_rendered_half(self):
+        block = WorldState(extra={"base_pose": {"x_m": 1.0}}).as_prompt_block()
+        assert "底盘位姿" not in block
+
     def test_describe_carries_the_envelope_for_the_state_cli(self):
         d = WorldState(workspace_bounds=(0.0, -1.0, 2.0, 3.0), z_min_safe=5.0, reach_prior={"r_mm": 700}).describe()
         assert d["workspace_bounds"] == [0.0, -1.0, 2.0, 3.0]

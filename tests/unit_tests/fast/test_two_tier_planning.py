@@ -52,36 +52,58 @@ class _Env(BaseRobotEnv):
 class _Api(BaseRobotApi):
     capability = set(_CAPS)
 
-    @implements(ActionSpec(name="locate", description="find an object", produces_location=True,
-                           capability="vision.detection"))
+    @implements(
+        ActionSpec(name="locate", description="find an object", produces_location=True, capability="vision.detection")
+    )
     def locate(self, object_name: str) -> dict:
         return {"ok": True, "position": [100.0, 0.0, 50.0]}
 
-    @implements(ActionSpec(name="approach", description="drive up to the sensed object", consumes_location=True,
-                           capability="motion.base", tags=("motion",)))
+    @implements(
+        ActionSpec(
+            name="approach",
+            description="drive up to the sensed object",
+            consumes_location=True,
+            capability="motion.base",
+            tags=("motion",),
+        )
+    )
     def approach(self, target: Any = None) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(
-        name="drive", description="drive the base somewhere else", invalidates_locations=True,
-        capability="motion.base", tags=("motion",),
-    ))
+    @implements(
+        ActionSpec(
+            name="drive",
+            description="drive the base somewhere else",
+            invalidates_locations=True,
+            capability="motion.base",
+            tags=("motion",),
+        )
+    )
     def drive(self) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(
-        name="grip",
-        description="close the gripper",
-        requires=("payload.clear",),
-        provides=("payload.held",),
-        capability="grasp.parallel",
-        tags=("grasp",),
-    ))
+    @implements(
+        ActionSpec(
+            name="grip",
+            description="close the gripper",
+            requires=("payload.clear",),
+            provides=("payload.held",),
+            capability="grasp.parallel",
+            tags=("grasp",),
+        )
+    )
     def grip(self) -> dict:
         return {"ok": True}
 
-    @implements(ActionSpec(name="release", description="open the gripper", provides=("payload.clear",),
-                           capability="grasp.parallel", tags=("grasp",)))
+    @implements(
+        ActionSpec(
+            name="release",
+            description="open the gripper",
+            provides=("payload.clear",),
+            capability="grasp.parallel",
+            tags=("grasp",),
+        )
+    )
     def release(self) -> dict:
         return {"ok": True}
 
@@ -280,11 +302,21 @@ def test_replanning_is_capped():
 
     def replan(world, why):
         attempts.append(why)
-        return parse_sequence([{"op": "grip"}], allowed_ops=_index())  # still drifting
+        # a DIFFERENT step each call — an identical re-emission would be
+        # rejected as a recurrence before ever touching the cap.
+        if len(attempts) > 1:
+            return parse_sequence([{"op": "grip"}], allowed_ops=_index())
+        return parse_sequence(
+            [
+                {"op": "locate", "params": {"object_name": "crate"}, "bind": "again"},
+                {"op": "grip"},
+            ],
+            allowed_ops=_index(),
+        )
 
     res, log = _drifting_run(replan, max_replans=2)
     assert len(attempts) == 2  # then it stops asking and runs what it has
-    assert res["ok"] is True and log == ["locate", "grip"]
+    assert res["ok"] is True and "grip" in log
 
 
 def test_a_failing_replanner_leaves_the_original_plan_alone():
@@ -340,9 +372,7 @@ def test_a_business_failure_replans_with_the_exact_reason():
     assert res["ok"] is True
     assert len(attempts) == 1 and "dump point outside reach" in attempts[0]
     assert log == ["locate", "grip", "release", "grip"]
-    assert [
-        s["op"] for s in res["steps"] if s["op"] != "<replan>" and s["ok"]
-    ] == ["locate", "release", "grip"]
+    assert [s["op"] for s in res["steps"] if s["op"] != "<replan>" and s["ok"]] == ["locate", "release", "grip"]
 
 
 # --------------------------------------------------------------------------- #

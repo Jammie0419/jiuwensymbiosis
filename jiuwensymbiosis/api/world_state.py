@@ -246,6 +246,19 @@ class WorldState:
             pose = ", ".join(f"{k}={float(v):.0f}" for k, v in self.pose.items() if isinstance(v, (int, float)))
             if pose:
                 lines.append(f"位姿：{pose}")
+        base_pose = self.extra.get("base_pose")
+        if isinstance(base_pose, dict):
+            bx, by, byaw = (
+                base_pose.get("x_m"),
+                base_pose.get("y_m"),
+                base_pose.get("yaw_rad"),
+            )
+            if all(isinstance(v, (int, float)) for v in (bx, by, byaw)):
+                lines.append(
+                    f"底盘位姿：x={float(bx):.2f}m, y={float(by):.2f}m, "
+                    f"yaw={float(byaw):.3f}rad（REP-103，yaw 正=左转；到目标朝向的转向量"
+                    "=wrap(目标方位−yaw)，取绝对值 ≤ π 的最短方向，不得连转超过半圈）"
+                )
         envelope: list[str] = []
         if self.workspace_bounds:
             xmin, ymin, xmax, ymax = self.workspace_bounds

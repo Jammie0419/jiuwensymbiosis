@@ -852,7 +852,14 @@ def _run_action(step: ActionStep, ctx: _RunContext) -> bool:
     upgrades whole-binding params (``box`` / ``surface``) before dispatch.
     """
     env, run_op, session, cfg, cache, out, state = (
-        ctx.env, ctx.run_op, ctx.session, ctx.cfg, ctx.cache, ctx.out, ctx.state)
+        ctx.env,
+        ctx.run_op,
+        ctx.session,
+        ctx.cfg,
+        ctx.cache,
+        ctx.out,
+        ctx.state,
+    )
     i = state["i"]
     state["current_step"] = i
     started = time.perf_counter()
@@ -1070,8 +1077,14 @@ def _run_loop(loop: LoopStep, ctx: _RunContext) -> bool:
             )
             return True  # clean termination — the scene is clear
         env[loop.bind] = normalize_detection(det)
-        out.append({"i": i, "op": f"loop:{loop.detect_op}", "ok": True,
-                    "result": {"target": det.get("position") or det.get("center_mm")}})
+        out.append(
+            {
+                "i": i,
+                "op": f"loop:{loop.detect_op}",
+                "ok": True,
+                "result": {"target": det.get("position") or det.get("center_mm")},
+            }
+        )
         state["i"] = i + 1
         _emit_step(
             ctx,
@@ -1267,6 +1280,7 @@ def run_sequence(
     action_index: Mapping[str, Callable[..., Any]] | None = None,
     replan: Replanner | None = None,
     max_replans: int = 2,
+    max_failed_replans: int = 3,
     trace_sink: TraceSink | None = None,
 ) -> dict:
     """Execute an action sequence in order, with no per-step LLM.
@@ -1284,8 +1298,13 @@ def run_sequence(
             its ``requires`` measurably false, or the sensing it acts on invalidated
             since the plan was written; returns a replacement remainder. Omit it and
             the drift check is skipped entirely (no cost, today's behaviour).
-        max_replans: cap on re-plans per run. Past it, drift is logged and the
-            step dispatched anyway — a plan we cannot improve still beats none.
+        max_replans: cap on SUCCESSFUL re-plans per run. Past it, drift is logged
+            and the step dispatched anyway — a plan we cannot improve still beats
+            none.
+        max_failed_replans: separate cap on FAILED compile attempts — a failed
+            re-plan burns this budget, not ``max_replans`` (two truncated LLM
+            compilations must not end a task a third attempt would have saved).
+            Past it, no more attempts are made at all.
         trace_sink: optional planning-level trace sink (episode JSONL). Receives
             ``step`` and ``replan`` event dicts; ``None`` keeps the run exactly as
             it was before this argument existed.
@@ -1332,25 +1351,95 @@ def run_sequence(
     metas = _op_contracts(session, action_index) if replan is not None else {}
     pending: list[ActionStep | LoopStep] = list(steps)
     replans = 0
+    # A FAILED compile burns its own budget, not the plan's: two failed LLM
+    # compilations must not end a task a third attempt would have saved
+    # (observed live: two truncated compiles reported the whole budget spent).
+    failed_replans = 0
     ok_all = True
+
+    def _can_attempt_replan() -> bool:
+        return replans < max_replans and failed_replans < max_failed_replans
+
+    def _reject_recurrence(fresh: list, failed_step: ActionStep) -> list | None:
+        """A replacement whose FIRST action re-emits the step that just failed,
+        unchanged, fails identically — observed live: the exact same unreachable
+        ``dump_soil`` point was returned by the re-plan and burned the whole
+        budget on a guaranteed repeat. Count it as a failed attempt (with an
+        event saying why) instead of adopting it."""
+        nonlocal failed_replans
+        if not fresh:
+            return fresh
+        head = fresh[0]
+        if (
+            isinstance(head, ActionStep)
+            and head.op == failed_step.op
+            and dict(head.params or {}) == dict(failed_step.params or {})
+        ):
+            failed_replans += 1
+            logger.warning(
+                "[runner] re-plan repeated the failed %s unchanged — rejected",
+                failed_step.op,
+            )
+            emit_safely(
+                trace_sink,
+                {
+                    "type": "replan",
+                    "at_step": state["i"],
+                    "trigger": "recurrence",
+                    "why": f"{failed_step.op} 原样复发",
+                    "ok": False,
+                    "error": (
+                        f"replacement repeats the failed {failed_step.op} "
+                        "unchanged and first — it would fail identically; change "
+                        "the step (move/lift first) instead"
+                    ),
+                    "budget": {
+                        "used": replans,
+                        "max": max_replans,
+                        "failed": failed_replans,
+                    },
+                    "old_remaining": [_step_brief(s) for s in pending],
+                    "new_steps": [],
+                },
+            )
+            return None
+        return fresh
+
     while pending:
         step = pending[0]
         drift = _drift(step, metas, session, env) if isinstance(step, ActionStep) else None
-        if drift is not None and replans < max_replans:
+        # The drift check reads a best-effort belief, NOT a safety interlock:
+        # a step it contradicts is still dispatched (the action's own precondition
+        # check is the final arbiter — a wrong belief must never take away an
+        # execution that would have run). What drift DOES buy: a repair attempt
+        # before dispatch, and `predicted_failure` below, which stops a SECOND
+        # LLM round trip when the predicted failure then really happens.
+        predicted_failure = False
+        if drift is not None:
             kind, why = drift
-            # replan is set whenever metas is
-            fresh = _request_replan(
-                replan,  # type: ignore[arg-type]
-                session,
-                why,
-                out,
-                state,
-                trigger=kind,
-                at_step=state["i"],
-                pending=list(pending),
-                budget={"used": replans + 1, "max": max_replans},
-                trace_sink=trace_sink,
-            )
+            fresh = None
+            if _can_attempt_replan():
+                # replan is set whenever metas is
+                fresh = _request_replan(
+                    replan,  # type: ignore[arg-type]
+                    session,
+                    why,
+                    out,
+                    state,
+                    trigger=kind,
+                    at_step=state["i"],
+                    pending=list(pending),
+                    budget={
+                        "used": replans,
+                        "max": max_replans,
+                        "failed": failed_replans,
+                    },
+                    trace_sink=trace_sink,
+                )
+                if fresh is None:
+                    failed_replans += 1
+            if fresh is not None and isinstance(step, ActionStep):
+                fresh = _reject_recurrence(fresh, step)
             if fresh is not None:
                 replans += 1
                 pending = list(fresh)
@@ -1358,9 +1447,9 @@ def run_sequence(
                 # binding it reads; dropping the old ones keeps stale coordinates out.
                 env.clear()
                 continue
-        elif drift is not None:
-            _kind, why = drift
-            logger.warning("[runner] %s; re-plan budget (%d) spent — dispatching anyway", why, max_replans)
+            predicted_failure = True
+            if not _can_attempt_replan():
+                logger.warning("[runner] %s; re-plan budget (%d) spent — dispatching anyway", why, max_replans)
         pending.pop(0)
         if isinstance(step, LoopStep):
             ok_all = _run_loop(step, ctx)
@@ -1374,11 +1463,18 @@ def run_sequence(
             # one more pass with the measured world and the exact reason instead
             # of ending the task. Recovery-managed failures already retreated and
             # are left to the rail stack.
-            if (
-                replan is not None
-                and replans < max_replans
-                and not failed.get("recovery_managed", False)
-            ):
+            if predicted_failure:
+                # Drift already said this step contradicts the world and the
+                # repair attempt failed (or wasn't allowed): the observed failure
+                # confirms it. A second LLM round trip re-planning the same
+                # contradiction cannot add anything (observed live: +137 s of
+                # compile that produced nothing) — end the run here.
+                logger.warning(
+                    "[runner] %s failed as drift predicted; not re-planning again",
+                    failed.get("op", "step"),
+                )
+                break
+            if replan is not None and _can_attempt_replan() and not failed.get("recovery_managed", False):
                 why = f"{failed.get('op', 'step')} 失败：{failed.get('reason', '')}"
                 fresh = _request_replan(
                     replan,
@@ -1389,15 +1485,24 @@ def run_sequence(
                     trigger="business_failure",
                     at_step=failed.get("i"),
                     pending=list(pending),
-                    budget={"used": replans + 1, "max": max_replans},
+                    budget={
+                        "used": replans,
+                        "max": max_replans,
+                        "failed": failed_replans,
+                    },
                     trace_sink=trace_sink,
                 )
+                got_fresh = fresh is not None
+                if fresh is not None and isinstance(step, ActionStep):
+                    fresh = _reject_recurrence(fresh, step)  # counts + events itself
                 if fresh is not None:
                     replans += 1
                     pending = list(fresh)
                     env.clear()
                     ok_all = True
                     continue
+                if got_fresh is False:
+                    failed_replans += 1  # normal failed compile; recurrence counted above
             break
 
     return {
@@ -1406,6 +1511,7 @@ def run_sequence(
         "steps": out,
         "env_keys": sorted(env),
         "replans": replans,
+        "failed_replans": failed_replans,
     }
 
 

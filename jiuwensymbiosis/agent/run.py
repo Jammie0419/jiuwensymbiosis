@@ -29,6 +29,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
+import re
 import time
 import uuid
 from collections.abc import Mapping
@@ -517,7 +519,7 @@ def _run_fast_task_impl(
         run_sequence,
     )
     from jiuwensymbiosis.agent.fast.ability_exec import build_ability_executor
-    from jiuwensymbiosis.agent.fast.planner import parse_task
+    from jiuwensymbiosis.agent.fast.planner import destination_world_anchor, parse_task
     from jiuwensymbiosis.api.world_state import WorldState
     from jiuwensymbiosis.tools.robot_control_tool import _build_action_index
 
@@ -603,6 +605,60 @@ def _run_fast_task_impl(
 
     world = WorldState.snapshot(session)
     episode.world(world.describe())
+    # 跨任务残留提醒：上一条任务的"尸体"（斗里有料 / 底盘不在原点）会直接改写
+    # 这条任务的分支判定（实测：离堆 2.3 m 的残留位置迫使 Case-3 先后退，且倒车
+    # 犁了满满一斗）。不做自动复位——连续作业语义由用户决定——但必须显式可见。
+    _leftover = world.tokens & {"payload.held"}
+    _pose0 = world.extra.get("base_pose")
+    if isinstance(_pose0, Mapping) and math.hypot(float(_pose0.get("x_m", 0.0)), float(_pose0.get("y_m", 0.0))) > 1.0:
+        _leftover = _leftover | {"base_not_at_origin"}
+    if _leftover:
+        logger.warning(
+            "[fast] 起始状态带上一条任务残留 %s（base=%s）——如需干净场景请重启桥接",
+            sorted(_leftover),
+            _pose0,
+        )
+    # 底盘单条限幅进编译循环：超限的移动命令在规划期拆条，而不是被 SafetyRail
+    # 物理拒绝（护栏拒绝是 recovery_managed，不会触发重规划，整条序列直接失败）。
+    plan_kwargs["base_step_limits"] = world.base_step_limits
+    # 用户方向的**世界系锚点**：按任务开始时的底盘位姿把"左 10 米"换算成一个固定
+    # 世界坐标点，整个任务（含所有重规划）都以它为目标——机器之后怎么转、怎么挪，
+    # "左"都不再跟着参考系漂移（实测漂过 ~85°）。base_pose 则每次规划取当前值，
+    # 供锚点校验在编译期重放移动链。
+    plan_kwargs["base_pose"] = world.extra.get("base_pose")
+    # 挖点（地形真值，基座系）+ 挖掘包络进规划器：让"零移动 / 先挖后运 / 先就位
+    # 再挖"的三分支决策在规划期就算出来（挖点卸点是否可达是几何事实，不该靠
+    # 模型现场推导——实测它推出了"先开过去再挖"这种顺序错误）。
+    plan_kwargs["terrain_piles"] = world.extra.get("terrain")
+    reach_keys = ("reach_min_m", "reach_max_m", "dig_min_drag_radius_m", "cut_length_m")
+    if all(isinstance(world.extra.get(k), (int, float)) for k in reach_keys):
+        # z bounds ride along when stated: the compile-time point check uses
+        # them to reject dig/dump heights the machine cannot work at.
+        dig_reach = [float(world.extra[k]) for k in reach_keys]
+        for z_key in ("reach_z_min_m", "reach_z_max_m"):
+            value = world.extra.get(z_key)
+            dig_reach.append(float(value) if isinstance(value, (int, float)) else None)
+        plan_kwargs["dig_reach"] = dig_reach
+    anchor = destination_world_anchor(
+        intent.get("destination_side"),
+        intent.get("destination_distance_m"),
+        plan_kwargs["base_pose"],
+        intent.get("destination_bearing_rad"),
+    )
+    if anchor is not None:
+        plan_kwargs["destination_world"] = [anchor[0], anchor[1]]
+        logger.info(
+            "[fast] destination anchor (world): (%.2f, %.2f) from %s %.1f m",
+            anchor[0],
+            anchor[1],
+            intent.get("destination_side"),
+            float(intent.get("destination_distance_m") or 0.0),
+        )
+    # 任务形态：纯移动（移动/前进/后退且无挖掘动词）⇒ 锚点是机器自身终点——渲染
+    # "转向+前进"移动算例并按终点校验；挖掘任务则走挖点/卸点三分支算例。两种
+    # 形态共用同一条腿原语（_leg_recipe）与锚点校验。
+    if re.search(r"移动|前进|后退|开到|行驶|走到|驶到|走 ", query) and not re.search(r"挖|铲|倒|卸|装", query):
+        plan_kwargs["destination_kind"] = "move"
     plan_started = time.perf_counter()
     try:
         planned = plan_task(
@@ -665,6 +721,10 @@ def _run_fast_task_impl(
         the alternative.
         """
         fresh_kwargs = dict(plan_kwargs)
+        # 锚点是任务级常量（任务起点的世界坐标）；base_pose / terrain_piles 必须是
+        # **此刻**的读数——锚点校验要用位姿重放移动链，地形是基座系坐标随移动失效。
+        fresh_kwargs["base_pose"] = measured.extra.get("base_pose")
+        fresh_kwargs["terrain_piles"] = measured.extra.get("terrain")
         try:
             scene_now = _perceive_scene(
                 session,
@@ -745,6 +805,42 @@ def _run_fast_task_impl(
         )
     executor = build_ability_executor(agent)
     result = run_sequence(session, steps, config=exec_cfg, executor=executor, replan=replan, trace_sink=episode.emit)
+    if not result.get("ok"):
+        # 失败收场兜底：把机器收回安全姿态，别让下一条任务从上一条的"尸体"起步
+        # （实测：carry 位形 + 任意站位原样留给了下一次运行）。带载不盲收
+        # （直接 home 会把料洒在机器上），只记录原因。经同一个 executor 走，
+        # 护栏与 trace 都照常生效；放在 AFTER_INVOKE 之前，步记录能进 trace。
+        if getattr(session.env, "holding_payload", None) is True:
+            result["cleanup"] = "skipped_holding_payload"
+            logger.info("[fast] failure cleanup skipped: still holding payload")
+        else:
+            cleanup_started = time.perf_counter()
+            cleanup_ok, cleanup_err = True, None
+            try:
+                executor("home", {})
+            except Exception as exc:  # noqa: BLE001 - cleanup must never mask the failure
+                cleanup_ok, cleanup_err = False, f"{type(exc).__name__}: {exc}"
+                logger.warning("[fast] failure cleanup home failed: %s", exc)
+            result["cleanup"] = "home_ok" if cleanup_ok else f"home_failed: {cleanup_err}"
+            episode.emit(
+                {
+                    "type": "step",
+                    "step_id": result.get("steps_done", 0),
+                    "op": "home",
+                    "params": {},
+                    "bind": None,
+                    "ok": cleanup_ok,
+                    "result": None,
+                    "error": cleanup_err,
+                    "error_code": None,
+                    "recovery_managed": False,
+                    "duration_s": time.perf_counter() - cleanup_started,
+                    "tokens_after": None,
+                    "loop_iter": None,
+                    "cancelled": False,
+                    "cleanup": True,
+                }
+            )
     if config.enable_tracing:
         _fire_invoke_event(
             agent,
@@ -767,6 +863,8 @@ def _run_fast_task_impl(
         ok=bool(result.get("ok")),
         steps_done=result.get("steps_done"),
         replans=result.get("replans", 0),
+        failed_replans=result.get("failed_replans", 0),
+        cleanup=result.get("cleanup"),
         attempts=episode.plan_attempts,
         final_tier=episode.last_plan_tier,
         duration_s=time.perf_counter() - run_started,

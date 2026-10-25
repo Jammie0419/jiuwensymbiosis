@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -241,9 +242,16 @@ _DESTINATION_SIDE_WORDS: dict[str, tuple[str, ...]] = {
 }
 # Only left/right can be proven against a lateral (y) offset; ahead/behind skip.
 _DESTINATION_AXIS_SIGN: dict[str, int] = {"left": 1, "right": -1}
-_DESTINATION_DISTANCE_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:meters?|metres?|米|m\b)", re.IGNORECASE
-)
+# The BASE-frame unit offset each stated side means; the world anchor rotates it
+# by the task-start heading so "左 10 米" stays the same WORLD point however far
+# the machine later relocates.
+_DESTINATION_OFFSET: dict[str, tuple[float, float]] = {
+    "left": (0.0, 1.0),
+    "right": (0.0, -1.0),
+    "ahead": (1.0, 0.0),
+    "behind": (-1.0, 0.0),
+}
+_DESTINATION_DISTANCE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:meters?|metres?|米|m\b)", re.IGNORECASE)
 _DESTINATION_SIDE_LABELS: dict[str, str] = {
     "left": "机身左侧（基座系 +Y，卸点 dump_y_m > 0）",
     "right": "机身右侧（基座系 −Y，卸点 dump_y_m < 0）",
@@ -277,11 +285,186 @@ def _parse_destination_distance(dest: str | None) -> float | None:
     return value if value > 0 else None
 
 
-def _format_destination_constraint(side: str | None, distance_m: Any = None) -> str:
-    """Render the user's stated drop-off direction as a constraint block ('' if unstated)."""
+def destination_world_anchor(
+    side: str | None,
+    distance_m: Any,
+    base_pose: Any,
+    bearing_rad: Any = None,
+) -> tuple[float, float] | None:
+    """Pin the user's stated drop-off direction to ONE fixed world point.
+
+    "左 10 米" is spoken against the machine's pose WHEN THE USER SPEAKS. Anchored
+    to that start pose it survives every later relocation and re-plan; recomputed
+    per plan instead, the target drifts ~90° once the body has turned to dig
+    (observed live: the final dump bore 85° off the task-start left). ``None``
+    when the side, the distance or the base pose is unknown — the caller then
+    falls back to the frame-relative (y-sign) constraint.
+    """
+    if not isinstance(base_pose, Mapping):
+        return None
+    if isinstance(distance_m, bool) or not isinstance(distance_m, (int, float)) or distance_m <= 0:
+        return None
+    # A parsed bearing (compound diagonals / explicit angles) wins; plain
+    # four-way sides fall back to the offset map.
+    if isinstance(bearing_rad, (int, float)) and not isinstance(bearing_rad, bool):
+        ux = math.cos(float(bearing_rad))
+        uy = math.sin(float(bearing_rad))
+    else:
+        offset = _DESTINATION_OFFSET.get(side or "")
+        if offset is None:
+            return None
+        ux, uy = offset
+    x0, y0, yaw = (
+        base_pose.get("x_m"),
+        base_pose.get("y_m"),
+        base_pose.get("yaw_rad"),
+    )
+    if not all(isinstance(v, (int, float)) for v in (x0, y0, yaw)):
+        return None
+    dx, dy = ux * float(distance_m), uy * float(distance_m)
+    c, s = math.cos(float(yaw)), math.sin(float(yaw))
+    return (float(x0) + c * dx - s * dy, float(y0) + s * dx + c * dy)
+
+
+def _dig_point_from_piles(piles: Any) -> tuple[float, float, float] | None:
+    """The dig point (base frame) from the sensed terrain truth, or None."""
+    if not isinstance(piles, (list, tuple)):
+        return None
+    for pile in piles:
+        if not isinstance(pile, Mapping):
+            continue
+        x, y = pile.get("x_m"), pile.get("y_m")
+        if (
+            isinstance(x, (int, float))
+            and not isinstance(x, bool)
+            and isinstance(y, (int, float))
+            and not isinstance(y, bool)
+        ):
+            z = pile.get("z_m")
+            z = float(z) if isinstance(z, (int, float)) and not isinstance(z, bool) else 1.95
+            return (float(x), float(y), z)
+    return None
+
+
+# 复合方位 → 象限（从前方起算、逆时针为正，REP-103 同向）。没有显式角度时
+# 取 45° 平分角；有"X度"则用显式角度（符号仍由左/右决定）。
+_COMPOUND_BEARINGS: list[tuple[tuple[str, ...], tuple[str, ...], float]] = [
+    (
+        ("左前", "前左", "左前方", "前方偏左", "front-left", "left-front", "front left", "left front"),
+        ("左", "left"),
+        math.radians(45.0),
+    ),
+    (
+        ("右前", "前右", "右前方", "前方偏右", "front-right", "right-front", "front right", "right front"),
+        ("右", "right"),
+        math.radians(-45.0),
+    ),
+    (
+        ("左后", "后左", "左后方", "后方偏左", "back-left", "left-back", "back left", "left back"),
+        ("左", "left"),
+        math.radians(135.0),
+    ),
+    (
+        ("右后", "后右", "右后方", "后方偏右", "back-right", "right-back", "back right", "right back"),
+        ("右", "right"),
+        math.radians(-135.0),
+    ),
+]
+_ANGLE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:度|°|deg(?:rees)?)", re.IGNORECASE)
+
+
+def _parse_destination_bearing(dest: str | None) -> float | None:
+    """The stated direction as a bearing (rad, 0 = front, + = left). ``None`` if
+    the phrase states no direction, or only a plain four-way side (the offset
+    map already covers those — this only adds what it CANNOT express: compound
+    diagonals and explicit angles).
+    """
+    if not dest:
+        return None
+    text = dest.lower()
+    angle: float | None = None
+    match = _ANGLE_RE.search(text)
+    if match is not None:
+        try:
+            value = float(match.group(1))
+        except ValueError:  # pragma: no cover - the regex only matches digits
+            value = None
+        if value is not None and 0.0 < value < 180.0:
+            angle = math.radians(value)
+    for words, _side, base in _COMPOUND_BEARINGS:
+        if any(word in text for word in words):
+            # An explicit angle carries only the magnitude; the compound word
+            # fixes the quadrant/sign ("右前方45度" = -45 deg, not +45).
+            return math.copysign(angle, base) if angle is not None else base
+    if angle is None:
+        return None
+    # An explicit angle with a plain side ("右边45度"): sign from 左/右, and 后
+    # flips it around (45° from the back = 180 − 45 from the front).
+    has_left = any(w in text for w in ("左", "left"))
+    has_right = any(w in text for w in ("右", "right"))
+    has_back = any(w in text for w in ("后", "behind", "back"))
+    if has_left and has_right:
+        return None  # contradictory
+    if has_back and not (has_left or has_right):
+        return math.pi - angle if angle <= math.pi else angle
+    if has_left:
+        return angle
+    if has_right:
+        return -angle
+    return angle
+
+
+def _format_destination_constraint(
+    side: str | None,
+    distance_m: Any = None,
+    world_anchor: Sequence[float] | None = None,
+    base_pose: Any = None,
+    base_step_limits: Sequence[float] | None = None,
+    dig_point: Sequence[float] | None = None,
+    dig_reach: Sequence[float] | None = None,
+    destination_kind: str | None = None,
+) -> str:
+    """Render the user's stated drop-off direction as a constraint block ('' if unstated).
+
+    With a world anchor (task-start pose × stated side/distance) the constraint is
+    a fixed WORLD point: relocations and re-plans can no longer silently rotate
+    "left" into some other direction. When the current base pose is known, a
+    worked station-move recipe rides along — the model transcribes it instead of
+    doing (and failing) the geometry itself.
+    """
     label = _DESTINATION_SIDE_LABELS.get(side or "")
+    if destination_kind == "move":
+        if (
+            world_anchor is not None
+            and len(world_anchor) == 2
+            and all(isinstance(v, (int, float)) for v in world_anchor)
+        ):
+            ax, ay = float(world_anchor[0]), float(world_anchor[1])
+            text = (
+                f"【用户方向约束】本次是**整机移动**任务：终点世界坐标 ({ax:.2f}, {ay:.2f})"
+                "（按任务开始时的底盘位姿由用户方位+距离换算，全程固定不变）。计划 = "
+                "转向（拆条）→ 前进（拆条），终点必须落在目标点附近；不要安排挖掘/卸料。"
+            )
+            move = _move_recipe(world_anchor, base_pose, base_step_limits)
+            if move:
+                text += "\n" + move + "\n"
+            return text + "\n"
+        return ""
     if label is None:
         return ""
+    if world_anchor is not None and len(world_anchor) == 2 and all(isinstance(v, (int, float)) for v in world_anchor):
+        ax, ay = float(world_anchor[0]), float(world_anchor[1])
+        text = (
+            f"【用户方向约束】放置/卸料位置在{label}，已按任务开始时的底盘位姿换算成"
+            f"**世界坐标目标点 ({ax:.2f}, {ay:.2f})**——本次任务内固定不变，机器再怎么移动、"
+            "再规划多少次都不重算。计划里最后一条卸料动作的卸点（经移动换算后）必须落在该"
+            "目标点附近。换算：目标点当前基座系坐标 = R(−底盘yaw)·(目标点 − 底盘位置)；"
+            "站点 = 目标点沿方位回拉到包络半径。违者会被校验拒绝。"
+        )
+        recipe = _destination_recipe(world_anchor, base_pose, base_step_limits, dig_point, dig_reach)
+        if recipe:
+            text += "\n" + recipe + "\n"
+        return text + "\n"
     text = f"【用户方向约束】放置/卸料位置在{label}"
     if isinstance(distance_m, (int, float)) and not isinstance(distance_m, bool) and distance_m > 0:
         text += f"，侧向偏移约 {distance_m:g} m"
@@ -305,9 +488,7 @@ def _check_destination_side(data: list, side: str | None) -> str | None:
     # 站点式移动会旋转整机（rotate_base 到「当前位置→站点」连线方向）：转向之后
     # "左"的参考系已变，最终基座系里的 dump_y 符号证明不了方向——跳过，由
     # SKILL.md 的站点教学保证（站点相对用户方位的选取在规划提示里说明）。
-    if any(
-        isinstance(step, dict) and step.get("op") == "rotate_base" for step in data
-    ):
+    if any(isinstance(step, dict) and step.get("op") == "rotate_base" for step in data):
         return None
     for index, step in enumerate(data):
         if not isinstance(step, dict):
@@ -326,14 +507,528 @@ def _check_destination_side(data: list, side: str | None) -> str | None:
     return None
 
 
-def _destination_correction(side: str | None, distance_m: Any = None) -> str:
+def _wrap_pi(angle: float) -> float:
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _leg_recipe(
+    tx: float,
+    ty: float,
+    bx: float,
+    by: float,
+    byaw: float,
+    max_turn: float,
+    max_step: float,
+    *,
+    label: str,
+) -> tuple[str, float, float, float]:
+    """Split 'turn toward (tx,ty) then advance' into per-command steps.
+
+    Returns (recipe lines, station x, station y, heading after the leg). The
+    station is the target itself — callers pull the target back to the wanted
+    radius BEFORE calling (station = point on the line at the wanted radius).
+    """
+    turn = _wrap_pi(math.atan2(ty - by, tx - bx) - byaw)
+    advance = math.hypot(tx - bx, ty - by)
+    n_turn = max(1, math.ceil(abs(turn) / max_turn)) if abs(turn) > 1e-6 else 0
+    n_adv = max(1, math.ceil(advance / max_step)) if advance > 1e-6 else 0
+    lines = [f"- {label}：S=({tx:.2f}, {ty:.2f})"]
+    if n_turn:
+        lines.append(
+            f"  转向 θ={turn:+.4f} rad（正=左转，最短方向）：{n_turn} 条 rotate_base，"
+            f"每条 dyaw_rad={turn / n_turn:+.4f}"
+        )
+    if n_adv:
+        lines.append(f"  前进 {advance:.2f} m：{n_adv} 条 navigate_relative，每条 dx_m={advance / n_adv:.2f}")
+    heading = _wrap_pi(byaw + turn)
+    return ("\n".join(lines), tx, ty, heading)
+
+
+def _base_frame(x: float, y: float, bx: float, by: float, byaw: float) -> tuple[float, float]:
+    """World (x, y) expressed in the base frame at pose (bx, by, byaw)."""
+    c, s = math.cos(byaw), math.sin(byaw)
+    dx, dy = x - bx, y - by
+    return c * dx + s * dy, -s * dx + c * dy
+
+
+def _move_recipe(
+    world_anchor: Sequence[float],
+    base_pose: Any,
+    base_step_limits: Sequence[float] | None,
+) -> str:
+    """The UNIVERSAL relocation leg, instantiated for a pure-move task: the
+    same turn-then-advance primitive (``_leg_recipe``) the dig recipe uses for
+    haul/dump stations — here the target IS the machine's end point. Planning
+    decides reachability per work point and emits computed move parameters;
+    the model transcribes (observed live: on its own it emitted a single
+    0.7854 rad rotate over the 0.7 cap and never split it)."""
+    if not isinstance(base_pose, Mapping):
+        return ""
+    bx, by, byaw = base_pose.get("x_m"), base_pose.get("y_m"), base_pose.get("yaw_rad")
+    if not all(isinstance(v, (int, float)) for v in (bx, by, byaw)):
+        return ""
+    ax, ay = float(world_anchor[0]), float(world_anchor[1])
+    bx, by, byaw = float(bx), float(by), float(byaw)
+    max_step = float(base_step_limits[0]) if base_step_limits else 1.0
+    max_turn = float(base_step_limits[1]) if base_step_limits else 0.7
+    leg, _tx, _ty, _heading = _leg_recipe(
+        ax, ay, bx, by, byaw, max_turn, max_step, label="移动到目标点（头朝目标方向）"
+    )
+    return (
+        "照抄解法：\n"
+        f"- 目标点 T=({ax:.2f}, {ay:.2f})，当前底盘 B=({bx:.2f}, {by:.2f})，yaw={byaw:.3f}\n"
+        f"{leg}\n"
+        "- 终点即目标点（不要安排挖掘/卸料动作，也不要用 home 挪动底盘）"
+    )
+
+
+def _destination_recipe(
+    world_anchor: Sequence[float],
+    base_pose: Any,
+    base_step_limits: Sequence[float] | None,
+    dig_point: Sequence[float] | None = None,
+    dig_reach: Sequence[float] | None = None,
+) -> str:
+    """The FULL worked plan for dig→dump at the anchored destination — computed
+    here, transcribed by the model. The planner decides the whole chain up front
+    (both live failures were ORDER errors the model derived on its own: drive
+    between two points first when zero movement was needed, and dump before
+    hauling):
+
+    1. dig point reachable AND anchor within the dump envelope → ZERO movement,
+       one compound ``dig``;
+    2. dig point reachable, anchor beyond the envelope → ``dig_soil`` FIRST,
+       then haul to the dump station, then ``dump_soil``;
+    3. dig point out of reach (too close/far) → move to the dig station first,
+       re-read terrain, then case 1 or 2's dump half from there.
+
+    ``""`` when the current pose is unknown. Without a dig point only the dump
+    leg is computed.
+    """
+    if not isinstance(base_pose, Mapping):
+        return ""
+    bx, by, byaw = base_pose.get("x_m"), base_pose.get("y_m"), base_pose.get("yaw_rad")
+    if not all(isinstance(v, (int, float)) for v in (bx, by, byaw)):
+        return ""
+    ax, ay = float(world_anchor[0]), float(world_anchor[1])
+    bx, by, byaw = float(bx), float(by), float(byaw)
+    max_step = float(base_step_limits[0]) if base_step_limits else 1.0
+    max_turn = float(base_step_limits[1]) if base_step_limits else 0.7
+    min_r, max_r, min_drag, cut = tuple(float(v) for v in dig_reach[:4]) if dig_reach else (1.0, 6.0, 3.0, 1.0)
+    dig_r = None
+    if (
+        dig_point is not None
+        and len(dig_point) >= 2
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in dig_point[:2])
+    ):
+        dig_r = math.hypot(float(dig_point[0]), float(dig_point[1]))
+    anchor_dist = math.hypot(ax - bx, ay - by)
+    anchor_lx, anchor_ly = _base_frame(ax, ay, bx, by, byaw)
+    head = (
+        f"目标点 A=({ax:.2f}, {ay:.2f})（基座系 ({anchor_lx:.2f}, {anchor_ly:.2f})，"
+        f"距当前 {anchor_dist:.2f} m），当前底盘 B=({bx:.2f}, {by:.2f})，yaw={byaw:.3f}"
+    )
+
+    # ---- case 1: zero movement ------------------------------------------------
+    dig_ok = dig_r is not None and min_r <= dig_r <= max_r and dig_r >= min_drag + cut
+    if dig_ok and anchor_dist <= 5.5:
+        dd = min(max(anchor_dist, 4.4), 5.5)
+        scale = dd / max(anchor_dist, 1e-9)
+        dz = float(dig_point[2]) if len(dig_point) > 2 and isinstance(dig_point[2], (int, float)) else 1.95
+        return (
+            "照抄解法（已按当前底盘位姿算好）：\n"
+            f"{head}\n"
+            f"- 判断：挖点半径 {dig_r:.2f} m（可达 ✓），卸点距当前 {anchor_dist:.2f} m（包络内 ✓）"
+            "⇒ **零移动**，不要任何 rotate_base / navigate_relative\n"
+            f"- 一步复合 dig(dig_x_m={float(dig_point[0]):g}, dig_y_m={float(dig_point[1]):g}, "
+            f"dig_z_m={dz:g}, dump_x_m={anchor_lx * scale:.2f}, dump_y_m={anchor_ly * scale:.2f}, dump_z_m=3.5)"
+            + ("（卸点已沿同方位外推到 ≥4.4 m，仍在方向容差内）" if dd > anchor_dist + 1e-9 else "")
+            + "\n- dig 返回 ok 后 home，任务完成"
+        )
+
+    # ---- dump leg (case 2/3 share it) -----------------------------------------
+    def _dump_leg(from_x: float, from_y: float, from_yaw: float) -> str:
+        d = math.hypot(ax - from_x, ay - from_y)
+        if d <= 5.5:
+            lx, ly = _base_frame(ax, ay, from_x, from_y, from_yaw)
+            dd = min(max(d, 4.4), 5.5)
+            scale = dd / max(d, 1e-9)
+            return f"卸点距该站位仅 {d:.2f} m（包络内）：不动，直接卸在基座系 ({lx * scale:.2f}, {ly * scale:.2f}, 3.5)"
+        ux, uy = (ax - from_x) / d, (ay - from_y) / d
+        sx, sy = ax - 5.0 * ux, ay - 5.0 * uy
+        leg, _sx, _sy, _yaw = _leg_recipe(sx, sy, from_x, from_y, from_yaw, max_turn, max_step, label="移动到卸料站点")
+        return f"{leg}\n  到站后目标在正前方 ≈5 m：dump_soil(dump_x_m=5, dump_y_m=0, dump_z_m=3.5)"
+
+    # ---- case 3: dig point out of reach — move to the dig station first -------
+    if dig_r is not None and not dig_ok:
+        # Face the pile, then advance/retreat ALONG that heading (a signed dx) so
+        # the dig point stays dead ahead at the station — turning toward the
+        # station point instead would leave the pile BEHIND the machine.
+        bearing = _wrap_pi(byaw + math.atan2(float(dig_point[1]), float(dig_point[0])))
+        turn = _wrap_pi(bearing - byaw)
+        station_r = min(5.2, max_r - 0.3)
+        signed = dig_r - station_r  # <0 retreat (too close), >0 approach (too far)
+        n_turn = max(1, math.ceil(abs(turn) / max_turn)) if abs(turn) > 1e-6 else 0
+        n_adv = max(1, math.ceil(abs(signed) / max_step)) if abs(signed) > 1e-6 else 0
+        sx = bx + signed * math.cos(bearing)
+        sy = by + signed * math.sin(bearing)
+        leg = [f"先就位再挖：正对土堆转向 θ={turn:+.4f} rad"]
+        if n_turn:
+            leg.append(f"  {n_turn} 条 rotate_base，每条 dyaw_rad={turn / n_turn:+.4f}")
+        if n_adv:
+            verb = "后退" if signed < 0 else "前进"
+            leg.append(f"  {verb} {abs(signed):.2f} m：{n_adv} 条 navigate_relative，每条 dx_m={signed / n_adv:+.2f}")
+        why = "太近（拖切后半径不足）" if dig_r < min_drag + cut else "超出可达环带"
+        dz = float(dig_point[2]) if len(dig_point) > 2 and isinstance(dig_point[2], (int, float)) else 1.95
+        dump_half = _dump_leg(sx, sy, bearing)
+        hauled = "卸点也在该站位包络内" if math.hypot(ax - sx, ay - sy) <= 5.5 else "卸点超出该站位包络（带载行走）"
+        return (
+            "照抄解法（已按当前底盘位姿算好）：\n"
+            f"{head}；挖点半径 {dig_r:.2f} m，{why}\n"
+            f"- {'；'.join(leg)}\n"
+            f"  到站后 get_terrain 重读坐标（挖点 ≈ 基座系 ({station_r:.2f}, 0.00)）\n"
+            f"- 在该站位挖：dig_soil(dig_x_m={station_r:.2f}, dig_y_m=0, dig_z_m={dz:g})\n"
+            f"- 判断卸点：{hauled}。{dump_half}\n"
+            "- 最后 home"
+        )
+
+    # ---- case 2: dig here, then haul ------------------------------------------
+    dz = float(dig_point[2]) if dig_point and len(dig_point) > 2 and isinstance(dig_point[2], (int, float)) else None
+    dig_line = (
+        f"- 第一步 dig_soil(dig_x_m={float(dig_point[0]):g}, dig_y_m={float(dig_point[1]):g}"
+        + (f", dig_z_m={dz:g}" if dz is not None else "")
+        + ")（在当前位置挖，**不要先移动**）"
+        if dig_ok
+        else "- 先在当前位置挖（挖点须在可达环带内，太近先退底盘；挖满后再执行下面的移动）"
+    )
+    dump_leg = _dump_leg(bx, by, byaw)
+    return (
+        "照抄解法（已按当前底盘位姿算好）：\n"
+        f"{head}；卸点超出包络 ⇒ **先挖后运**\n"
+        f"{dig_line}\n"
+        f"- 带载{dump_leg}\n"
+        "- 最后 home"
+    )
+
+
+def _destination_correction(
+    side: str | None,
+    distance_m: Any = None,
+    world_anchor: Sequence[float] | None = None,
+    base_pose: Any = None,
+    base_step_limits: Sequence[float] | None = None,
+    dig_point: Sequence[float] | None = None,
+    dig_reach: Sequence[float] | None = None,
+) -> str:
     """The correction appended to the compiler prompt after a side violation."""
     label = _DESTINATION_SIDE_LABELS.get(side or "", "用户指定的方向")
     text = f"\n\n上次计划的卸点方向不满足用户约束（{label}）。"
+    if world_anchor is not None and len(world_anchor) == 2 and all(isinstance(v, (int, float)) for v in world_anchor):
+        text += (
+            f"卸料目标的世界坐标点固定为 ({float(world_anchor[0]):.2f}, {float(world_anchor[1]):.2f})："
+            "先按当前底盘位姿把它换算到基座系，再围绕它安排卸点与站点移动。"
+        )
+        recipe = _destination_recipe(world_anchor, base_pose, base_step_limits, dig_point, dig_reach)
+        if recipe:
+            text += "\n" + recipe
     if isinstance(distance_m, (int, float)) and not isinstance(distance_m, bool) and distance_m > 0:
         text += f"用户要求的侧向偏移约 {distance_m:g} m。"
-    text += "请调整卸点坐标满足方向后，重新输出完整 JSON 数组。"
+    text += "请按上述解法调整卸点与移动，重新输出完整 JSON 数组。"
     return text
+
+
+_DUMP_POINT_OPS = ("dig", "dump_soil", "act_exec")
+
+_DIG_POINT_OPS = ("dig", "dig_soil", "act_exec")
+# The closed-bucket dump comfort band (the taught 4.5-5.5 / z 3-4, widened a
+# little): outside it the carry-closed IK gate has rejected dump points live.
+_DUMP_RADIUS_BAND = (4.0, 5.5)
+_DUMP_Z_BAND = (2.8, 4.2)
+
+
+def _num_param(params: Any, key: str) -> float | None:
+    """A literal numeric param, or None (bindings/absent resolve at runtime)."""
+    value = (params or {}).get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _check_points(data: list, dig_reach: Sequence[float] | None) -> str | None:
+    """Compile-time HARD validation of literal dig/dump POINT parameters — the
+    planner-brain's guarantee that every coordinate it emits is physically
+    meaningful for this machine, so a bad point costs one compile retry instead
+    of a physical action (three live failures were all point errors: a dump at
+    radius 10 m, a dig point at 2.3 m inside the drag zone, ...).
+
+    Dig/dump params are BASE-frame at execution time, so radius = hypot(x, y)
+    directly — no move-chain replay needed. Bindings are skipped (they resolve
+    at runtime; their guards live in the actions). ``dig_reach`` =
+    (reach_min, reach_max, min_drag, cut[, z_min, z_max]).
+    """
+    if not dig_reach or len(dig_reach) < 4:
+        return None
+    min_r, max_r, min_drag, cut = (float(v) for v in dig_reach[:4])
+    z_min = float(dig_reach[4]) if len(dig_reach) > 4 and dig_reach[4] is not None else None
+    z_max = float(dig_reach[5]) if len(dig_reach) > 5 and dig_reach[5] is not None else None
+    dump_lo, dump_hi = _DUMP_RADIUS_BAND
+    dump_hi = min(dump_hi, max_r)
+    for index, step in enumerate(data):
+        if not isinstance(step, dict):
+            continue
+        op, params = step.get("op"), step.get("params")
+        if op in _DIG_POINT_OPS:
+            dx_, dy_ = _num_param(params, "dig_x_m"), _num_param(params, "dig_y_m")
+            if dx_ is not None and dy_ is not None:
+                r = math.hypot(dx_, dy_)
+                if not (min_r <= r <= max_r):
+                    return (
+                        f"step {index}: 挖点半径 {r:.2f} m 超出可达环带 [{min_r:g}, {max_r:g}] m"
+                        "（基座系 hypot(dig_x_m, dig_y_m)）。请先移动底盘到挖点环带内（站点 ≈ 挖点半径 5.2 m），"
+                        "重新输出完整 JSON 数组"
+                    )
+                if r < min_drag + cut:
+                    return (
+                        f"step {index}: 挖点半径 {r:.2f} m 太近——拖切 {cut:g} m 后只剩 "
+                        f"{r - cut:.2f} m，低于拖切下限 {min_drag:g} m（需要 ≥ {min_drag + cut:g} m）。"
+                        "请先沿远离土堆方向退底盘到半径 ≈5.2 m 再重读地形，重新输出完整 JSON 数组"
+                    )
+                dz_ = _num_param(params, "dig_z_m")
+                if dz_ is not None and z_min is not None and dz_ < z_min:
+                    return (
+                        f"step {index}: 挖点 dig_z_m={dz_:.2f} 低于 Z 下限 {z_min:g} m。"
+                        "请抬高挖点（通常取料堆表面 z），重新输出完整 JSON 数组"
+                    )
+                if dz_ is not None and z_max is not None and dz_ > z_max:
+                    return (
+                        f"step {index}: 挖点 dig_z_m={dz_:.2f} 高于 Z 上限 {z_max:g} m"
+                        "（挖的是空气）。请取料堆表面 z，重新输出完整 JSON 数组"
+                    )
+        if op in _DUMP_POINT_OPS:
+            px_, py_ = _num_param(params, "dump_x_m"), _num_param(params, "dump_y_m")
+            if px_ is not None and py_ is not None:
+                r = math.hypot(px_, py_)
+                if not (dump_lo <= r <= dump_hi):
+                    return (
+                        f"step {index}: 卸点半径 {r:.2f} m 超出闭斗卸料带 [{dump_lo:g}, {dump_hi:g}] m"
+                        "（基座系 hypot(dump_x, dump_y)；带满载收斗的 IK 可达范围标定而来）。"
+                        "太远请先移动底盘到卸料站点；太近请沿同方位外推，重新输出完整 JSON 数组"
+                    )
+                pz_ = _num_param(params, "dump_z_m")
+                if pz_ is not None and not (_DUMP_Z_BAND[0] <= pz_ <= _DUMP_Z_BAND[1]):
+                    return (
+                        f"step {index}: 卸点 dump_z_m={pz_:.2f} 超出卸料高度带 "
+                        f"[{_DUMP_Z_BAND[0]:g}, {_DUMP_Z_BAND[1]:g}] m——太低铲斗张不开、"
+                        "太高满载够不着。请取 3–4 m，重新输出完整 JSON 数组"
+                    )
+    return None
+
+
+def _check_destination_anchor(
+    data: list,
+    anchor: Sequence[float] | None,
+    base_pose: Any,
+    distance_m: Any = None,
+    move_target: bool = False,
+) -> str | None:
+    """World-anchored destination check: simulate the plan's base motion and prove
+    the LAST literal dump point lands on the fixed anchor.
+
+    The frame-relative y-sign check is blind the moment the plan rotates the base
+    — "left" then has no stable frame. The anchor pins the user's words to one
+    world point at task start; this check replays rotate/navigate through the
+    plan (turn-then-advance, the same semantics as ``move_base``) and converts
+    the dump point to world. Bindings resolve at runtime and are skipped (the
+    check then simply reports None). Returns the violation text or ``None``.
+    """
+    if anchor is None or len(anchor) != 2 or not isinstance(base_pose, Mapping):
+        return None
+    bx, by, byaw = base_pose.get("x_m"), base_pose.get("y_m"), base_pose.get("yaw_rad")
+    if not all(isinstance(v, (int, float)) for v in (bx, by, byaw)):
+        return None
+    if isinstance(distance_m, (int, float)) and not isinstance(distance_m, bool) and distance_m > 0:
+        tol = max(1.5, 0.25 * float(distance_m))
+    else:
+        tol = 2.0
+    if move_target:
+        # A relocation task has no dump op to check — the END POSE is the
+        # contract. Replay the moves and compare the final position.
+        x, y, yaw = float(bx), float(by), float(byaw)
+        for step in data:
+            if not isinstance(step, dict):
+                continue
+            op, params = step.get("op"), step.get("params") or {}
+            if op == "rotate_base":
+                d = params.get("dyaw_rad")
+                if isinstance(d, (int, float)) and not isinstance(d, bool):
+                    yaw = (yaw + float(d) + math.pi) % (2.0 * math.pi) - math.pi
+            elif op == "navigate_relative":
+                ndx, ndy, ndyaw = params.get("dx_m", 0.0), params.get("dy_m", 0.0), params.get("dyaw_rad", 0.0)
+                if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (ndx, ndy, ndyaw)):
+                    yaw = (yaw + float(ndyaw) + math.pi) % (2.0 * math.pi) - math.pi
+                    c, s = math.cos(yaw), math.sin(yaw)
+                    x += c * float(ndx) - s * float(ndy)
+                    y += s * float(ndx) + c * float(ndy)
+        ax, ay = float(anchor[0]), float(anchor[1])
+        miss = math.hypot(x - ax, y - ay)
+        if miss > max(0.8, 0.25 * tol):
+            return (
+                f"计划的终点按移动链换算到世界坐标 ({x:.2f}, {y:.2f})，距目标点 "
+                f"({ax:.2f}, {ay:.2f}) 偏了 {miss:.2f} m。请照抄【用户方向约束】里的"
+                "转向/前进算例（转向取最短方向并拆条），重新输出完整 JSON 数组"
+            )
+        return None
+    x, y, yaw = float(bx), float(by), float(byaw)
+    last: tuple[int, tuple[float, float], tuple[float, float, float]] | None = None
+    for index, step in enumerate(data):
+        if not isinstance(step, dict):
+            continue
+        op, params = step.get("op"), step.get("params") or {}
+        if op in _DUMP_POINT_OPS:
+            px, py = params.get("dump_x_m"), params.get("dump_y_m")
+            if (
+                isinstance(px, (int, float))
+                and not isinstance(px, bool)
+                and isinstance(py, (int, float))
+                and not isinstance(py, bool)
+            ):
+                c, s = math.cos(yaw), math.sin(yaw)
+                world = (
+                    x + c * float(px) - s * float(py),
+                    y + s * float(px) + c * float(py),
+                )
+                last = (index, world, (x, y, yaw))
+        elif op == "rotate_base":
+            dyaw = params.get("dyaw_rad")
+            if isinstance(dyaw, (int, float)) and not isinstance(dyaw, bool):
+                yaw = (yaw + float(dyaw) + math.pi) % (2.0 * math.pi) - math.pi
+        elif op == "navigate_relative":
+            ndx, ndy, ndyaw = params.get("dx_m", 0.0), params.get("dy_m", 0.0), params.get("dyaw_rad", 0.0)
+            if any(isinstance(v, bool) for v in (ndx, ndy, ndyaw)):
+                continue
+            if all(isinstance(v, (int, float)) for v in (ndx, ndy, ndyaw)):
+                yaw = (yaw + float(ndyaw) + math.pi) % (2.0 * math.pi) - math.pi
+                c, s = math.cos(yaw), math.sin(yaw)
+                x += c * float(ndx) - s * float(ndy)
+                y += s * float(ndx) + c * float(ndy)
+    if last is None:
+        return None
+    index, (wx, wy), (pose_x, pose_y, pose_yaw) = last
+    ax, ay = float(anchor[0]), float(anchor[1])
+    miss = math.hypot(wx - ax, wy - ay)
+    if miss <= tol:
+        return None
+    # The anchor expressed in the dump-step's own base frame — the coordinate the
+    # compiler should aim near.
+    rx, ry = ax - pose_x, ay - pose_y
+    c, s = math.cos(pose_yaw), math.sin(pose_yaw)
+    aim_x, aim_y = c * rx + s * ry, -s * rx + c * ry
+    return (
+        f"step {index}: 计划的最终卸点按移动链换算到世界坐标 ({wx:.2f}, {wy:.2f})，距用户方向的"
+        f"世界目标点 ({ax:.2f}, {ay:.2f}) 偏了 {miss:.2f} m（容差 {tol:.2f} m）。目标点在该步"
+        f"基座系约为 ({aim_x:.2f}, {aim_y:.2f})——请把卸点安排到它附近（半径 4.5–5.5 m），"
+        "需要的话调整站点移动，重新输出完整 JSON 数组"
+    )
+
+
+def _check_base_limits(data: list, base_step_limits: Sequence[float] | None) -> str | None:
+    """Deterministic per-command base-limit check over a compiled sequence.
+
+    ``base_step_limits`` = (max_step_m, max_turn_rad) from the machine config,
+    surfaced in the world state. SafetyRail refuses an over-limit command at
+    runtime AND a rail refusal is recovery-managed — it never triggers a
+    re-plan, so the whole run would die on a mistake whose fix (split into
+    multiple commands) is purely plan-level. Caught here instead: an over-limit
+    move costs one compile retry. Returns the violation text or ``None``.
+    """
+    if not base_step_limits:
+        return None
+    max_step, max_turn = float(base_step_limits[0]), float(base_step_limits[1])
+    for index, step in enumerate(data):
+        if not isinstance(step, dict):
+            continue
+        op = step.get("op")
+        params = step.get("params") or {}
+        if op == "rotate_base":
+            dyaw = params.get("dyaw_rad")
+            if isinstance(dyaw, bool) or not isinstance(dyaw, (int, float)):
+                continue
+            if abs(float(dyaw)) > max_turn:
+                return (
+                    f"step {index}: rotate_base 单条 {abs(float(dyaw)):g} rad 超过底盘单条"
+                    f"上限 {max_turn:g} rad。请拆成多条（每条 ≤ {max_turn:g} rad，"
+                    "方向正负号保持不变），重新输出完整 JSON 数组"
+                )
+        elif op == "navigate_relative":
+            dx = params.get("dx_m", 0.0)
+            dy = params.get("dy_m", 0.0)
+            dyaw = params.get("dyaw_rad", 0.0)
+            if any(isinstance(v, bool) for v in (dx, dy, dyaw)):
+                continue
+            if isinstance(dx, (int, float)) and isinstance(dy, (int, float)):
+                dist = math.hypot(float(dx), float(dy))
+                if dist > max_step:
+                    return (
+                        f"step {index}: navigate_relative 单条平移 {dist:.2f} m 超过底盘单条"
+                        f"上限 {max_step:g} m。请拆成多条（每条 ≤ {max_step:g} m，方向不变），"
+                        "重新输出完整 JSON 数组"
+                    )
+            if isinstance(dyaw, (int, float)) and abs(float(dyaw)) > max_turn:
+                return (
+                    f"step {index}: navigate_relative 单条转向 {abs(float(dyaw)):g} rad 超过底盘"
+                    f"单条上限 {max_turn:g} rad。请拆成多条或改用 rotate_base，"
+                    "重新输出完整 JSON 数组"
+                )
+    return None
+
+
+def _base_limits_correction(max_step: float, max_turn: float) -> str:
+    return (
+        f"\n\n上次计划里有超过底盘单条上限的移动命令（平移 ≤ {max_step:g} m/条、"
+        f"转向 ≤ {max_turn:g} rad/条）。请把超限命令拆成多条同方向的小步，"
+        "重新输出完整 JSON 数组。"
+    )
+
+
+def _check_rotation_direction(data: list) -> str | None:
+    """Reject in-place turning runs that go the long way around.
+
+    A CONTIGUOUS run of ``rotate_base`` steps (nothing in between — any other
+    op ends the run) accumulates heading in one direction; turning in place to
+    any heading never needs more than π radians, so a same-sign run beyond π is
+    provably the long way (observed live: a re-plan without odometry emitted
+    15×rotate_base(0.7)+0.17 ≈ 611° ≈ 1.7 circles). Caught here as a compile
+    retry instead of a machine that spins. Returns the violation text or None.
+    """
+    tolerance = 0.05  # float noise on a π split (e.g. 0.7×4 + 0.317 ≈ π)
+    run_sum = 0.0
+    for index, step in enumerate(data):
+        if not isinstance(step, dict) or step.get("op") != "rotate_base":
+            run_sum = 0.0  # any other op (navigate included) ends the in-place run
+            continue
+        dyaw = (step.get("params") or {}).get("dyaw_rad")
+        if isinstance(dyaw, bool) or not isinstance(dyaw, (int, float)):
+            run_sum = 0.0  # unknown magnitude: cannot prove a violation, restart
+            continue
+        if run_sum * float(dyaw) < 0.0:
+            run_sum = 0.0  # direction reversal: a new in-place run begins
+        run_sum += float(dyaw)
+        if abs(run_sum) > math.pi + tolerance:
+            equivalent = (run_sum + math.pi) % (2.0 * math.pi) - math.pi
+            return (
+                f"step {index}: 连续原地 rotate_base 同向累计 {abs(run_sum):g} rad，超过半圈"
+                f"（π）——原地转到任何朝向最短都不需要超过 π，等效只需反方向转 "
+                f"{equivalent:g} rad。请读【当前状态】里的底盘位姿 yaw（或重新感知目标"
+                "方位），按最短方向重新拆条（每条仍 ≤ 单条上限），重新输出完整 JSON 数组"
+            )
+    return None
+
+
+def _rotation_direction_correction() -> str:
+    return (
+        "\n\n上次计划原地连续同向旋转超过半圈（π）。转向必须取最短方向："
+        "剩余转角 = wrap(目标方位 − 底盘yaw)，其绝对值 ≤ π；不要从零起算已转过的角度。"
+    )
 
 
 def _extract_json_array(text: str) -> list | None:
@@ -468,12 +1163,11 @@ def _validate_parsed(data: dict | None) -> dict[str, Any]:
     if dest_side not in _DESTINATION_SIDE_WORDS:
         dest_side = _parse_destination_side(dest)
     dest_distance = d.get("destination_distance_m")
-    if (
-        isinstance(dest_distance, bool)
-        or not isinstance(dest_distance, (int, float))
-        or dest_distance <= 0
-    ):
+    if isinstance(dest_distance, bool) or not isinstance(dest_distance, (int, float)) or dest_distance <= 0:
         dest_distance = _parse_destination_distance(dest)
+    dest_bearing = d.get("destination_bearing_rad")
+    if isinstance(dest_bearing, bool) or not isinstance(dest_bearing, (int, float)):
+        dest_bearing = _parse_destination_bearing(dest)
     intent = (
         d.get("intent") if d.get("intent") in ("pick", "pick_place", "carry") else ("pick_place" if dest else "pick")
     )
@@ -484,6 +1178,7 @@ def _validate_parsed(data: dict | None) -> dict[str, Any]:
         "destination": dest,
         "destination_side": dest_side,
         "destination_distance_m": dest_distance,
+        "destination_bearing_rad": dest_bearing,
         "mode": mode,
         "count": count,
         "intent": intent,
@@ -646,6 +1341,8 @@ _SEQUENCE_FORMAT = (
     "  循环每轮先感知一个目标、感知不到就自动停止；body 是「处理一个目标」的动作。"
     "任务明确 N 个就设 max_iters=N，说「所有」就省略 max_iters。单个目标的任务不要用循环。\n"
     "只输出这一个 JSON 数组，不要任何解释或 markdown 代码块。"
+    "**输出紧凑 JSON：数组里每个对象写在一行内**（params 对象不换行、无嵌套缩进）——"
+    "逐键换行的美化打印会把长计划撑爆输出长度上限，回复被截断后整个计划作废。"
 )
 
 # --------------------------------------------------------------------------- #
@@ -834,6 +1531,12 @@ def _compile_loop(
     cancel_token: CancelToken | None = None,
     destination_side: str | None = None,
     destination_distance_m: float | None = None,
+    destination_world: Sequence[float] | None = None,
+    base_pose: Mapping[str, Any] | None = None,
+    terrain_piles: Sequence[Any] | None = None,
+    dig_reach: Sequence[float] | None = None,
+    destination_kind: str | None = None,
+    base_step_limits: Sequence[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Sample an action sequence until one validates, feeding each failure back.
 
@@ -854,6 +1557,7 @@ def _compile_loop(
     in-flight POST abandonable; ``None`` → the original synchronous path.
     """
     last_err: str | None = None
+    attempt_errors: list[str] = []
     correction = ""
     for attempt in range(1, max(1, attempts) + 1):
         if cancel_token is not None:
@@ -866,10 +1570,18 @@ def _compile_loop(
                 api_key=api_key,
                 model_name=model_name,
                 timeout_s=timeout_s,
-                temperature=temperature,
+                # Retries are distinguished ONLY by the appended correction; at
+                # temperature 0 a systematically wrong derivation (geometry the
+                # model cannot do) repeats itself verbatim until the attempts
+                # run out — observed live: 4 identical anchor violations. The
+                # first attempt stays exact; retries take a little heat.
+                temperature=temperature if attempt == 1 else max(temperature, 0.2),
                 proxy=proxy,
                 attempts=1,
-                max_tokens=1500,
+                # 站点式移动计划（rotate/navigate 链 + 绑定 + 完整坐标）很长：1500 tokens
+                # 实测把 11 步计划截成半截 JSON；重规划还要复述全部剩余步，3000 仍会截断
+                # （实测 24 步计划两次 no-JSON-array 全败），6000 + 紧凑输出指令双保险。
+                max_tokens=6000,
                 thinking_mode=thinking_mode,
                 cancel_token=cancel_token,
             )
@@ -877,19 +1589,26 @@ def _compile_loop(
             # Transient LLM/HTTP failure (e.g. read timeout on a slow generation):
             # count it as one attempt and retry rather than aborting the compile.
             last_err = str(exc)
+            attempt_errors.append(str(last_err))
             logger.warning("[%s] attempt %d: LLM call failed, retrying: %s", label, attempt, exc)
             continue
         data = _extract_json_array(text)
         if data is None:
             last_err = f"no JSON array in reply: {text[:200]!r}"
+            attempt_errors.append(str(last_err))
             logger.warning("[%s] attempt %d: %s", label, attempt, last_err)
-            correction = "\n\n上次回复没有包含合法的 JSON 数组。请只输出一个 JSON 数组，不要任何解释或 markdown。"
+            correction = (
+                "\n\n上次回复没有包含合法的 JSON 数组（疑似被输出长度上限截断）。"
+                "请只输出一个 JSON 数组，不要任何解释或 markdown；"
+                "**用紧凑格式重试——每个动作对象一行，params 不换行不缩进**。"
+            )
             continue
         if not data:
             if allow_decline:
                 logger.info("[%s] → declined: no skill covers this task", label)
                 return []
             last_err = "reply was an empty sequence"
+            attempt_errors.append(str(last_err))
             logger.warning("[%s] attempt %d: %s", label, attempt, last_err)
             correction = "\n\n上次输出是空序列，但这个任务必须给出可执行的动作。请重新输出完整的 JSON 数组。"
             continue
@@ -904,18 +1623,70 @@ def _compile_loop(
             )  # validate only; keep raw dicts
         except SequenceError as exc:
             last_err = str(exc)
+            attempt_errors.append(str(last_err))
             logger.warning("[%s] attempt %d: invalid sequence: %s", label, attempt, exc)
             correction = _sequence_correction(exc)
             continue
-        destination_error = _check_destination_side(data, destination_side)
+        points_error = _check_points(data, dig_reach)
+        if points_error is not None:
+            last_err = points_error
+            attempt_errors.append(str(last_err))
+            logger.warning("[%s] attempt %d: %s", label, attempt, points_error)
+            correction = "\n\n" + points_error
+            continue
+        # World-anchored check first: it stays meaningful through rotate_base
+        # (the y-sign check self-skips there); on pass-or-not-applicable the
+        # sign check still covers plain non-rotated plans.
+        destination_error = (
+            _check_destination_anchor(
+                data,
+                destination_world,
+                base_pose,
+                destination_distance_m,
+                move_target=(destination_kind == "move"),
+            )
+            if destination_world is not None
+            else None
+        )
+        if destination_error is None:
+            destination_error = _check_destination_side(data, destination_side)
         if destination_error is not None:
             last_err = destination_error
+            attempt_errors.append(str(last_err))
             logger.warning("[%s] attempt %d: %s", label, attempt, destination_error)
-            correction = _destination_correction(destination_side, destination_distance_m)
+            correction = _destination_correction(
+                destination_side,
+                destination_distance_m,
+                destination_world,
+                base_pose,
+                base_step_limits,
+                _dig_point_from_piles(terrain_piles),
+                dig_reach,
+            )
+            continue
+        limits_error = _check_base_limits(data, base_step_limits)
+        if limits_error is not None:
+            last_err = limits_error
+            attempt_errors.append(str(last_err))
+            logger.warning("[%s] attempt %d: %s", label, attempt, limits_error)
+            correction = (
+                _base_limits_correction(float(base_step_limits[0]), float(base_step_limits[1]))
+                if base_step_limits
+                else "\n\n" + limits_error
+            )
+            continue
+        rotation_error = _check_rotation_direction(data)
+        if rotation_error is not None:
+            last_err = rotation_error
+            attempt_errors.append(str(last_err))
+            logger.warning("[%s] attempt %d: %s", label, attempt, rotation_error)
+            correction = "\n\n" + rotation_error + _rotation_direction_correction()
             continue
         logger.info("[%s] → %d steps: %s", label, len(data), data)
         return data
-    raise RuntimeError(f"{label} produced no valid sequence after {attempts} attempts: {last_err}")
+    history = " | ".join(err[:120] for err in attempt_errors[:-1]) if len(attempt_errors) > 1 else ""
+    suffix = f"（历次：{history[:400]}）" if history else ""
+    raise RuntimeError(f"{label} produced no valid sequence after {attempts} attempts: {last_err}{suffix}")
 
 
 def compose_actions(
@@ -930,7 +1701,7 @@ def compose_actions(
     timeout_s: float = 90.0,
     temperature: float = 0.0,
     proxy: str | None = None,
-    attempts: int = 4,
+    attempts: int = 6,
     api_capabilities: list[str] | None = None,
     scene: Any = None,
     world_block: str = "",
@@ -942,6 +1713,12 @@ def compose_actions(
     cancel_token: CancelToken | None = None,
     destination_side: str | None = None,
     destination_distance_m: float | None = None,
+    destination_world: Sequence[float] | None = None,
+    base_pose: Mapping[str, Any] | None = None,
+    terrain_piles: Sequence[Any] | None = None,
+    dig_reach: Sequence[float] | None = None,
+    destination_kind: str | None = None,
+    base_step_limits: Sequence[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Tier 2 — derive an action sequence from the contracts alone, with no SKILL.md.
 
@@ -972,7 +1749,7 @@ def compose_actions(
         f"{_format_scene(scene)}"
         f"{_format_grounding(grounding)}"
         f"{_format_blocked(blocked_access)}"
-        f"{_format_destination_constraint(destination_side, destination_distance_m)}"
+        f"{_format_destination_constraint(destination_side, destination_distance_m, destination_world, base_pose, base_step_limits, _dig_point_from_piles(terrain_piles), dig_reach, destination_kind)}"
         f"【可用动作】(括号内为参数名，? = 可省略；-> 后是该动作的返回字段)：\n"
         f"{format_action_contracts(action_index)}\n\n"
         f"【特殊动作】：{special_text}\n\n"
@@ -998,6 +1775,12 @@ def compose_actions(
         cancel_token=cancel_token,
         destination_side=destination_side,
         destination_distance_m=destination_distance_m,
+        destination_world=destination_world,
+        base_pose=base_pose,
+        terrain_piles=terrain_piles,
+        dig_reach=dig_reach,
+        destination_kind=destination_kind,
+        base_step_limits=base_step_limits,
     )
 
 
@@ -1014,7 +1797,7 @@ def compile_sequence(
     timeout_s: float = 90.0,
     temperature: float = 0.0,
     proxy: str | None = None,
-    attempts: int = 4,
+    attempts: int = 6,
     api_capabilities: list[str] | None = None,
     action_sigs: dict[str, str] | None = None,
     scene: Any = None,
@@ -1027,6 +1810,12 @@ def compile_sequence(
     cancel_token: CancelToken | None = None,
     destination_side: str | None = None,
     destination_distance_m: float | None = None,
+    destination_world: Sequence[float] | None = None,
+    base_pose: Mapping[str, Any] | None = None,
+    terrain_piles: Sequence[Any] | None = None,
+    dig_reach: Sequence[float] | None = None,
+    destination_kind: str | None = None,
+    base_step_limits: Sequence[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Tier 1 — pick the skills that fit and expand their workflows, in one inference.
 
@@ -1086,7 +1875,7 @@ def compile_sequence(
         f"{_format_scene(scene)}"
         f"{_format_grounding(grounding)}"
         f"{_format_blocked(blocked_access)}"
-        f"{_format_destination_constraint(destination_side, destination_distance_m)}"
+        f"{_format_destination_constraint(destination_side, destination_distance_m, destination_world, base_pose, base_step_limits, _dig_point_from_piles(terrain_piles), dig_reach, destination_kind)}"
         f"【可用技能】(SKILL.md)：\n{_format_skills_md(skills_md)}\n\n"
         f"【可用动作】{vocab_block}\n"
         f"【特殊动作】：{special_text}\n\n"
@@ -1115,6 +1904,12 @@ def compile_sequence(
         cancel_token=cancel_token,
         destination_side=destination_side,
         destination_distance_m=destination_distance_m,
+        destination_world=destination_world,
+        base_pose=base_pose,
+        terrain_piles=terrain_piles,
+        dig_reach=dig_reach,
+        destination_kind=destination_kind,
+        base_step_limits=base_step_limits,
     )
 
 
@@ -1152,7 +1947,7 @@ def plan_task(
     timeout_s: float = 90.0,
     temperature: float = 0.0,
     proxy: str | None = None,
-    attempts: int = 4,
+    attempts: int = 6,
     api_capabilities: list[str] | None = None,
     action_sigs: dict[str, str] | None = None,
     scene: Any = None,
@@ -1164,6 +1959,12 @@ def plan_task(
     cancel_token: CancelToken | None = None,
     destination_side: str | None = None,
     destination_distance_m: float | None = None,
+    destination_world: Sequence[float] | None = None,
+    base_pose: Mapping[str, Any] | None = None,
+    terrain_piles: Sequence[Any] | None = None,
+    dig_reach: Sequence[float] | None = None,
+    destination_kind: str | None = None,
+    base_step_limits: Sequence[float] | None = None,
 ) -> PlanResult:
     """Plan a task with the skill library first, falling back to the action contracts.
 
@@ -1206,6 +2007,12 @@ def plan_task(
         "cancel_token": cancel_token,
         "destination_side": destination_side,
         "destination_distance_m": destination_distance_m,
+        "destination_world": destination_world,
+        "base_pose": base_pose,
+        "terrain_piles": terrain_piles,
+        "dig_reach": dig_reach,
+        "destination_kind": destination_kind,
+        "base_step_limits": base_step_limits,
     }
     usable_md = _filter_skills_md_by_capability(skills_md, api_capabilities)
 
@@ -1231,5 +2038,10 @@ def plan_task(
             reason = f"none of {list(names)} covers this task"
 
     logger.info("[plan] tier 2 (no usable skill: %s)", reason)
-    raw = compose_actions(query, action_index=action_index, reason=reason, **common)
+    try:
+        raw = compose_actions(query, action_index=action_index, reason=reason, **common)
+    except RuntimeError as exc:
+        # The caller records ONE error string; the composer's alone hides what
+        # became of the skill path (declined vs died). Carry both fates.
+        raise RuntimeError(f"{exc}（第一层技能路径：{reason}）") from exc
     return PlanResult(sequence=raw, tier="action", reason=reason)
