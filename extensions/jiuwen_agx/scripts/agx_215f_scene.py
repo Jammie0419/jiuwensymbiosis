@@ -230,8 +230,6 @@ def build() -> dict[str, Any]:
     # world LockJoint. Release it and make the root kinematic so the whole
     # machine can be repositioned (the terrain stays world-fixed). This is not
     # articulated-track physics; it is the "move into range" primitive.
-    import agx
-
     base = sim.getRigidBody(BASE_LINK)
     if base is None:
         raise RuntimeError(f"[agx_215f] scene has no {BASE_LINK!r} rigid body")
@@ -329,10 +327,10 @@ def build() -> dict[str, Any]:
         print("[agx_215f] pile: skipped (JIUWEN_215F_NO_PILE)", flush=True)
 
     data = _machine_data()
-    tip_local = agx.Vec3(
-        *[float(v) for v in data.get("tip_local_m", TIP_LOCAL_M)]
+    tip_local = agx.Vec3(*[float(v) for v in data.get("tip_local_m", TIP_LOCAL_M)])
+    origin = tuple(
+        float(v) for v in data.get("policy_origin_in_base_m", POLICY_ORIGIN_M)
     )
-    origin = tuple(float(v) for v in data.get("policy_origin_in_base_m", POLICY_ORIGIN_M))
 
     def base_pose_fn() -> dict[str, float]:
         pos = base.getPosition()
@@ -344,24 +342,194 @@ def build() -> dict[str, Any]:
             "yaw_rad": yaw,
         }
 
-    def move_base(dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0) -> dict[str, float]:
-        """Kinematic whole-machine move: rotate, then translate in the new frame."""
+    # ---- kinematic whole-machine move: ANIMATED, not teleported ----------------
+    # An instant relocation both looks like a jump in the viewer AND physically
+    # dumps the bucket: soil is bulk material, it stays where the bucket was.
+    # Moving the assembly in small per-sim-step increments lets contact carry
+    # the load — the same mechanism that lets the bucket dig at all.
+    base_move_goal: dict[str, Any] | None = None  # 活动中的整机移动目标
+    base_speed_mps = _fnum("JIUWEN_215F_BASE_MPS", 0.5)
+    base_turn_rps = _fnum("JIUWEN_215F_BASE_RPS", 0.25)
+    _SIM_DT = 1.0 / 60.0
+
+    def _machine_bodies() -> list[tuple[str, Any]]:
+        """The whole URDF mechanism. The delivery env snapshots this name list
+        BEFORE the rock/terrain exist, so the terrain is never in it."""
+        cache = getattr(env, "_direct_pose_cache", None)
+        names = (
+            list(cache.keys())
+            if isinstance(cache, dict) and cache
+            else [
+                BASE_LINK,
+                "shangche_Link",
+                "dongbi_Link",
+                "dougan_Link",
+                "chandou_Link",
+            ]
+        )
+        out = []
+        for name in names:
+            rb = sim.getRigidBody(name)
+            if rb is not None:
+                out.append((name, rb))
+        return out
+
+    def _assembly_pose_at(
+        goal: dict[str, Any], u: float
+    ) -> list[tuple[str, Any, Any, Any]]:
+        """Exact rigid poses of every machine body at progress ``u`` ∈ [0, 1]:
+        rotate the start poses about the base's start origin by ``u·dyaw``,
+        then translate by ``u·step``. Rigid by construction — every joint angle
+        (swing included) is preserved at every instant."""
+        angle = goal["dyaw"] * u
+        c, s = math.cos(angle), math.sin(angle)
+        rz = agx.Quat(angle, agx.Vec3(0.0, 0.0, 1.0)) if angle != 0.0 else None
+        pos0 = goal["base_pos0"]
+        step = goal["step"]
+        tx, ty, tz = step.x() * u, step.y() * u, step.z() * u
+        poses = []
+        for name, rb, p0, r0 in goal["bodies"]:
+            rel_x = float(p0.x()) - float(pos0.x())
+            rel_y = float(p0.y()) - float(pos0.y())
+            pos = agx.Vec3(
+                float(pos0.x()) + c * rel_x - s * rel_y + tx,
+                float(pos0.y()) + s * rel_x + c * rel_y + ty,
+                float(p0.z()) + tz,
+            )
+            rot = r0 if rz is None else rz.leftMult(r0)
+            poses.append((name, rb, pos, rot))
+        return poses
+
+    def _finish_base_move(goal: dict[str, Any]) -> None:
+        """Snap the exact end poses, still the loads, and resync the caches."""
+        nonlocal base_move_goal
+        zero = agx.Vec3(0.0, 0.0, 0.0)
+        cache = getattr(env, "_direct_pose_cache", None)
+        for name, rb, pos, rot in _assembly_pose_at(goal, 1.0):
+            rb.setPosition(pos)
+            rb.setRotation(rot)
+            rb.setVelocity(zero)
+            rb.setAngularVelocity(zero)
+            if isinstance(cache, dict):
+                cache[name] = (pos, rot)
+        # The shovel proxy follows the bucket (the same resync the delivery
+        # env's _restore_direct_pose does after moving bodies around).
+        proxy = getattr(env, "shovel_proxy_body", None)
+        bucket = getattr(env, "bucket_body", None)
+        if proxy is not None and bucket is not None:
+            try:
+                proxy.setTransform(bucket.getTransform())
+            except Exception:  # noqa: BLE001 - fall back to a pose copy
+                proxy.setPosition(bucket.getPosition())
+                proxy.setRotation(bucket.getRotation())
+            proxy.setVelocity(zero)
+            proxy.setAngularVelocity(zero)
+        if base_move_goal is goal:
+            base_move_goal = None
+
+    def move_base(
+        dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0
+    ) -> dict[str, float]:
+        """Start a kinematic whole-machine move: rotate, then translate in the
+        new frame — ANIMATED over sim time (see ``base_step_fn``). Returns the
+        PREDICTED end pose; the move itself completes asynchronously and the
+        bridge reports progress through ``base_state`` (viewer/pump mode) or
+        steps the sim itself (headless)."""
+        nonlocal base_move_goal
         pos = base.getPosition()
         yaw = float(base.getRotation().getAsEulerAngles().z())
-        new_yaw = (yaw + float(dyaw_rad) + math.pi) % (2.0 * math.pi) - math.pi
-        c, s = math.cos(new_yaw), math.sin(new_yaw)
-        new_pos = agx.Vec3(
-            float(pos.x()) + c * float(dx_m) - s * float(dy_m),
-            float(pos.y()) + s * float(dx_m) + c * float(dy_m),
-            float(pos.z()),
+        dyaw = float(dyaw_rad)
+        new_yaw = (yaw + dyaw + math.pi) % (2.0 * math.pi) - math.pi
+        # World-frame step: the body-frame (dx, dy) expressed in the NEW heading.
+        c2, s2 = math.cos(new_yaw), math.sin(new_yaw)
+        step = agx.Vec3(
+            c2 * float(dx_m) - s2 * float(dy_m),
+            s2 * float(dx_m) + c2 * float(dy_m),
+            0.0,
         )
-        new_rot = agx.Quat(new_yaw, agx.Vec3(0.0, 0.0, 1.0))
-        base.setPosition(new_pos)
-        base.setRotation(new_rot)
-        cache = getattr(env, "_direct_pose_cache", None)
-        if isinstance(cache, dict) and BASE_LINK in cache:
-            cache[BASE_LINK] = (new_pos, new_rot)
-        return base_pose_fn()
+        goal: dict[str, Any] = {
+            "bodies": [
+                (name, rb, rb.getPosition(), rb.getRotation())
+                for name, rb in _machine_bodies()
+            ],
+            "base_pos0": pos,
+            "step": step,
+            "dyaw": dyaw,
+            "t0": float(sim.getTimeStamp()),
+        }
+        goal["duration"] = max(
+            math.hypot(step.x(), step.y()) / max(base_speed_mps, 1e-6),
+            abs(dyaw) / max(base_turn_rps, 1e-6),
+        )
+        goal["deadline"] = (
+            goal["t0"] + goal["duration"] + max(1.0, 0.5 * goal["duration"])
+        )
+        if not goal["bodies"]:
+            # No cache (unexpected): at least relocate the base itself.
+            base.setPosition(
+                agx.Vec3(
+                    float(pos.x()) + step.x(), float(pos.y()) + step.y(), float(pos.z())
+                )
+            )
+            base.setRotation(agx.Quat(new_yaw, agx.Vec3(0.0, 0.0, 1.0)))
+        elif goal["duration"] < 0.05:
+            _finish_base_move(goal)  # degenerate nudge: apply instantly
+        else:
+            if base_move_goal is not None:
+                print(
+                    "[agx_215f] WARNING: 上一条整机移动还没走完就被覆盖 —— "
+                    "客户端应当轮询 base_state 等到位",
+                    flush=True,
+                )
+            base_move_goal = goal
+        return {
+            "x_m": float(pos.x()) + step.x(),
+            "y_m": float(pos.y()) + step.y(),
+            "z_m": float(pos.z()),
+            "yaw_rad": new_yaw,
+        }
+
+    def base_step_fn(sim_time_s: float) -> None:
+        """Advance the animated move ONE sim step (the bridge calls this from its
+        per-step tick, before stepping). Smoothstep ease-in/out; positions are
+        set analytically, velocities are the finite difference so contacts (the
+        soil in the bucket) see the real motion."""
+        goal = base_move_goal
+        if goal is None:
+            return
+        if sim_time_s >= goal["deadline"]:
+            _finish_base_move(goal)
+            return
+        u = min(max((sim_time_s - goal["t0"]) / goal["duration"], 0.0), 1.0)
+        s = u * u * (3.0 - 2.0 * u)  # smoothstep
+        if u >= 1.0:
+            _finish_base_move(goal)
+            return
+        u2 = min(u + _SIM_DT / goal["duration"], 1.0)
+        s2 = u2 * u2 * (3.0 - 2.0 * u2)
+        spin_z = goal["dyaw"] * (s2 - s) / _SIM_DT
+        now_poses = _assembly_pose_at(goal, s)
+        next_poses = _assembly_pose_at(goal, s2)
+        for (_, rb, p, r), (_, _rb2, p2, _r2) in zip(
+            now_poses, next_poses, strict=True
+        ):
+            rb.setPosition(p)
+            rb.setRotation(r)
+            rb.setVelocity(
+                agx.Vec3(
+                    (p2.x() - p.x()) / _SIM_DT,
+                    (p2.y() - p.y()) / _SIM_DT,
+                    (p2.z() - p.z()) / _SIM_DT,
+                )
+            )
+            rb.setAngularVelocity(agx.Vec3(0.0, 0.0, spin_z))
+
+    def base_busy_fn(sim_time_s: float) -> dict[str, Any]:
+        goal = base_move_goal
+        if goal is None:
+            return {"busy": False, "remaining_s": 0.0}
+        remaining = max(0.0, goal["t0"] + goal["duration"] - sim_time_s)
+        return {"busy": True, "remaining_s": remaining}
 
     def surface_fn(x_m: float, y_m: float) -> float | None:
         """Soil height at a BASE-frame (x, y); converts to world through base."""
@@ -403,14 +571,8 @@ def build() -> dict[str, Any]:
             # Stay a little inside the ramp edge; a point on the exact edge is
             # reachable but usually has no material under the teeth.
             ix, iy = 0.1 * (x1 - x0), 0.1 * (y1 - y0)
-            xs = [
-                x0 + ix + f * (x1 - x0 - 2 * ix)
-                for f in (0.0, 0.25, 0.5, 0.75, 1.0)
-            ]
-            ys = [
-                y0 + iy + f * (y1 - y0 - 2 * iy)
-                for f in (0.0, 0.25, 0.5, 0.75, 1.0)
-            ]
+            xs = [x0 + ix + f * (x1 - x0 - 2 * ix) for f in (0.0, 0.25, 0.5, 0.75, 1.0)]
+            ys = [y0 + iy + f * (y1 - y0 - 2 * iy) for f in (0.0, 0.25, 0.5, 0.75, 1.0)]
             probe = [(x, y) for x in xs for y in ys]
         best: tuple[float, float, float] | None = None
         cx0, cy0 = world_center if world_center is not None else (0.0, 0.0)
@@ -474,7 +636,13 @@ def build() -> dict[str, Any]:
         "loaded_threshold_kg": (float(threshold_raw) if threshold_raw else None),
         "tip_fn": tip_fn,
         "surface_fn": surface_fn,
-        "base": {"body": base, "pose_fn": base_pose_fn, "move_fn": move_base},
+        "base": {
+            "body": base,
+            "pose_fn": base_pose_fn,
+            "move_fn": move_base,
+            "step_fn": base_step_fn,
+            "busy_fn": base_busy_fn,
+        },
         "env": env,  # viewer 渲染/保活用；桥接不读
     }
 

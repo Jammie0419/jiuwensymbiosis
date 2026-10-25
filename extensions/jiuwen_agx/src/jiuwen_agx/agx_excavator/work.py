@@ -270,6 +270,7 @@ def execute_dump_phase(
     reach_min_m: float = 1.0,
     reach_max_m: float = 6.0,
     swing_unit: str = "deg",
+    carry: dict[str, float] | None = None,
     dump_dwell_s: float = 0.0,
 ) -> dict[str, Any]:
     """Dump half of the keyframe cycle: swing to the dump bearing → dump → scoop(False).
@@ -293,6 +294,22 @@ def execute_dump_phase(
     if dump_dwell_s > 0:
         time.sleep(float(dump_dwell_s))
     driver.mark_scoop(False)
+    # Lift off the fresh heap before returning — the retract path passes
+    # through where the soil just landed and scoops it back up otherwise.
+    # The calibrated carry block (``dig_carry``) is authoritative; the tuning's
+    # carry_*_deg keys are a fallback for configs that spell it that way.
+    if carry is not None and "boom" in carry and "arm" in carry:
+        driver.move_joints_blocking(
+            {
+                "boom": float(carry["boom"]),
+                "arm": float(carry["arm"]),
+                "bucket": float(carry.get("bucket", 0.0)),
+            }
+        )
+    elif all(
+        key in t for key in ("carry_boom_deg", "carry_arm_deg", "carry_bucket_deg")
+    ):
+        driver.move_joints_blocking(_frame(t, "carry"))
     return {
         "volume_m3": float(t["bucket_volume_m3"]),
         "cycle_s": time.perf_counter() - started,

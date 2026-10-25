@@ -130,7 +130,10 @@ def base_track_command(
         if math.hypot(dx, dy) > xy_tol:
             heading = float(pose["yaw_rad"])
             along = dx * math.cos(heading) + dy * math.sin(heading)
-            v = min(BASE_MAX_TRACK_SPEED, max(BASE_MIN_TRACK_SPEED, 1.5 * math.hypot(dx, dy)))
+            v = min(
+                BASE_MAX_TRACK_SPEED,
+                max(BASE_MIN_TRACK_SPEED, 1.5 * math.hypot(dx, dy)),
+            )
             return (False, v if along >= 0 else -v, v if along >= 0 else -v)
     return (True, 0.0, 0.0)
 
@@ -251,7 +254,9 @@ class AgxSceneAdapter:
         self._write_buffer = b""  # 非阻塞 send 的未竟字节，pump 每步排空
         self._bridge_session: BridgeSession | None = None
         self._player: dict[str, Any] | None = None  # 平滑轨迹播放器（viewer 每步推进）
-        self._drive_goal: dict[str, Any] | None = None  # 底盘闭环目标（见 base_track_command）
+        self._drive_goal: dict[str, Any] | None = (
+            None  # 底盘闭环目标（见 base_track_command）
+        )
         # 看门狗只读这个时间戳（主线程每步刷新），不碰任何 AGX 对象
         self._last_pump_ts = time.monotonic()
         self._watchdog_started = False
@@ -694,15 +699,19 @@ class AgxSceneAdapter:
         return {"stopped": True}
 
     def tick(self) -> None:
-        """Advance the trajectory player; called once per sim step by the viewer."""
+        """Advance the trajectory player and the animated kinematic base; called
+        once per sim step by the viewer host (before it steps)."""
+        base = self._base
+        if base is not None:
+            step_fn = base.get("step_fn")
+            if callable(step_fn):
+                step_fn(float(self._require_sim().getTimeStamp()))
         player = self._player
         if player is None or player["done"]:
             return
         sim = self._require_sim()
         elapsed = float(sim.getTimeStamp()) - float(player["start_s"])
-        index = min(
-            int(elapsed * float(player["rate_hz"])), len(player["frames"]) - 1
-        )
+        index = min(int(elapsed * float(player["rate_hz"])), len(player["frames"]) - 1)
         if index < 0:
             index = 0
         if index != player["index"]:
@@ -774,6 +783,32 @@ class AgxSceneAdapter:
         _reached, left, right = base_track_command(self.base_pose(), goal)
         self._apply_tracks(left, right)
 
+    def _advance_kinematic_base(self, timeout_s: float) -> None:
+        """headless：自己步进把动画整机移动走完（pump/viewer 模式由 tick 每步推进）。
+
+        旧场景工厂没有 ``step_fn``（瞬移语义）——直接返回，行为不变。
+        """
+        if self._base is None:
+            return
+        step_fn = self._base.get("step_fn")
+        busy_fn = self._base.get("busy_fn")
+        if not callable(step_fn) or not callable(busy_fn):
+            return
+        import time as _time
+
+        deadline = _time.monotonic() + max(float(timeout_s), 5.0) + 10.0
+        sim = self._require_sim()
+        while _time.monotonic() < deadline:
+            now = float(sim.getTimeStamp())
+            step_fn(now)
+            if not busy_fn(now).get("busy"):
+                return
+            self._step(1.0 / 60.0)
+        print(
+            "[agx_bridge] kinematic base motion TIMEOUT (goal snaps on its own deadline)",
+            flush=True,
+        )
+
     def navigate_relative(
         self, dx_m: float, dyaw_rad: float, timeout_s: float
     ) -> dict[str, float]:
@@ -791,8 +826,13 @@ class AgxSceneAdapter:
                 fn = self._base.get("move_fn")
                 if fn is None:
                     raise RuntimeError("kinematic base has no move_fn")
-                pose = dict(fn(float(dx_m), 0.0, float(dyaw_rad)))
-                return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad), **pose}
+                result = dict(fn(float(dx_m), 0.0, float(dyaw_rad)))
+                if not self.pump_mode:
+                    self._advance_kinematic_base(timeout_s)
+                    pose_fn = self._base.get("pose_fn")
+                    if callable(pose_fn):
+                        result.update(pose_fn())  # sync reply carries the ACTUAL pose
+                return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad), **result}
             raise RuntimeError("navigate_relative 需要 --excavator 场景（履带驱动轮）")
 
         if abs(dyaw_rad) <= 1e-4 and abs(dx_m) <= 1e-4:
@@ -828,8 +868,11 @@ class AgxSceneAdapter:
         会互相覆盖（实测 9 条 ``rotate_base(0.7)`` 只走出 0.7 rad ≈ 40°）。
         """
         if self._base is not None:
-            # Kinematic relocation is applied atomically; there is no in-flight
-            # track loop to wait for.
+            # 215F kinematic: busy while an ANIMATED whole-machine move is in
+            # flight (older scene factories teleport — nothing to wait for).
+            busy_fn = self._base.get("busy_fn")
+            if callable(busy_fn) and self._sim is not None:
+                return dict(busy_fn(float(self._sim.getTimeStamp())))
             return {"busy": False, "remaining_s": 0.0}
         if self._drive_goal is None or self._sim is None:
             return {"busy": False, "remaining_s": 0.0}
@@ -860,6 +903,8 @@ class AgxSceneAdapter:
                 chord_x = float(radius_m) * math.sin(dyaw)
                 chord_y = float(radius_m) * (1.0 - math.cos(dyaw))
                 fn(chord_x, chord_y, dyaw)
+                if not self.pump_mode:
+                    self._advance_kinematic_base(timeout_s)
                 return {"radius_m": float(radius_m), "dyaw_rad": dyaw}
             raise RuntimeError("navigate_arc 需要 --excavator 场景")
         speed = BASE_MAX_TRACK_SPEED
@@ -893,7 +938,15 @@ class AgxSceneAdapter:
         if self._terrain is not None:
             # 平整沙地场景：土壤无处不在，报告一个"机身前方 3 m"的代表性可挖点
             # （基座系；确保落在可达环带内，LLM 引用它即得到合法 dig 目标）
-            return [{"name": "soil_field", "x_m": 3.0, "y_m": 0.0, "z_m": 0.0, "volume_m3": 1.0}]
+            return [
+                {
+                    "name": "soil_field",
+                    "x_m": 3.0,
+                    "y_m": 0.0,
+                    "z_m": 0.0,
+                    "volume_m3": 1.0,
+                }
+            ]
         return [dict(p) for p in self._piles]
 
     def scoop_state(self) -> bool:
@@ -972,7 +1025,7 @@ class AgxSceneAdapter:
                 {
                     "name": name,
                     "constraint": self._safe(
-                        lambda: [c.getName() for c in group], default=[name]
+                        lambda group=group: [c.getName() for c in group], default=[name]
                     ),
                     "type": type(head).__name__,
                     "angle": self._safe(head.getAngle),
@@ -981,7 +1034,8 @@ class AgxSceneAdapter:
                     "has_motor": motor is not None,
                     "force_range": force_range,
                     "lock_enabled": self._safe(
-                        lambda: bool(head.getLock1D().getEnable()), default=False
+                        lambda head=head: bool(head.getLock1D().getEnable()),
+                        default=False,
                     ),
                 }
             )
@@ -999,7 +1053,8 @@ class AgxSceneAdapter:
                     "bucket_mass_kg": self._safe(self.bucket_mass_kg),
                     "loaded_threshold_kg": self._loaded_threshold_kg,
                     "features": {
-                        "snapshot": self._tip_fn is not None or self._surface_fn is not None,
+                        "snapshot": self._tip_fn is not None
+                        or self._surface_fn is not None,
                         "surface": self._surface_fn is not None,
                         "tip": self._tip_fn is not None,
                         "base": self._base is not None or self._excavator is not None,
@@ -1056,7 +1111,9 @@ class AgxSceneAdapter:
         if self._listener is None:
             return
         if self._drive_goal is not None:
-            reached, left, right = base_track_command(self.base_pose(), self._drive_goal)
+            reached, left, right = base_track_command(
+                self.base_pose(), self._drive_goal
+            )
             past_deadline = self._sim.getTimeStamp() >= float(
                 self._drive_goal.get("deadline", 0.0)
             )

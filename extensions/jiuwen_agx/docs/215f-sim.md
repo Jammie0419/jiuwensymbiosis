@@ -157,6 +157,18 @@ runtime/logs/        # jiuwensymbiosis.log + openjiuwen/
 2. **单位**：215F 全 rad。`joint_units: "rad"`、`swing_unit: "rad"`，关键帧键名
    仍沿用历史的 `*_deg`，但值是弧度。
 3. **整机移动不是履带物理**：`has_base: true`，但底盘是 `KINEMATICS` 刚体，
-   用 `navigate_relative`/`rotate_base` 直接设 transform；没有履带关节、没有
-   履带-土壤接触、移动不做碰撞检测。移动前先抬臂/回 home、不要带载，按
-   `base_step_limits` 拆成小步。真实履带物理需要新的模型交付。
+   用 `navigate_relative`/`rotate_base` 做整机重定位；没有履带关节、没有
+   履带-土壤接触、移动不做碰撞检测。按 `base_step_limits` 拆成小步。真实
+   履带物理需要新的模型交付。**移动前自动举斗**：底盘动作在 api 层先保证臂在
+   标定 carry 位形（斗离地）——实测停堆边 2.3 m 倒车，home 姿态的斗第一米就
+   犁满一斗；dig_soil 本来就结束在 carry，连走带搬不额外花时间。卸料相位收斗
+   后先垂直抬离新堆再返回（防"回家把刚倒的土舀回来"）。
+   `move_base` 对 `_direct_pose_cache` 里的**全机构 body**（底盘+上车+臂+斗）
+   施加同一个刚体变换——只搬底盘会把上车留在世界系，swing 读数反号（规划左转
+   看起来右转）、平移时上车滞后。变换是**动画**的：smoothstep 限速逐仿真步
+   推进（默认平移 0.5 m/s、转向 0.25 rad/s ≈ 14°/s——贴近真实履带原地转，
+   `JIUWEN_215F_BASE_MPS/_RPS` 可调），
+   桥接 `base_state` 报 busy、客户端轮询到位——瞬移既看着跳、也带不动斗里的
+   散料（土会留在原地）。底盘世界位姿经 `base_pose` 命令 → `extra["base_pose"]`
+   进【当前状态】，重规划据此算**最短方向**剩余转角；规划期另有护栏：连续原地
+   同向 rotate 累计 > π 直接拒绝重出计划。

@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import socket
 from typing import Any, Protocol, runtime_checkable
 
@@ -108,6 +109,11 @@ class SimBackend(Protocol):
         """Drive ONE constant-curvature arc (signed radius, + = left). Returns
         what was commanded."""
 
+    def base_pose(self) -> dict:
+        """Base world pose ``{x_m, y_m, yaw_rad}`` — the odometry a planner
+        needs to compute the SHORTEST remaining turn (|wrap(target - yaw)| ≤ π).
+        ``yaw_rad`` positive = left (REP-103)."""
+
     def read_terrain(self) -> list[dict[str, Any]]:
         """Terrain truth: material piles as {name, x_m, y_m, volume_m3} (base
         frame, metres). Empty list = the sim reports no piles."""
@@ -127,7 +133,9 @@ class SimBackend(Protocol):
         Like the smoke-test stub: a backend without a camera returns None rather
         than inventing content."""
 
-    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+    def snapshot(
+        self, points: list[list[float]] | None = None
+    ) -> dict[str, Any] | None:
         """Current joints + optional bucket-tip pose and soil heights at ``points``.
 
         ``None`` = this backend cannot observe a tip/surface (mock or an old
@@ -199,6 +207,7 @@ class MockSimBackend:
         ]
         self._scoop = False
         self._open = False
+        self._base_pose = {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0}
         self.move_log: list[dict[str, Any]] = []
 
     # -- lifecycle
@@ -276,7 +285,16 @@ class MockSimBackend:
             "dyaw_rad": float(dyaw_rad),
         }
         self.move_log.append(entry)
-        return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad)}
+        # Same kinematics as the 215F scene's move_base: turn, then advance
+        # along the NEW heading — so the mock pose a planner sees evolves like
+        # the real machine's.
+        pose = self._base_pose
+        pose["yaw_rad"] = (pose["yaw_rad"] + float(dyaw_rad) + math.pi) % (
+            2.0 * math.pi
+        ) - math.pi
+        pose["x_m"] += float(dx_m) * math.cos(pose["yaw_rad"])
+        pose["y_m"] += float(dx_m) * math.sin(pose["yaw_rad"])
+        return {"dx_m": float(dx_m), "dyaw_rad": float(dyaw_rad), **dict(pose)}
 
     def navigate_arc(
         self, radius_m: float, dyaw_rad: float, *, timeout_s: float
@@ -288,15 +306,22 @@ class MockSimBackend:
             "dyaw_rad": float(dyaw_rad),
         }
         self.move_log.append(entry)
-        return {"radius_m": float(radius_m), "dyaw_rad": float(dyaw_rad)}
+        pose = self._base_pose
+        yaw0 = pose["yaw_rad"]
+        dyaw = float(dyaw_rad)
+        radius = float(radius_m)
+        pose["x_m"] += radius * (math.sin(yaw0 + dyaw) - math.sin(yaw0))
+        pose["y_m"] += radius * (math.cos(yaw0) - math.cos(yaw0 + dyaw))
+        pose["yaw_rad"] = (yaw0 + dyaw + math.pi) % (2.0 * math.pi) - math.pi
+        return {"radius_m": float(radius_m), "dyaw_rad": dyaw, **dict(pose)}
+
+    def base_pose(self) -> dict:
+        return dict(self._base_pose)
 
     # -- terrain / scoop
     def read_terrain(self) -> list[dict[str, Any]]:
         self._require_open()
-        return [
-            {**dict(p), "z_m": float(p.get("z_m", 0.0))}
-            for p in self._piles
-        ]
+        return [{**dict(p), "z_m": float(p.get("z_m", 0.0))} for p in self._piles]
 
     def scoop_state(self) -> bool:
         return self._scoop
@@ -308,7 +333,9 @@ class MockSimBackend:
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         return None
 
-    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+    def snapshot(
+        self, points: list[list[float]] | None = None
+    ) -> dict[str, Any] | None:
         return None
 
     def surface(self, points: list[list[float]]) -> list[float | None] | None:
@@ -385,6 +412,9 @@ class InProcessAgxBackend:
     ) -> dict:
         raise RuntimeError("InProcessAgxBackend: not open")
 
+    def base_pose(self) -> dict:
+        raise RuntimeError("InProcessAgxBackend: not open")
+
     def read_terrain(self) -> list[dict[str, Any]]:
         raise RuntimeError("InProcessAgxBackend: not open")
 
@@ -397,7 +427,9 @@ class InProcessAgxBackend:
     def grab_frames(self) -> tuple[np.ndarray, np.ndarray] | None:
         return None
 
-    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+    def snapshot(
+        self, points: list[list[float]] | None = None
+    ) -> dict[str, Any] | None:
         raise RuntimeError("InProcessAgxBackend: not open")
 
     def surface(self, points: list[list[float]]) -> list[float | None] | None:
@@ -457,13 +489,18 @@ class RemoteSimBackend:
         try:
             machines = self._call({"cmd": "inventory"}).get("machines") or []
         except Exception as exc:  # noqa: BLE001 - 对端不认 inventory 不算错误
-            logger.debug("bridge %s:%s 未返回 inventory（%s）；对端身份未知",
-                         self._host, self._port, exc)
+            logger.debug(
+                "bridge %s:%s 未返回 inventory（%s）；对端身份未知",
+                self._host,
+                self._port,
+                exc,
+            )
             return
         if not machines:
             logger.warning(
                 "bridge %s:%s 报告 no machines —— 命令不会有任何动作",
-                self._host, self._port,
+                self._host,
+                self._port,
             )
             return
         machine = machines[0]
@@ -471,14 +508,20 @@ class RemoteSimBackend:
         joints = [str(j.get("name")) for j in (machine.get("joints") or [])]
         if name.startswith("demo"):
             logger.warning(
-                "bridge %s:%s 的对端是 %r —— 内存演示机：命令会被\"成功\"应答，"
+                'bridge %s:%s 的对端是 %r —— 内存演示机：命令会被"成功"应答，'
                 "但不会有任何物理动作。要驱动真实 AGX，用 scripts/agx_viewer_bridge.agxPy"
                 "（在 agxViewer 里跑）。",
-                self._host, self._port, name,
+                self._host,
+                self._port,
+                name,
             )
         else:
             logger.info(
-                "bridge %s:%s 对端机器 %r，关节 %s", self._host, self._port, name, joints
+                "bridge %s:%s 对端机器 %r，关节 %s",
+                self._host,
+                self._port,
+                name,
+                joints,
             )
 
     def close(self) -> None:
@@ -659,6 +702,11 @@ class RemoteSimBackend:
             self._await_base_idle(timeout_s, "navigate_arc")
         return dict(resp["result"])
 
+    def base_pose(self) -> dict:
+        """The bridge has served ``base_pose`` since protocol v1 — the live
+        x/y/yaw the planner needs for shortest-direction turns."""
+        return dict(self._call({"cmd": "base_pose"})["pose"])
+
     # -- terrain / scoop
     def read_terrain(self) -> list[dict[str, Any]]:
         return [dict(p) for p in self._call({"cmd": "terrain"})["piles"]]
@@ -669,7 +717,9 @@ class RemoteSimBackend:
     def mark_scoop(self, loaded: bool) -> None:
         self._call({"cmd": "mark_scoop", "loaded": bool(loaded)})
 
-    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+    def snapshot(
+        self, points: list[list[float]] | None = None
+    ) -> dict[str, Any] | None:
         try:
             return self._call({"cmd": "snapshot", "points": points or []})
         except Exception:  # noqa: BLE001 - old bridge has no snapshot: keyframe fallback

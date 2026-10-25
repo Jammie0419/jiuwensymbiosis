@@ -311,6 +311,81 @@ class TestApi:
         with session:
             assert session.api.release_effector()["ok"] is False
 
+    # -- travel lift: the chassis never moves with the bucket down ---------------
+    _CARRY_TUNING = {
+        "carry_boom_deg": -0.3,
+        "carry_arm_deg": 0.8,
+        "bucket_curl_deg": 0.15,
+    }
+
+    def _travel_log(self, session) -> list[str]:
+        return [entry["cmd"] for entry in session.env.driver.backend.move_log]
+
+    def test_navigate_lifts_the_arm_first_when_it_is_down(self):
+        """实测教训：停在土堆边以低位姿态倒车，第一米就把斗犁满——模型安排
+        不动的安全前置，动作层必须兜底。"""
+        session = self._built()
+        session.env.cfg.dig_cycle_tuning = dict(self._CARRY_TUNING)
+        with session:
+            session.env.driver.move_joints_blocking({"boom": -1.2, "arm": 1.9})
+            session.env.driver.backend.move_log.clear()
+            session.api.navigate_relative(1.0)
+            log = self._travel_log(session)
+            # a joint lift precedes the chassis move
+            assert log[-2].startswith("send_joint") or log[-2] == "move_joints"
+            assert log[-1] == "navigate_relative"
+            lifted = session.env.driver.get_joint_positions()
+            assert abs(lifted["boom"] - (-0.3)) < 1e-6
+            assert abs(lifted["arm"] - 0.8) < 1e-6
+
+    def test_navigate_skips_the_lift_when_already_at_carry(self):
+        """连走带搬不额外花时间：dig_soil 结束就在 carry（误差内）→ 直接走。"""
+        session = self._built()
+        session.env.cfg.dig_cycle_tuning = dict(self._CARRY_TUNING)
+        with session:
+            session.env.driver.move_joints_blocking(
+                {"boom": -0.3, "arm": 0.8, "bucket": 0.15}
+            )
+            session.env.driver.backend.move_log.clear()
+            session.api.navigate_relative(1.0)
+            assert self._travel_log(session) == ["navigate_relative"]
+
+    def test_lift_reads_the_dig_carry_block_first(self):
+        """真机教训：carry 位形在 ``dig_carry`` 块里，不在 tuning 的 carry_* 键——
+        读错键会让保护在真机上静默失效（犁土复发）。"""
+        session = self._built()
+        session.env.cfg.dig_cycle_tuning = None  # tuning 完全缺失
+        session.env.cfg.dig_carry = {"boom": -0.28, "arm": 0.92, "bucket": 0.45}
+        with session:
+            session.env.driver.move_joints_blocking({"boom": -1.2, "arm": 1.9})
+            session.env.driver.backend.move_log.clear()
+            session.api.rotate_base(0.1)
+            lifted = session.env.driver.get_joint_positions()
+            assert abs(lifted["boom"] - (-0.28)) < 1e-6
+            assert abs(lifted["arm"] - 0.92) < 1e-6
+            assert abs(lifted["bucket"] - 0.45) < 1e-6
+
+    def test_dump_soil_lifts_to_carry_before_the_phase(self):
+        """卸料进场先举：闭斗可行性门从当前位形探测，蜷缩位形会误判不可达。"""
+        session = self._built()
+        session.env.cfg.dig_cycle_tuning = None
+        session.env.cfg.dig_carry = {"boom": -0.28, "arm": 0.92, "bucket": 0.45}
+        with session:
+            session.env.driver.move_joints_blocking({"boom": -1.2, "arm": 1.9})
+            # 斗是空的：卸料相位会拒绝（前置检查），但举斗应已发生。
+            result = session.api.dump_soil(dump_x_m=3.0, dump_y_m=0.5)
+            assert result["ok"] is False and "empty" in result["error"]
+            lifted = session.env.driver.get_joint_positions()
+            assert abs(lifted["boom"] - (-0.28)) < 1e-6
+
+    def test_navigate_without_tuning_moves_unchanged(self):
+        """无标定位形不发明举斗（365/默认 mock 行为不变）。"""
+        session = self._built()  # dig_cycle_tuning 默认 None
+        with session:
+            session.env.driver.backend.move_log.clear()
+            session.api.navigate_relative(1.0)
+            assert self._travel_log(session) == ["navigate_relative"]
+
     def test_split_actions_chain_on_mock(self):
         session = self._built()
         with session:
@@ -339,7 +414,9 @@ class TestApi:
             {"op": "dig_soil", "params": {"dig_x_m": 4.0, "dig_y_m": 1.0}},
             {"op": "dump_soil", "params": {"dump_x_m": 5.0, "dump_y_m": -1.0}},
         ]
-        steps = parse_sequence(chain, allowed_ops=index, initial_state={"payload.clear"})
+        steps = parse_sequence(
+            chain, allowed_ops=index, initial_state={"payload.clear"}
+        )
         assert [s.op for s in steps] == ["dig_soil", "dump_soil"]
 
         mixed = [

@@ -250,6 +250,13 @@ class SimMachineDriver:
         """Turn in place — a pure rotate cannot translate, so dx_m is pinned to 0."""
         return self.navigate_relative(0.0, 0.0, dyaw_rad, timeout_s=timeout_s)
 
+    def base_pose(self) -> dict:
+        """Base world pose ``{x_m, y_m, yaw_rad}`` — the odometry the planner
+        reads to compute the shortest remaining turn (|wrap(target−yaw)| ≤ π)."""
+        self._require_connected()
+        self._require_base()
+        return self._backend.base_pose()
+
     # ------------------------------------------------------------------ terrain / scoop
     def read_terrain(self) -> list[dict[str, Any]]:
         """Terrain truth: material piles (base frame, metres)."""
@@ -264,7 +271,9 @@ class SimMachineDriver:
         """Sim-truth write for work cycles; see SimBackend.mark_scoop."""
         self._backend.mark_scoop(loaded)
 
-    def snapshot(self, points: list[list[float]] | None = None) -> dict[str, Any] | None:
+    def snapshot(
+        self, points: list[list[float]] | None = None
+    ) -> dict[str, Any] | None:
         """Joints + optional bucket-tip pose and soil heights; None if unsupported."""
         self._require_connected()
         return self._backend.snapshot(points)

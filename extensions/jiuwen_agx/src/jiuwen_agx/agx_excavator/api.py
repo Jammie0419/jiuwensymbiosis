@@ -18,7 +18,13 @@ import math
 import time
 from typing import Any
 
-from jiuwensymbiosis.api.actions import implements
+from jiuwensymbiosis.api import defaults
+from jiuwensymbiosis.api.actions import (
+    DRIVE_ARC,
+    NAVIGATE_RELATIVE,
+    ROTATE_BASE,
+    implements,
+)
 
 from jiuwen_agx.actions import ACT_EXECUTE, DIG, DIG_SOIL, DUMP_SOIL
 from jiuwen_agx.agx_excavator.config import AgxExcavatorConfig
@@ -331,6 +337,11 @@ class AgxExcavatorApi(SimMachineApi):
                         raise SnapshotUnavailable(
                             "dump_z_m missing and no surface height at the dump point"
                         )
+                # 先举到 carry 再进卸料相位：闭斗可行性门从**当前位形**探测，
+                # 蜷缩（home）位形下 IK 爬不上去，会把可达卸点误判成不可达
+                # （实测：同半径同高度的卸点在 carry 位形下成功过、在 home
+                # 位形下报 1.21 m 不足）。
+                self._lift_bucket_for_travel()
                 result = execute_pose_dump_phase(
                     env.driver,
                     ik=self._get_ik(cfg.dig_ik_machine or ""),
@@ -362,6 +373,7 @@ class AgxExcavatorApi(SimMachineApi):
             else:
                 return {"ok": True, **result}
         try:
+            self._lift_bucket_for_travel()
             result = execute_dump_phase(
                 env.driver,
                 dump_x_m=float(dump_x_m),
@@ -370,6 +382,7 @@ class AgxExcavatorApi(SimMachineApi):
                 reach_min_m=cfg.reach_min_m,
                 reach_max_m=cfg.reach_max_m,
                 swing_unit=cfg.swing_unit,
+                carry=cfg.dig_carry,
                 dump_dwell_s=cfg.dig_dump_dwell_s,
             )
         except ValueError as exc:
@@ -399,6 +412,72 @@ class AgxExcavatorApi(SimMachineApi):
         env.driver.move_joints_blocking({"bucket": float(bucket)}, timeout_s=10.0)
         env.driver.mark_scoop(False)
         return {"ok": True, "bucket": float(bucket)}
+
+    # ------------------------------------------------------------------ travel safety
+    _TRAVEL_TOL_RAD = 0.15
+
+    def _lift_bucket_for_travel(self) -> None:
+        """Raise the work arm to the calibrated carry posture BEFORE the chassis
+        moves — a hard, action-layer guarantee, not planner teaching.
+
+        Measured live: parked near the pile, the first move in the (low) home
+        posture plowed a FULL bucket out of the ramp; the model cannot be
+        trusted to schedule the lift, so every base verb (and ``dump_soil``'s
+        entry) does. The posture comes from ``cfg.dig_carry`` (the real 215F
+        config's block — reading ``dig_cycle_tuning.carry_*_deg`` instead made
+        this protection silently no-op live) with the tuning keys as a fallback.
+        The tolerance check makes it free on haul chains (dig_soil already ends
+        at carry). No calibrated posture stated → no invented lift.
+        """
+        cfg = getattr(self.env, "cfg", None)
+        carry = getattr(cfg, "dig_carry", None)
+        tuning = getattr(cfg, "dig_cycle_tuning", None) or {}
+        if isinstance(carry, dict) and "boom" in carry and "arm" in carry:
+            target = {
+                "boom": float(carry["boom"]),
+                "arm": float(carry["arm"]),
+                "bucket": float(
+                    carry.get("bucket", tuning.get("bucket_curl_deg", 0.15))
+                ),
+            }
+        elif "carry_boom_deg" in tuning and "carry_arm_deg" in tuning:
+            target = {
+                "boom": float(tuning["carry_boom_deg"]),
+                "arm": float(tuning["carry_arm_deg"]),
+                "bucket": float(tuning.get("bucket_curl_deg", 0.15)),
+            }
+        else:
+            return
+        try:
+            current = self.env.get_joint_positions()
+            if all(
+                abs(float(current.get(joint, value)) - value) <= self._TRAVEL_TOL_RAD
+                for joint, value in target.items()
+            ):
+                return  # already travel-safe (e.g. mid-haul: dig_soil ends here)
+            self.env.driver.move_joints_blocking(target, timeout_s=10.0)
+        except Exception as exc:  # noqa: BLE001 - one clear business failure
+            raise ValueError(
+                f"travel lift failed; refusing to move the chassis with the "
+                f"bucket down (it plows the pile): {exc}"
+            ) from exc
+
+    @implements(NAVIGATE_RELATIVE)
+    def navigate_relative(
+        self, dx_m: float, dy_m: float = 0.0, dyaw_rad: float = 0.0
+    ) -> dict:
+        self._lift_bucket_for_travel()
+        return defaults.navigate_relative(self, dx_m, dy_m, dyaw_rad)
+
+    @implements(ROTATE_BASE)
+    def rotate_base(self, dyaw_rad: float) -> dict:
+        self._lift_bucket_for_travel()
+        return defaults.rotate_base(self, dyaw_rad)
+
+    @implements(DRIVE_ARC)
+    def drive_arc(self, radius_m: float, dyaw_rad: float) -> dict:
+        self._lift_bucket_for_travel()
+        return defaults.drive_arc(self, radius_m, dyaw_rad)
 
     def _get_ik(self, machine_path: str) -> Any:
         """Load/caches the per-machine IK model; native limits from this body."""

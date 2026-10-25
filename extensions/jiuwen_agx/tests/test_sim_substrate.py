@@ -179,8 +179,32 @@ class TestDriver:
     def test_navigate_delegates_and_ignores_strafe(self):
         driver = _driver()
         result = driver.navigate_relative(0.8, dy_m=5.0, dyaw_rad=0.3)
-        assert result == {"dx_m": 0.8, "dyaw_rad": 0.3}
+        # dy ignored; the return carries the evolved pose like the 215F bridge.
+        assert result["dx_m"] == 0.8
+        assert result["dyaw_rad"] == 0.3
+        assert result["yaw_rad"] == pytest.approx(0.3)
         assert driver.backend.move_log[-1]["cmd"] == "navigate_relative"
+
+    def test_base_pose_evolves_turn_then_advance(self):
+        driver = _driver()
+        assert driver.base_pose() == {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0}
+        driver.rotate_base(0.5)
+        driver.navigate_relative(2.0)
+        pose = driver.base_pose()
+        assert pose["yaw_rad"] == pytest.approx(0.5)
+        assert pose["x_m"] == pytest.approx(2.0 * math.cos(0.5))
+        assert pose["y_m"] == pytest.approx(2.0 * math.sin(0.5))
+
+    def test_base_pose_wraps_beyond_pi(self):
+        driver = _driver()
+        driver.rotate_base(3.0)
+        driver.rotate_base(3.0)
+        assert driver.base_pose()["yaw_rad"] == pytest.approx(-0.2831853)
+
+    def test_base_pose_needs_has_base(self):
+        driver = _driver(has_base=False)
+        with pytest.raises(NotImplementedError, match="has_base"):
+            driver.base_pose()
 
     def test_home_moves_to_home_joints(self):
         driver = _driver()
@@ -293,6 +317,23 @@ class TestEnv:
         obs = env.get_observation()
         assert obs.joints == [0.0, 5.0, 0.0, 0.0]
         assert obs.extra["terrain"][0]["name"]
+
+    def test_observation_carries_base_pose_for_base_machines(self):
+        """底盘里程计进 observation extra——重规划算最短方向转向的观测源。"""
+        env = SimMachineEnv(_cfg())
+        env.connect()
+        env.low_level.rotate_base(0.4)
+        obs = env.get_observation()
+        assert obs.extra["base_pose"] == {
+            "x_m": 0.0,
+            "y_m": 0.0,
+            "yaw_rad": pytest.approx(0.4),
+        }
+
+    def test_observation_omits_base_pose_without_base_capability(self):
+        env = SimMachineEnv(_cfg(has_base=False))
+        env.connect()
+        assert "base_pose" not in env.get_observation().extra
 
     def test_holding_payload_maps_scoop_truth(self):
         env = SimMachineEnv(_cfg())

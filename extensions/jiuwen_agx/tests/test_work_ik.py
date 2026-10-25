@@ -344,5 +344,11 @@ def test_dump_phase_ends_curled_and_empty():
         ik_stall_iters=8,
     )
 
-    assert driver.calls[-1] == {"bucket": 0.1}  # 收斗到 carry 角
     assert driver.scoop_state() is False
+    # 收斗到 carry 角仍在；随后抬离卸料堆（boom/arm 到标定 carry 位形，斗保持闭合）
+    # ——铲尖终点高于任何新卸料堆顶（~1.5 m），回程不再把刚倒的土舀回来。
+    assert {"bucket": 0.1} in driver.calls
+    last = driver.calls[-1]
+    assert {"boom", "arm", "bucket"} <= set(last)
+    assert last["bucket"] == pytest.approx(0.1)
+    assert float(ik.forward(driver.q)[2]) > 2.0  # above the fresh heap top

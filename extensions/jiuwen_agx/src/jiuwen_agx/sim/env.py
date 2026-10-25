@@ -156,6 +156,13 @@ class SimMachineEnv(BaseRobotEnv):
                 extra["bucket_loaded"] = self._driver.scoop_state()
             except Exception as exc:
                 logger.debug("[%s] scoop_state failed: %s", self.cfg.name, exc)
+        if "motion.base" in self.capabilities and self._driver is not None:
+            # Base odometry: without it a re-plan cannot know how far it has
+            # already turned and guesses the rotation from scratch.
+            try:
+                extra["base_pose"] = self._driver.base_pose()
+            except Exception as exc:
+                logger.debug("[%s] base_pose failed: %s", self.cfg.name, exc)
         return RobotObservation(joints=joints, extra=extra)
 
     # ------------------------------------------------------------------ required verbs

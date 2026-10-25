@@ -305,12 +305,8 @@ def execute_pose_dig_phase(
     entry = _policy_point(dig_x, dig_y, dig_z, origin)
     press = _policy_point(dig_x, dig_y, dig_z - bite_m, origin)
     scaled = max(radius - cut_length_m, 0.6) / radius
-    drag = _policy_point(
-        dig_x * scaled, dig_y * scaled, dig_z - bite_m + 0.05, origin
-    )
-    lift = _policy_point(
-        dig_x * scaled, dig_y * scaled, dig_z + carry_lift_m, origin
-    )
+    drag = _policy_point(dig_x * scaled, dig_y * scaled, dig_z - bite_m + 0.05, origin)
+    lift = _policy_point(dig_x * scaled, dig_y * scaled, dig_z + carry_lift_m, origin)
 
     def cut(target: np.ndarray, *, label: str, tolerance: float) -> float:
         nonlocal q, worst_error
@@ -360,9 +356,7 @@ def execute_pose_dig_phase(
         except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
             logger.warning("[ik] cleanup: lift+open failed (%s); opening in place", exc)
             try:
-                driver.move_joints_blocking(
-                    {"bucket": cleanup_open}, timeout_s=10.0
-                )
+                driver.move_joints_blocking({"bucket": cleanup_open}, timeout_s=10.0)
             except Exception as open_exc:  # noqa: BLE001
                 logger.warning("[ik] cleanup: opening the bucket failed: %s", open_exc)
         if dump_dwell_s > 0:
@@ -508,9 +502,7 @@ def execute_pose_dump_phase(
     curl_value = float(ik.signs[3]) * curl_native + float(ik.offsets[3])
 
     dump = _policy_point(dump_x, dump_y, dump_z, origin)
-    dump_approach = _policy_point(
-        dump_x, dump_y, dump_z + approach_gap_m, origin
-    )
+    dump_approach = _policy_point(dump_x, dump_y, dump_z + approach_gap_m, origin)
 
     # Early feasibility gate: reject an unreachable dump BEFORE any motion.
     # The later check uses the actual carry pose; this one runs from the
@@ -642,6 +634,31 @@ def execute_pose_dump_phase(
     # Curl for travel: the swing home must never run with an open bucket —
     # measured on 215F it scoops the pile's near edge on the way back.
     driver.move_joints_blocking({"bucket": curl_native})
+
+    # Lift OFF the fresh heap before returning. The soil just landed below the
+    # dump point; the retract/home path passes through the heap, and a bucket
+    # dragged through it picks the load straight back up (measured live:
+    # payload read "held" again right after home — a CLOSED bucket is not
+    # enough, the height must clear the heap top). The calibrated CARRY posture
+    # (the same one the dig phase lifts to) puts the tip well above any fresh
+    # heap; the closed-bucket IK cannot climb +0.8 m at dump radius, so a
+    # native posture move is the reachable form of "lift off". Best-effort.
+    if carry is not None and "boom" in carry and "arm" in carry:
+        lift_target = {
+            "swing": float(driver.get_joint_positions()["swing"]),
+            "boom": float(carry["boom"]),
+            "arm": float(carry["arm"]),
+            "bucket": curl_native,
+        }
+        try:
+            if not _play_native(driver, ik, lift_target, "dump_lift_off"):
+                driver.move_joints_blocking(
+                    {k: v for k, v in lift_target.items() if k != "swing"}
+                )
+        except Exception as exc:  # noqa: BLE001 - the lift is protection, not the task
+            logger.warning(
+                "[ik] dump lift-off failed (%s); retracting from the dump pose", exc
+            )
 
     return {
         "volume_m3": float(t["bucket_volume_m3"]),
